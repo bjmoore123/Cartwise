@@ -85,11 +85,12 @@ function parseSavingsPerItem(str) {
 }
 
 // For sorting: items with NO parseable dollar value sort LAST (-Infinity sentinel).
-// Priority: backend savings_per_item > JS-parsed save_line > savings field > -Infinity.
+// Priority: backend savings_per_item (pre-computed by deal_parser.py) > JS fallbacks > -Infinity.
+// Multi-buy parsing (e.g. "2 for $25.99") is handled server-side — run a scrape after deploy.
 function dealSortSavings(d) {
-  // Prefer the pre-computed backend value (v9+: deal_parser.py stores this)
+  // Prefer the pre-computed backend value (deal_parser.py handles all patterns)
   if (d.savings_per_item != null) return d.savings_per_item;
-  // JS fallback for data scraped before v9 backend
+  // JS fallback for data scraped before the multi-buy parser was added
   const perItem = parseSavingsPerItem(d.save_line);
   if (perItem !== null) return perItem;
   const fromSaveLine = parseSavingsAmount(d.save_line);

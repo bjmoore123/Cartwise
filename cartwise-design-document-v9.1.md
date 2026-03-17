@@ -37,7 +37,7 @@ The application operates on a fully serverless AWS architecture, requiring zero 
 
 **Deal Aggregation:** Fetches and merges Weekly Ad deals and Digital Coupon pools from the Publix REST API, deduplicating across both sources and enriching each deal with computed boolean fields (BOGO, coupon, Publix brand, extra savings, stacked deals, TPR).
 
-**Fuzzy Matching:** A unified matching engine (`shared/matcher.py`) scores user shopping list items against deal composites (brand + title + description) using precision/coverage weighting with brand-aware boosting, noise word filtering, and three user-facing sensitivity tiers (strict/normal/loose).
+**Fuzzy Matching:** A unified matching engine (`shared/matcher.py`) scores user shopping list items against deal composites (brand + title + description) using precision/coverage weighting with brand-aware boosting, noise word filtering, and a user-adjustable match threshold slider (40–100).
 
 **Email Alerts:** Weekly EventBridge-triggered scraper runs send personalized HTML deal alert emails via Resend, with HMAC-based one-click unsubscribe links.
 
@@ -51,10 +51,10 @@ The application operates on a fully serverless AWS architecture, requiring zero 
 
 1. EventBridge fires a cron rule (Wednesdays 12:00 UTC) invoking the Scraper Lambda.
 2. The scraper groups registered users by store, fetches deals once per unique store from the Publix API, and caches results in DynamoDB.
-3. For each user, the shared matcher scores their shopping list items against cached deals using their chosen sensitivity tier.
+3. For each user, the shared matcher scores their shopping list items against cached deals using their chosen match threshold.
 4. If matches are found and the user has email enabled and their email is verified, an HTML alert email is sent via Resend.
 5. History snapshots and corpus updates are written for long-term analytics and autocomplete.
-6. When users visit the web UI, they can browse all deals, view computed matches (via the same shared matcher called on-the-fly through the API), manage their shopping list, and adjust matching sensitivity.
+6. When users visit the web UI, they can browse all deals, view computed matches (via the same shared matcher called on-the-fly through the API), manage their shopping list, and adjust their match threshold.
 
 ---
 
@@ -168,7 +168,7 @@ All tables use `PAY_PER_REQUEST` billing (on-demand). Tables with TTL use the `e
 | `notify_email` | S | Must match login email | Email for alerts |
 | `email_enabled` | BOOL | | Whether weekly alerts are on |
 | `items` | L | Max 200 items, 200 chars each | Shopping list |
-| `matching` | M | `{sensitivity: "strict"\|"normal"\|"loose"}` | Match config |
+| `matching` | M | `{threshold: 40-100}` (default 75) | Match threshold from slider |
 | `notifications` | M | `{only_matches: bool}` | Alert preferences |
 
 Allowed keys are enforced by `ALLOWED_PREF_KEYS`: `store_id`, `store_name`, `store_address`, `notify_email`, `email_enabled`, `items`, `matching`, `notifications`. Any other keys in a PUT request are silently dropped.
@@ -327,13 +327,18 @@ Filler words are removed from user input tokens: articles (a, an, the), preposit
 
 For each user item × deal combination: exact match = 100; otherwise count matched tokens (including prefix matching for plurals, 4-char minimum). Final score = `(precision × 0.65 + coverage × 0.35) × 100`. Brand match gives a 10% precision boost; brand contradiction caps score at 45. Single-word items score 100 if found, 0 otherwise.
 
-### 6.5 Sensitivity Tiers
+### 6.5 Match Threshold
 
-| Tier | Threshold | Behavior |
-|---|---|---|
-| Strict | 75 | High precision — fewer, more relevant matches |
-| Normal | 60 | Balanced (default) |
-| Loose | 45 | Broader matching — catches partial matches |
+The frontend exposes a slider (range input, 40–100) that sets a numeric `threshold` on the user's `matching` config. The default is 75. A deal must score at or above the threshold to appear in the user's matches.
+
+| Threshold | Behavior |
+|---|---|
+| 90–100 | Very strict — only near-exact matches |
+| 75 | Default — balanced precision and recall |
+| 60 | Broad — catches partial and multi-word matches |
+| 40 | Very loose — includes low-confidence matches |
+
+The backend matcher (`shared/matcher.py`) also accepts a legacy `sensitivity` string (`strict`/`normal`/`loose`) which maps to fixed thresholds (80/65/50) as a fallback for API consumers that don't send a numeric value. The slider UI always sends `{threshold: N}`.
 
 ### 6.6 Deduplication
 
@@ -471,7 +476,7 @@ Additionally, API Gateway enforces a global throttle of 20 requests/second susta
 | Preference keys | Filtered to `ALLOWED_PREF_KEYS` allowlist on both user and admin save. |
 | Item strings | Capped at 200 characters each. |
 | Item list | Capped at 200 items. |
-| Matching sensitivity | Must be one of: `strict`, `normal`, `loose`. |
+| Matching threshold | Integer 40–100 (from slider). Legacy sensitivity strings (`strict`/`normal`/`loose`) accepted as fallback. |
 | Frontend log messages | `message` capped at 500 chars, `stack` at 1000, `url` at 200. Level must be `error`, `warn`, or `info`. |
 
 ### 10.9 CORS Policy
@@ -505,7 +510,7 @@ The admin panel is a dashboard embedded in the SPA, activated by entering the `A
 
 ### 11.1 User Management
 
-View all users with store, item count, and sensitivity setting. Per-user actions: view full record, reset PIN (denylist enforced), change email (duplicate check), patch preferences (ALLOWED_PREF_KEYS filtered), clear shopping list, delete account. Deletion increments a `__meta__` record's `deleted_count`.
+View all users with store, item count, and match threshold. Per-user actions: view full record, reset PIN (denylist enforced), change email (duplicate check), patch preferences (ALLOWED_PREF_KEYS filtered), clear shopping list, delete account. Deletion increments a `__meta__` record's `deleted_count`.
 
 ### 11.2 Scraper Controls
 
@@ -523,13 +528,132 @@ Total users, deleted users, average items per user, users with no items, registr
 
 ## 12. Deployment & Operations
 
-### 12.1 Deploy Script
+### 12.1 Deploy Script (`deploy.sh`)
 
-`deploy.sh` is a ~1,310-line idempotent Bash script handling the full provisioning lifecycle in 15 steps: DynamoDB tables, TTL configuration, Lambda layers, Lambda functions, environment variables, API Gateway, frontend S3/CloudFront, DNS, and SSM secrets.
+A ~1,310-line idempotent Bash script that provisions and updates the entire AWS stack. Safe to re-run — existing resources are skipped or updated in place.
 
-Environment variables are applied via a Python-generated JSON file (`apply_env` helper) to avoid shell interpretation of special characters in secrets.
+**Usage:**
 
-### 12.2 Environment Variables
+```bash
+# Basic deploy (no custom domain — S3 HTTP frontend):
+RESEND_API_KEY="re_xxx" ADMIN_SECRET="yourpassword" bash deploy.sh
+
+# Full deploy with CloudFront + custom domain:
+ACM_CERT_ARN="arn:aws:acm:us-east-1:ACCOUNT:certificate/ID" \
+APP_DOMAIN="cartwise.shopping" \
+RESEND_API_KEY="re_xxx" ADMIN_SECRET="yourpassword" bash deploy.sh
+```
+
+**Environment Variables:**
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `RESEND_API_KEY` | Yes | — | Resend API key for email delivery |
+| `ADMIN_SECRET` | No | Auto-generated | Secret for admin panel login. Auto-generated on first deploy if not set. |
+| `UNSUB_SECRET` | No | Auto-generated | HMAC salt for unsubscribe tokens. Rotating this invalidates all existing unsubscribe links. |
+| `RESEND_WEBHOOK_SECRET` | No | `not-yet-configured` | Svix signing secret from Resend Webhooks dashboard. Inbound email rejects all requests until set. |
+| `INBOUND_EMAIL_ADDR` | No | `cartwise@minaushii.resend.app` | Resend inbound address for list-import emails |
+| `ACM_CERT_ARN` | No | — | ARN of an ISSUED ACM certificate in us-east-1. Required for CloudFront/custom domain (steps 9–15). |
+| `APP_DOMAIN` | No | — | Apex domain (e.g., `cartwise.shopping`). Required for CloudFront/custom domain (steps 9–15). |
+| `RESEND_FROM_NAME` | No | `Cartwise Alerts` | Display name on outbound emails |
+| `RESEND_FROM_ADDR` | No | `onboarding@resend.dev` | From address for outbound emails |
+
+**Deployment Steps (15 total):**
+
+| Step | Resource | Notes |
+|---|---|---|
+| 1 | DynamoDB tables (9) | Created if missing; TTL enabled on sessions, admin-sessions, deals, auth-logs, app-logs, deal-history |
+| 2 | IAM role | `cartwise-lambda-role` with DynamoDB, Lambda invoke, CloudWatch, SSM, ACM permissions |
+| 3 | API Lambda | `cartwise-api` — packages `lambda/` + `shared/`, applies env vars |
+| 4 | Scraper Lambda | `cartwise-scraper` — packages `scraper/` + `shared/`, 120s timeout |
+| 5 | SSM secrets | Stores `RESEND_API_KEY`, `RESEND_FROM_NAME`, `RESEND_FROM_ADDR` in Parameter Store |
+| 6 | API Gateway | HTTP API with `$default` route → API Lambda. Throttling set to 20 rps / 50 burst. |
+| 7 | Frontend S3 | Uploads `index.html` + `app.js` to S3 bucket |
+| 8 | EventBridge | Weekly scraper cron (`cron(0 12 ? * WED *)`) + monthly cleanup (`cron(0 13 1 * ? *)`) |
+| 9* | S3 log bucket | `cartwise-cf-logs` for CloudFront access logs |
+| 10* | CloudFront OAC | Origin Access Control for S3 |
+| 11* | Response headers policy | HSTS, X-Frame-Options, X-Content-Type-Options |
+| 12* | CloudFront frontend dist | S3 origin with OAC, ACM cert, apex + www aliases |
+| 13* | Route 53 + API CloudFront | DNS records, API CloudFront distribution with geo-header origin request policy |
+| 14* | Cache invalidation | `/*` invalidation on frontend CloudFront |
+| 15* | S3 website config | Error document configuration |
+
+*Steps 9–15 only run when both `ACM_CERT_ARN` and `APP_DOMAIN` are set.*
+
+**Environment variable delivery:** Lambda env vars are applied via a Python-generated JSON file (`apply_env` helper) to avoid shell interpretation of special characters in secrets like `ADMIN_SECRET`.
+
+**SSM Parameter Store:** `RESEND_API_KEY` and `UNSUB_SECRET` are stored in SSM on first deploy and retrieved on subsequent deploys, ensuring stable values across re-deployments. This prevents unsubscribe link invalidation and API key rotation on every deploy.
+
+### 12.2 Teardown Script (`teardown.sh`)
+
+A 577-line script that removes all AWS resources created by `deploy.sh`. DynamoDB tables (user data) are preserved by default.
+
+**Usage:**
+
+```bash
+# Preview what would be deleted (no changes made):
+bash teardown.sh --dry-run
+
+# Delete all infra, keep DynamoDB data:
+bash teardown.sh
+
+# Delete everything including all user data:
+bash teardown.sh --delete-data
+
+# Combine flags:
+bash teardown.sh --delete-data --dry-run
+```
+
+**Command-Line Options:**
+
+| Flag | Description |
+|---|---|
+| *(none)* | Delete all AWS resources except DynamoDB tables. Prompts for confirmation. |
+| `--delete-data` | Also delete all 9 DynamoDB tables (irreversible — all user accounts, deals, logs are lost). |
+| `--dry-run` | Preview mode — lists every resource that would be deleted without making any changes. No confirmation prompt. |
+
+**Teardown Steps (15 total, dependency-ordered):**
+
+| Step | Resource | Notes |
+|---|---|---|
+| 1 | CloudFront frontend distribution | Disables first (async ~5-10 min wait), then deletes |
+| 2 | CloudFront API distribution | Same disable-then-delete pattern |
+| 3 | CloudFront OAC, response headers policy, origin request policy | All three CloudFront policies |
+| 4 | Route 53 DNS records | A records for apex, www, and api subdomain. ACM validation CNAME preserved. |
+| 5 | API Gateway custom domain | Deletes API mapping first, then domain name |
+| 6 | API Gateway HTTP API | |
+| 7 | EventBridge rules | Both `cartwise-weekly` and `cartwise-monthly-cleanup`, with auto-target removal |
+| 8 | Lambda functions | `cartwise-api` and `cartwise-scraper` |
+| 9 | IAM role | Detaches all managed policies, deletes all inline policies, then deletes role |
+| 10 | DynamoDB tables (9) | Only with `--delete-data`; otherwise preserved with `✦` marker |
+| 11 | SSM parameters | `/publix/resend-api-key`, `/publix/resend-from-name`, `/publix/resend-from-addr` |
+| 12 | CloudWatch log groups | `/aws/lambda/cartwise-api` and `/aws/lambda/cartwise-scraper` |
+| 13 | CloudWatch alarms + SNS topics | Checks both legacy `pdc-*` and current `cartwise-*` naming |
+| 14 | S3 buckets | `cartwise-cf-logs` (log bucket) and `cartwise-frontend-{account}` (frontend) |
+| 15 | Temp file cleanup | Removes `/tmp/cf_config_disabled.json` etc. |
+
+**Output:** Each resource prints one of four status markers:
+
+| Marker | Meaning |
+|---|---|
+| `✓ Deleted` | Resource found and successfully removed |
+| `- Not found` | Resource doesn't exist (already deleted or never created) |
+| `✦ Preserved` | Resource intentionally kept (DynamoDB without `--delete-data`) |
+| `⚠️ Failed` | Deletion attempted but failed (re-run to retry) |
+
+A summary line shows totals for each category. CloudFront distribution failures are expected on the first run if the distribution hasn't finished disabling — re-running resolves this.
+
+**Resources NOT deleted (require manual action):**
+
+| Resource | Reason | Manual command |
+|---|---|---|
+| ACM certificate | May be shared with other services | `aws acm delete-certificate --certificate-arn <ARN>` |
+| Route 53 hosted zone | Contains ACM validation CNAME needed for cert renewal | Delete via AWS console |
+| Route 53 domain registration | Billing/ownership concern | Manage via AWS console |
+
+### 12.3 Environment Variables (Lambda Runtime)
+
+Both Lambda functions receive these environment variables at runtime:
 
 ```
 USERS_TABLE, SESSIONS_TABLE, DEALS_TABLE, SCRAPE_LOGS_TABLE
@@ -543,7 +667,15 @@ SCRAPER_FUNCTION
 PDC_REGION
 ```
 
-### 12.3 File Reference
+### 12.4 Operational Monitoring
+
+Three monitoring layers: DynamoDB `scrape-logs` (per-run job summaries), structured `app-logs` (all application events with 30-day TTL), and CloudWatch Logs (raw Lambda output). The admin dashboard surfaces all three with filtering and real-time tail capabilities.
+
+### 12.5 Cost Structure
+
+With serverless pricing, the system has near-zero baseline cost: Lambda charges only for invocations (weekly scraper runs + API requests), DynamoDB charges per read/write with on-demand billing, S3 storage is minimal (two frontend files), and CloudFront charges per request with a generous free tier. At low user counts, monthly cost is typically under $1.
+
+### 12.6 File Reference
 
 | File | Lines | Role |
 |---|---|---|
@@ -562,7 +694,7 @@ PDC_REGION
 | `scraper/main.py` | 604 | Scraper entry point, email composition, history/corpus |
 | `scraper/scraper.py` | 79 | Publix API fetch logic |
 | `deploy.sh` | 1,311 | Full AWS infrastructure provisioning |
-| `teardown.sh` | 302 | Stack teardown (preserves DynamoDB by default) |
+| `teardown.sh` | 577 | Stack teardown with --dry-run and --delete-data |
 
 ---
 
@@ -578,7 +710,7 @@ PDC_REGION
 | Notify email | Must match login email |
 | Shopping list max items | 200 |
 | Item name max length | 200 characters |
-| Matching sensitivity options | `strict` (75), `normal` (60), `loose` (45) |
+| Match threshold range | 40–100 (slider), default 75. Legacy: `strict` (80), `normal` (65), `loose` (50). |
 
 ### 13.2 Rate Limits
 

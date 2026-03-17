@@ -15,6 +15,9 @@ _BOGO_RE = re.compile(r"b[12]g1|buy\s+\d.{0,8}get\s+\d|buy\s+one.{0,10}get\s+one
 # Per-item savings regex — "SAVE UP TO $7.39 ON 3" → $2.46/item
 _PER_ITEM_RE = re.compile(r'\$(\d+(?:\.\d+)?)\s+on\s+(\d+)', re.IGNORECASE)
 
+# Multi-buy price regex — "2 for $25.99" or "2/$25.99" → $12.995/unit
+_MULTI_BUY_RE = re.compile(r'(\d+)\s*(?:for|/)\s*\$(\d+(?:\.\d+)?)', re.IGNORECASE)
+
 
 def _clean(s) -> str:
     """Unescape HTML entities from Publix API responses.
@@ -42,6 +45,23 @@ def parse_per_item_savings(save_line: str) -> float | None:
         return None
     total = float(m.group(1))
     qty   = int(m.group(2))
+    return round(total / qty, 2) if qty > 0 else total
+
+
+def parse_multi_buy_unit_price(text: str) -> float | None:
+    """Extract per-unit price from multi-buy pricing strings.
+
+    '2 for $25.99' → 13.00
+    '3/$10.00'     → 3.33
+    Returns None if no multi-buy pattern found.
+    """
+    if not text:
+        return None
+    m = _MULTI_BUY_RE.search(text)
+    if not m:
+        return None
+    qty   = int(m.group(1))
+    total = float(m.group(2))
     return round(total / qty, 2) if qty > 0 else total
 
 
@@ -79,7 +99,10 @@ def parse_deal(d: dict) -> dict:
 
     # Pre-compute per-item savings for sort — stored as a number so the
     # frontend sort doesn't need to parse save_line text at runtime.
+    # Priority: "SAVE $X ON N" in save_line > "N for $X" in savings > None
     savings_per_item = parse_per_item_savings(save_line)
+    if savings_per_item is None:
+        savings_per_item = parse_multi_buy_unit_price(savings)
 
     # final_price: numeric sale price from the API (0 = no individual price, e.g. BOGO)
     try:
