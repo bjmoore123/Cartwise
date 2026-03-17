@@ -1,0 +1,2981 @@
+// ═══════════════════════════════════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════════════════════════════════
+const API = window.CARTWISE_API_URL || 'https://YOUR_API_GATEWAY_URL';
+
+// PDC-05: session token travels in HttpOnly cookie (SameSite=Lax; Secure).
+// Browser sends it automatically on all requests to *.cartwise.shopping.
+let userEmail = localStorage.getItem('cw_email') || null;
+let prefs     = null;
+// PDC-21: admin token now in HttpOnly cookie — no JS-accessible storage.
+let _adminLoggedIn = false;
+
+
+// PDC-05: session travels in HttpOnly cookie — sent automatically by browser.
+function authHeaders() {
+  return {'Content-Type': 'application/json'};
+}
+
+// Deal state
+let _allDeals      = [];       // raw from API
+let _dealTokenCache= new Map(); // pre-tokenized title+brand tokens keyed by deal id
+let _badgeCache    = new Map(); // pre-computed history badges keyed by deal id
+const DEALS_PAGE_SIZE = 50;     // cards per "page" in All Deals grid
+let _dealsPageLimit   = DEALS_PAGE_SIZE; // how many deal cards to render (grows on Load More)
+let _dealCounts    = {};       // type counts
+let _deptCounts    = {};       // dept counts
+let _dealsUpdated  = '';       // WeeklyAdLatestUpdatedDateTime from last fetch
+let _dealsStoreId  = '';       // which store these deals are for
+let _allMatches    = [];       // computed matches
+let _dealHistory   = null;    // { num_weeks, snapshots } for current store
+let _corpusTitles  = [];      // global autocomplete corpus
+let _matchDeptCts  = {};
+let _savingTypes   = [];       // dynamic saving_type values from API
+let _tprLoaded     = false;    // whether TPR deals have been fetched and merged
+let _tprLoading    = false;    // guard against concurrent TPR fetches
+let _totalAllDeals = 0;        // total deal count across all types (from API total_all)
+
+// ── Item shape helpers ────────────────────────────────────────────────────────
+// prefs.items is an array of plain strings.
+// Legacy {name, mode} dicts are handled transparently for backward compat.
+
+function itemName(item)  { return typeof item === 'string' ? item : (item?.name  || ''); }
+
+// Return all item names as a plain string array (for display, autocomplete, etc.)
+function itemNames() { return (prefs?.items || []).map(itemName); }
+
+// Returns false if the date string is a known null/placeholder value (e.g. 1/1–1/1 from Publix API)
+function isValidDate(s) {
+  if (!s || !s.trim()) return false;
+  const clean = s.trim().replace(/–/g, '-'); // normalize en-dash
+  // Publix returns 1/1 as a null placeholder when no date is available
+  return !/^1\/1$/.test(clean);
+}
+function hasValidDates(d) {
+  return isValidDate(d.valid_from) || isValidDate(d.valid_thru);
+}
+
+
+
+// ── History badge thresholds ──────────────────────────────────────────────────
+const HIST_MIN = {
+  bestYear:   8,
+  best6weeks: 6,
+  repeat:     2,
+  rareOnSale: 12,
+  freqHint:   4,
+  banner:     4,
+};
+
+function parseSavingsAmount(str) {
+  if (!str) return null;
+  const m = str.match(/\$(\d+(?:\.\d+)?)/);
+  return m ? parseFloat(m[1]) : null;
+}
+
+// Parse "SAVE UP TO $7.39 ON 3" -> per-item equivalent $2.46.
+// Used as a JS-side fallback when savings_per_item is absent from the API response.
+function parseSavingsPerItem(str) {
+  if (!str) return null;
+  const m = str.match(/\$(\d+(?:\.\d+)?)\s+on\s+(\d+)/i);
+  if (!m) return null;
+  const total = parseFloat(m[1]);
+  const qty   = parseInt(m[2], 10);
+  return qty > 0 ? total / qty : total;
+}
+
+// For sorting: items with NO parseable dollar value sort LAST (-Infinity sentinel).
+// Priority: backend savings_per_item > JS-parsed save_line > savings field > -Infinity.
+function dealSortSavings(d) {
+  // Prefer the pre-computed backend value (v9+: deal_parser.py stores this)
+  if (d.savings_per_item != null) return d.savings_per_item;
+  // JS fallback for data scraped before v9 backend
+  const perItem = parseSavingsPerItem(d.save_line);
+  if (perItem !== null) return perItem;
+  const fromSaveLine = parseSavingsAmount(d.save_line);
+  if (fromSaveLine !== null) return fromSaveLine;
+  const fromSavings = parseSavingsAmount(d.savings);
+  if (fromSavings !== null) return fromSavings;
+  return -Infinity; // no value — sort last
+}
+
+function computeBadge(deal, history) {
+  if (!history || !history.snapshots || !history.snapshots.length) return null;
+  const numWeeks   = history.num_weeks || 0;
+  const snapshots  = history.snapshots;
+  const dealTitle  = (deal.title || '').toLowerCase();
+  const currentAmt = parseSavingsAmount(deal.savings);
+
+  const pastAppearances = [];
+  snapshots.forEach((snap, snapIdx) => {
+    snap.deals.forEach(pastDeal => {
+      const pastTitle = (pastDeal.title || '').toLowerCase();
+      if (dealTitle && pastTitle && fuzzyScore(dealTitle, pastTitle) >= 75) {
+        pastAppearances.push({ snap, snapIdx, pastDeal });
+      }
+    });
+  });
+
+  if (numWeeks >= HIST_MIN.repeat && snapshots.length >= 2) {
+    const prevWeek = snapshots[1];
+    if (prevWeek && prevWeek.deals.some(pd =>
+      fuzzyScore((pd.title || '').toLowerCase(), dealTitle) >= 80
+    )) {
+      return { type: 'repeat', label: '🔁 Repeat deal' };
+    }
+  }
+
+  if (numWeeks >= HIST_MIN.rareOnSale) {
+    const pastCount = pastAppearances.filter(a => a.snapIdx > 0).length;
+    if (pastCount < 3) return { type: 'rare', label: '📅 Rarely on sale' };
+  }
+
+  if (currentAmt !== null) {
+    const historicalAmts = pastAppearances
+      .filter(a => a.snapIdx > 0)
+      .map(a => parseSavingsAmount(a.pastDeal.savings))
+      .filter(v => v !== null);
+
+    if (historicalAmts.length > 0) {
+      const maxHistorical = Math.max(...historicalAmts);
+      if (numWeeks >= HIST_MIN.bestYear && currentAmt >= maxHistorical)
+        return { type: 'best', label: '🔥 Best price this year' };
+      if (numWeeks >= HIST_MIN.best6weeks) {
+        const sixWeekAmts = pastAppearances
+          .filter(a => a.snapIdx > 0 && a.snapIdx <= 6)
+          .map(a => parseSavingsAmount(a.pastDeal.savings))
+          .filter(v => v !== null);
+        if (sixWeekAmts.length > 0 && currentAmt >= Math.max(...sixWeekAmts))
+          return { type: 'recent', label: '✨ Best price in 6 weeks' };
+      }
+    }
+  }
+  return null;
+}
+
+function computeFreqHint(itemName, history) {
+  if (!history || (history.num_weeks || 0) < HIST_MIN.freqHint) return '';
+  const name = itemName.toLowerCase();
+  const snapshots = history.snapshots || [];
+  let count = 0;
+  snapshots.forEach((snap, idx) => {
+    if (idx === 0) return;
+    if (snap.deals.some(d => fuzzyScore(name, (d.title || '').toLowerCase()) >= 70)) count++;
+  });
+  const weeksOfHistory = Math.max(snapshots.length - 1, 1);
+  const annualRate = Math.round((count / weeksOfHistory) * 52);
+  if (annualRate === 0)  return 'rarely on sale';
+  if (annualRate <= 2)   return `on sale ~${annualRate}x/year`;
+  if (annualRate <= 8)   return 'on sale a few times a year';
+  if (annualRate <= 20)  return 'on sale most months';
+  return 'on sale most weeks';
+}
+
+// ── Badge pre-computation ─────────────────────────────────────────────────────
+// computeBadge() is expensive: O(deals × snapshots × deals_per_snapshot).
+// We run it ONCE after deals + history are both loaded and cache the result.
+// All card renderers read from _badgeCache instead of calling computeBadge().
+function precomputeBadges() {
+  _badgeCache = new Map();
+  if (!_allDeals.length || !_dealHistory) return;
+  for (const d of _allDeals) {
+    const b = computeBadge(d, _dealHistory);
+    if (b) _badgeCache.set(d.id, b);
+  }
+}
+
+function buildQualityBanner(matches, history) {
+  if (!history || (history.num_weeks || 0) < HIST_MIN.banner) return null;
+  const bestItems = [], repeatItems = [];
+  matches.forEach(deal => {
+    const badge = _badgeCache.get(deal.id) || null;
+    if (!badge) return;
+    const name = deal.my_item || deal.title || '';
+    if (badge.type === 'best' || badge.type === 'recent') bestItems.push(name);
+    else if (badge.type === 'repeat') repeatItems.push(name);
+  });
+  if (!bestItems.length && !repeatItems.length) return null;
+  const parts = [];
+  if (bestItems.length)   parts.push(`🔥 <strong>${bestItems.slice(0,3).map(escH).join(' &amp; ')}</strong> ${bestItems.length===1?'is':'are'} at their best price this year.`);
+  if (repeatItems.length) parts.push(`🔁 <strong>${repeatItems.slice(0,2).map(escH).join(' &amp; ')}</strong> ${repeatItems.length===1?'is a repeat':'are repeats'} from last week.`);
+  return parts.join(' ');
+}
+
+let _historyLoading = false;
+
+async function loadDealHistory() {
+  const storeId = prefs?.store_id;
+  if (!storeId || _historyLoading) return;
+  _historyLoading = true;
+  try {
+    const res = await fetch(API + `/deals/history?store_id=${encodeURIComponent(storeId)}`, {credentials:'include',headers:authHeaders()});
+    if (!res.ok) return;
+    _dealHistory = await res.json();
+    precomputeBadges();  // recompute badges with fresh history
+    renderDeals();
+    renderFreqHints();
+    // Show badge legends if enough history
+    document.querySelectorAll('.badge-legend').forEach(el => {
+      el.style.display = (_dealHistory && _dealHistory.num_weeks >= HIST_MIN.repeat) ? '' : 'none';
+    });
+  } catch (e) { console.warn('History load failed:', e); }
+  finally { _historyLoading = false; }
+}
+
+async function loadCorpus() {
+  if (_corpusTitles.length) return;
+  // v2 key: forces all browsers to discard old &amp;-poisoned corpus cache.
+  const CORPUS_KEY = 'cw_corpus_v2';
+  const cached = sessionStorage.getItem(CORPUS_KEY);
+  // Always decode entities — safety net for any data stored before the Python fix
+  if (cached) { _corpusTitles = JSON.parse(cached).map(decodeEntities); return; }
+  try {
+    const res = await fetch(API + '/deals/corpus', {credentials:'include',headers:authHeaders()});
+    if (!res.ok) return;
+    const data = await res.json();
+    // Decode HTML entities as a safety net (Python fix handles new data; this covers transition)
+    _corpusTitles = (data.titles || []).map(decodeEntities);
+    sessionStorage.setItem(CORPUS_KEY, JSON.stringify(_corpusTitles));
+  } catch (e) { console.warn('Corpus load failed:', e); }
+}
+
+function renderFreqHints() {
+  if (!_dealHistory || (_dealHistory.num_weeks || 0) < HIST_MIN.freqHint) return;
+  document.querySelectorAll('.list-item-freq').forEach(el => {
+    const item = el.dataset.item || '';
+    el.textContent = computeFreqHint(item, _dealHistory);
+  });
+}
+// ═══════════════════════════════════════════════════════════════════
+// PIN INPUTS
+// ═══════════════════════════════════════════════════════════════════
+function initPins(sel, onSubmit) {
+  const ds = document.querySelectorAll(sel);
+  ds.forEach((el,i) => {
+    el.addEventListener('input', () => {
+      el.value = el.value.replace(/\D/g,'').slice(-1);
+      if (el.value && i < ds.length-1) ds[i+1].focus();
+    });
+    el.addEventListener('keydown', e => {
+      if (e.key==='Backspace' && !el.value && i>0) ds[i-1].focus();
+      if (e.key==='Enter' && onSubmit) onSubmit();
+    });
+    el.addEventListener('focus', () => el.select());
+  });
+}
+function getPin(sel) { return [...document.querySelectorAll(sel)].map(e=>e.value).join(''); }
+function clrPin(sel) { document.querySelectorAll(sel).forEach(e=>e.value=''); const f=document.querySelector(sel); if(f) f.focus(); }
+
+function initPinInputs(selector) {
+  document.querySelectorAll(selector).forEach((inp, i, all) => {
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Backspace' && !inp.value && i > 0) {
+        all[i-1].focus();
+        all[i-1].value = '';
+        e.preventDefault();
+      }
+    });
+    inp.addEventListener('input', e => {
+      // strip non-digits
+      inp.value = inp.value.replace(/\D/g, '').slice(-1);
+      if (inp.value && i < all.length - 1) all[i+1].focus();
+      // if last digit filled and it's the auth form, attempt login
+      if (inp.value && i === all.length - 1 && selector === '.auth-pin') {
+        const allFilled = Array.from(all).every(d => d.value);
+        if (allFilled) doAuth();
+      }
+    });
+    inp.addEventListener('focus', () => inp.select());
+    inp.addEventListener('paste', e => {
+      e.preventDefault();
+      const digits = (e.clipboardData.getData('text').replace(/\D/g, '')).slice(0, all.length);
+      digits.split('').forEach((d, j) => { if (all[i+j]) all[i+j].value = d; });
+      const next = all[Math.min(i + digits.length, all.length - 1)];
+      next.focus();
+    });
+  });
+}
+
+
+initPins('.auth-pin', doAuth);
+initPins('.cur-pin', null);
+initPins('.new-pin', null);
+initPins('.ap-pin', null);
+initPins('.ac-pin', null);
+
+// Paste support on auth pins
+document.querySelectorAll('.auth-pin').forEach((el,i,arr) => {
+  el.addEventListener('paste', e => {
+    const t=(e.clipboardData||window.clipboardData).getData('text').replace(/\D/g,'').slice(0,4);
+    if(t.length===4){e.preventDefault();arr.forEach((d,j)=>d.value=t[j]||'');arr[3].focus();}
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// AUTH
+// ═══════════════════════════════════════════════════════════════════
+let authMode = 'login';
+function switchTab(m) {
+  authMode=m;
+  document.querySelectorAll('.auth-tab').forEach((t,i)=>t.classList.toggle('active',(m==='login'&&i===0)||(m==='register'&&i===1)));
+  document.getElementById('auth-btn').textContent = m==='login'?'Sign In':'Create Account';
+  setMsg('auth-msg','','');
+}
+function setMsg(id,txt,cls){ const el=document.getElementById(id); if(!el) return; el.textContent=txt; el.className='msg'+(cls?' '+cls:''); }
+
+// Strip any character that isn't valid in an ASCII email address.
+// Allowed: a-z A-Z 0-9 and !#$%&'*+/=?^_`{|}~.- and @
+// Called oninput on every email field to prevent non-ASCII / junk entry.
+function sanitizeEmailInput(el) {
+  const cleaned = el.value.replace(/[^a-zA-Z0-9!#$%&'*+/=?^_`{|}~.@-]/g, '');
+  if (cleaned !== el.value) { el.value = cleaned; }
+}
+let _lockoutTimer = null;
+function _startLockoutCountdown(retryAfterSeconds) {
+  clearInterval(_lockoutTimer);
+  const btn = document.getElementById('auth-btn');
+  btn.disabled = true;
+  let remaining = retryAfterSeconds;
+  function tick() {
+    const m = Math.floor(remaining / 60), s = remaining % 60;
+    const display = m > 0 ? `${m}m ${String(s).padStart(2,'0')}s` : `${s}s`;
+    setMsg('auth-msg', `Account locked. Try again in ${display}.`, 'err');
+    btn.textContent = `Locked (${display})`;
+    if (remaining <= 0) {
+      clearInterval(_lockoutTimer);
+      _lockoutTimer = null;
+      btn.disabled = false;
+      btn.textContent = authMode === 'login' ? 'Sign In' : 'Create Account';
+      setMsg('auth-msg', 'Account unlocked. You may try again.', 'ok');
+    }
+    remaining--;
+  }
+  tick();
+  _lockoutTimer = setInterval(tick, 1000);
+}
+
+let _authInFlight = false;
+async function doAuth() {
+  if (_authInFlight) return;  // prevent double-fire from pin input + initPins callback
+  _authInFlight = true;
+  const em = document.getElementById('auth-email').value.trim().toLowerCase();
+  const pin = getPin('.auth-pin');
+  if(!em){ setMsg('auth-msg','Please enter your email.','err'); return; }
+  if(!/^[\x00-\x7F]+$/.test(em) || !/^[a-zA-Z0-9!#$%&'*+/=?^_`{|}~.\-]+@[a-zA-Z0-9][a-zA-Z0-9\-]*(\.[a-zA-Z0-9][a-zA-Z0-9\-]*)*\.[a-zA-Z]{2,}$/.test(em)){
+    setMsg('auth-msg','Please enter a valid email address.','err'); return;
+  }
+  if(pin.length!==4){ setMsg('auth-msg','Please enter your 4-digit PIN.','err'); return; }
+  const btn=document.getElementById('auth-btn');
+  btn.disabled=true; btn.textContent=authMode==='login'?'Signing in…':'Creating account…';
+  try{
+    const res=await fetch(API+(authMode==='login'?'/auth/login':'/auth/register'),{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:em,pin})});
+    const data=await res.json();
+    if(!res.ok){
+      if(res.status===429 && data.retry_after_seconds){
+        _startLockoutCountdown(data.retry_after_seconds);
+        return;
+      }
+      setMsg('auth-msg',data.error||'Something went wrong.','err');
+      return;
+    }
+    if(authMode==='register'){
+      // Auto-login with the credentials just used — no re-prompting required.
+      // If email is unverified we still sign in; the app shows a banner prompting verification.
+      setMsg('auth-msg','Account created! Signing you in…','ok');
+      const loginRes = await fetch(API+'/auth/login', {
+        method:'POST', credentials:'include',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({email: em, pin})
+      });
+      const loginData = await loginRes.json();
+      if(!loginRes.ok){
+        // Shouldn't happen — fall back to login tab so user can sign in manually
+        setMsg('auth-msg','Account created! Please sign in.','ok');
+        switchTab('login');
+        return;
+      }
+      clearInterval(_lockoutTimer); _lockoutTimer=null;
+      userEmail = loginData.email;
+      localStorage.setItem('cw_email', userEmail);
+      prefs = loginData.prefs;
+      enterApp({isFirstLogin: true, emailVerified: loginData.email_verified !== false});
+      return;
+    }
+    clearInterval(_lockoutTimer); _lockoutTimer=null;
+    userEmail=data.email;
+    localStorage.setItem('cw_email',userEmail);
+    prefs=data.prefs;
+    const _isNew = authMode==='register' || !(prefs && prefs.store_id);
+    enterApp({isFirstLogin: _isNew, emailVerified: data.email_verified !== false});
+  }catch(e){setMsg('auth-msg','Could not reach the server.','err');}
+  finally{_authInFlight=false;if(!_lockoutTimer){btn.disabled=false;btn.textContent=authMode==='login'?'Sign In':'Create Account';}}
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// APP ENTRY
+// ═══════════════════════════════════════════════════════════════════
+// EMAIL VERIFICATION BANNER
+// ═══════════════════════════════════════════════════════════════════
+function showVerifyBanner(show) {
+  let banner = document.getElementById('verify-banner');
+  if (!show) { if (banner) banner.style.display = 'none'; return; }
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'verify-banner';
+    banner.style.cssText = 'background:#fefce8;border-bottom:1px solid #fde68a;padding:10px 16px;display:flex;align-items:center;gap:10px;font-size:13px;color:#92400e;flex-wrap:wrap;';
+    banner.innerHTML = `
+      <span style="flex:1;min-width:200px">
+        📧 <strong>Verify your email</strong> to receive weekly deal alerts.
+        Check your inbox for a verification link.
+      </span>
+      <button data-action="resend-verification" id="btn-resend-verify"
+        style="background:#f59e0b;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">
+        Resend email
+      </button>
+      <button data-action="hide-verify-banner"
+        style="background:none;border:none;font-size:16px;cursor:pointer;color:#92400e;padding:0 4px" title="Dismiss">×</button>`;
+    // Insert at top of app-screen, before the topbar
+    const app = document.getElementById('app-screen');
+    app.insertBefore(banner, app.firstChild);
+  }
+  banner.style.display = 'flex';
+}
+
+async function resendVerification() {
+  const btn = document.getElementById('btn-resend-verify');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  try {
+    const res = await fetch(API + '/auth/resend-verification', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email: userEmail})
+    });
+    const d = await res.json();
+    if (btn) { btn.textContent = d.message || 'Sent!'; }
+    setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = 'Resend email'; }}, 5000);
+  } catch(e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Resend email'; }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+function enterApp(opts) {
+  // opts.isFirstLogin = true means brand-new account (no store set yet)
+  const isFirstLogin = (opts && opts.isFirstLogin) ||
+    (!localStorage.getItem('cw_welcomed_'+userEmail) && !(prefs && prefs.store_id));
+  document.getElementById('auth-screen').style.display='none';
+  document.getElementById('app-screen').classList.add('visible');
+  // Show verification banner for unverified accounts
+  const _verified = (opts && opts.emailVerified !== undefined) ? opts.emailVerified : true;
+  showVerifyBanner(!_verified);
+  document.getElementById('topbar-email').textContent=userEmail;
+  document.getElementById('acct-email-disp').textContent=userEmail;
+  document.getElementById('acct-avatar').textContent=(userEmail[0]||'?').toUpperCase();
+  loadPrefs();
+  if(isFirstLogin){
+    // Show welcome wizard; on dismiss it will navigate to Store
+    showPanel('store');
+    setTimeout(()=>wlcShow(), 120);
+  } else {
+    // Returning user: go straight to My Matches
+    showPanel('deals');   // showPanel('deals') already calls preloadDeals()
+  }
+  // preloadDeals() removed — showPanel('deals') handles it; calling both caused a duplicate /deals fetch
+  loadDealHistory();
+  loadCorpus();
+}
+async function doLogout(){
+  // PDC-05: browser sends HttpOnly cookie automatically with credentials:'include'
+  try{await fetch(API+'/auth/logout',{method:'POST',credentials:'include',headers:authHeaders()});}catch(_){}
+  userEmail=null;prefs=null;_allDeals=[];_allMatches=[];_dealsStoreId='';_storeData=null;_badgeCache=new Map();_tprLoaded=false;_totalAllDeals=0;
+  localStorage.removeItem('cw_email');
+  // Reset store UI so it doesn't bleed into the next session
+  document.getElementById('store-card-wrap').style.display='none';
+  document.getElementById('store-search-ui').style.display='';
+  document.getElementById('store-card-el').innerHTML='';
+  document.getElementById('store-id-input').value='';
+  document.getElementById('store-results').innerHTML='';
+  document.getElementById('app-screen').classList.remove('visible');
+  document.getElementById('auth-screen').style.display='';
+  clrPin('.auth-pin');
+}
+function showPanel(name) {
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.getElementById('panel-'+name).classList.add('active');
+  const sideNav=document.getElementById('nav-'+name);
+  if(sideNav) sideNav.classList.add('active');
+  const mobileNav=document.getElementById('mnav-'+name);
+  if(mobileNav) mobileNav.classList.add('active');
+  if(name==='admin') initAdmin();
+  // Deals: load deals + matches together (unified panel)
+  // List: always re-fetch so inbound email imports appear without a page reload
+  if(name==='deals') { preloadDeals(); }
+  else if(name==='list') fetchAndLoadPrefs();
+}
+function openMobileNav(){
+  document.getElementById('mobile-nav').classList.add('open');
+  document.body.style.overflow='hidden';
+}
+function closeMobileNav(){
+  document.getElementById('mobile-nav').classList.remove('open');
+  document.body.style.overflow='';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PREFS
+// ═══════════════════════════════════════════════════════════════════
+async function fetchAndLoadPrefs() {
+  try {
+    const res = await fetch(API+'/user/prefs', {credentials:'include', headers:authHeaders()});
+    if (!res.ok) return;
+    const data = await res.json();
+    prefs = data.prefs;
+    loadPrefs();
+  } catch(_) {}
+}
+function loadPrefs() {
+  if(!prefs) return;
+  const sid=prefs.store_id||'';
+  if(sid){
+    // Set basic info immediately, then enrich with full store details in background.
+    // Capture email now so a logout before the fetch returns can't corrupt the new session.
+    const _emailAtLoad = userEmail;
+    setStoreSel({id:sid, name:prefs.store_name||'', address:prefs.store_address||'', street:prefs.store_address||''});
+    fetch(API+'/stores/search?q='+encodeURIComponent(sid), {credentials:'include',headers:authHeaders()})
+      .then(r=>r.json()).then(data=>{
+        if(userEmail !== _emailAtLoad) return; // session changed — discard stale result
+        const s=(data.stores||[])[0];
+        if(s && s.id===sid) setStoreSel(s);
+      }).catch(()=>{});
+  } else {
+    // No store set — ensure the UI shows the search form, not a card left over from a previous session
+    document.getElementById('store-card-wrap').style.display = 'none';
+    document.getElementById('store-search-ui').style.display = '';
+  }
+  const emailEnabled = prefs.email_enabled !== false; // default true
+  document.getElementById('email-enabled').checked = emailEnabled;
+  document.getElementById('email-settings-wrap').style.display = emailEnabled ? '' : 'none';
+  document.getElementById('notify-email').value = prefs.notify_email || userEmail || '';
+  renderItems();
+  const t=((prefs.matching||{}).threshold)||75;
+  document.getElementById('threshold').value=t;
+  document.getElementById('threshold-val').textContent=t;
+  const s=prefs.schedule||{};
+  document.getElementById('sched-day').value  = s.days?.[0]??3;
+  document.getElementById('sched-hour').value = s.hour??8;
+  document.getElementById('sched-ampm').value = s.ampm??'AM';
+}
+function collectPrefs(){
+  return {
+    store_id:      prefs?.store_id||'',
+    store_name:    prefs?.store_name||'',
+    store_address: prefs?.store_address||'',
+    notify_email:  document.getElementById('notify-email').value.trim()||userEmail,
+    email_enabled: document.getElementById('email-enabled').checked,
+    items:         prefs?.items||[],
+    matching:      {threshold:parseInt(document.getElementById('threshold').value)||75},
+    schedule:      {days:[parseInt(document.getElementById('sched-day').value)],
+                    hour:parseInt(document.getElementById('sched-hour').value),
+                    minute:0, ampm:document.getElementById('sched-ampm').value},
+  };
+}
+let _saveToastTimer=null;
+function showSaveToast(){
+  const t=document.getElementById('save-toast');
+  if(!t) return;
+  t.classList.add('show');
+  clearTimeout(_saveToastTimer);
+  _saveToastTimer=setTimeout(()=>t.classList.remove('show'),2000);
+}
+async function savePrefs(ctx){
+  if(ctx === 'list' || ctx === 'matching') _matchesDirty = true;
+  const p=collectPrefs();
+  if(prefs) p.items=prefs.items||[];
+  if(ctx==='account' && p.notify_email){
+    const ne=p.notify_email;
+    if(!/^[\x00-\x7F]+$/.test(ne) || !/^[a-zA-Z0-9!#$%&'*+/=?^_`{|}~.\-]+@[a-zA-Z0-9][a-zA-Z0-9\-]*(\.[a-zA-Z0-9][a-zA-Z0-9\-]*)*\.[a-zA-Z]{2,}$/.test(ne)){
+      const el=document.getElementById('notify-email');
+      if(el) el.style.borderColor='var(--red)';
+      return;
+    }
+    const el=document.getElementById('notify-email');
+    if(el) el.style.borderColor='';
+  }
+  try{
+    const res=await fetch(API+'/user/prefs',{method:'PUT',credentials:'include',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({prefs:p})});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Save failed');
+    prefs=data.prefs;
+    showSaveToast();
+  }catch(e){console.error('Save failed:',e.message);}
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// STORE
+// ═══════════════════════════════════════════════════════════════════
+// ── Store panel ────────────────────────────────────────────────────
+let _storeData = null; // full store object from API
+
+function fmtPhone(p){
+  if(!p) return '';
+  const d=p.replace(/\D/g,'');
+  if(d.length===10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
+  return p;
+}
+
+function storeCardHtml(s){
+  const addr = [s.street, s.city, s.state, s.zip].filter(Boolean).join(', ');
+  const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addr)}`;
+  const hero = s.img_hero
+    ? `<img class="store-card-hero" src="${escH(s.img_hero)}" alt="${escH(s.name)}" data-img-fallback>`
+    + `<div class="store-card-hero-ph" style="display:none">🏪</div>`
+    : `<div class="store-card-hero-ph">🏪</div>`;
+
+  // Hours grid
+  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const todayIdx = new Date().getDay();
+  let hoursGrid = '';
+  if(s.hours_raw && s.hours_raw.length){
+    // hours_raw[0] = today, build forward
+    hoursGrid = `<div class="store-hours-grid">`;
+    for(let i=0;i<Math.min(7,s.hours_raw.length);i++){
+      const h = s.hours_raw[i];
+      const dt = new Date(h.openTime||h.closeTime||'');
+      const dayIdx = dt.getDay ? dt.getDay() : (todayIdx+i)%7;
+      const isToday = i===0;
+      let timeStr = '';
+      if(h.isClosed) timeStr='Closed';
+      else if(h.isOpen24Hours) timeStr='24h';
+      else{
+        const fmt=iso=>{try{const t=new Date(iso);return t.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true}).replace(':00','').replace(' ','');}catch{return'';}};
+        timeStr=`${fmt(h.openTime)}<br>${fmt(h.closeTime)}`;
+      }
+      hoursGrid+=`<div class="store-hour-day${isToday?' today':''}">
+        <div class="store-hour-day-name">${days[dayIdx]}</div>
+        <div class="store-hour-time">${timeStr}</div>
+      </div>`;
+    }
+    hoursGrid+='</div>';
+  }
+
+  const phone = fmtPhone(s.phone);
+  const pharmPhone = fmtPhone(s.pharmacy_phone);
+
+  return `<div>
+    ${hero}
+    <div class="store-card-body">
+      <div class="store-card-name">${escH(s.name)}</div>
+      <div class="store-card-id">Store #${escH(s.id)}</div>
+      ${addr?`<div class="store-card-row"><span class="store-card-row-icon">📍</span>
+        <span><a href="${escH(mapsUrl)}" target="_blank">${escH(addr)}</a></span></div>`:''}
+      ${phone?`<div class="store-card-row"><span class="store-card-row-icon">📞</span>
+        <span><a href="tel:+1${escH(s.phone)}">${escH(phone)}</a></span></div>`:''}
+      ${pharmPhone?`<div class="store-card-row"><span class="store-card-row-icon">💊</span>
+        <span>Pharmacy: <a href="tel:+1${escH(s.pharmacy_phone)}">${escH(pharmPhone)}</a></span></div>`:''}
+      ${s.hours_today?`<div class="store-card-row"><span class="store-card-row-icon">🕐</span>
+        <span>Today: <strong>${escH(s.hours_today)}</strong></span></div>`:''}
+      ${hoursGrid?`<div style="margin-top:10px">${hoursGrid}</div>`:''}
+    </div>
+    <div class="store-card-footer">
+      <span style="font-size:12px;color:var(--ink-soft)">
+        <a href="https://www.publix.com/locations/${escH(s.name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''))}" target="_blank" style="color:var(--green)">View on Publix.com ↗</a>
+      </span>
+      <button class="btn-change" data-action="clear-store">Change Store</button>
+    </div>
+  </div>`;
+}
+
+function setStoreSel(s){
+  if(!prefs) prefs={};
+  prefs.store_id      = s.id||'';
+  prefs.store_name    = s.name||'';
+  prefs.store_address = s.address||s.street||'';
+  _storeData = s;
+  if(s.id){
+    document.getElementById('store-card-el').innerHTML = storeCardHtml(s);
+    document.getElementById('store-card-wrap').style.display = '';
+    document.getElementById('store-search-ui').style.display = 'none';
+  }
+}
+
+function clearStore(){
+  document.getElementById('store-card-wrap').style.display = 'none';
+  document.getElementById('store-search-ui').style.display = '';
+  document.getElementById('store-id-input').value = '';
+  document.getElementById('store-results').innerHTML = '';
+  if(prefs){prefs.store_id='';prefs.store_name='';prefs.store_address='';}
+  _storeData = null;
+  _dealsStoreId='';_allDeals=[];_allMatches=[];_dealTokenCache=new Map();_badgeCache=new Map();_tprLoaded=false;_totalAllDeals=0;
+  document.getElementById('deals-browser').style.display='none';
+  const _ms=document.getElementById('matches-section');if(_ms)_ms.style.display='none';
+}
+
+function onStoreInputType(){
+  // typing — do nothing until Search is clicked or Enter pressed
+}
+
+function onStoreInput(){
+  doStoreSearch();
+}
+
+let _storeSearchTimer = null;
+async function doStoreSearch(){
+  const q = (document.getElementById('store-id-input').value||'').trim();
+  if(!q) return;
+  const resultsEl = document.getElementById('store-results');
+  resultsEl.innerHTML = '<div class="store-no-results">Searching…</div>';
+  try{
+    const res = await fetch(API+'/stores/search?q='+encodeURIComponent(q), {credentials:'include',headers:authHeaders()});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error||'Search failed');
+    const stores = data.stores||[];
+    if(!stores.length){
+      resultsEl.innerHTML = '<div class="store-no-results">No stores found. Try a different city, ZIP, or store #.</div>';
+      return;
+    }
+    resultsEl.innerHTML = stores.map((s,i)=>{
+      const thumb = s.img_thumb
+        ? `<img class="store-result-thumb" src="${escH(s.img_thumb)}" alt="" data-img-fallback><div class="store-result-thumb-ph" style="display:none">🏪</div>`
+        : `<div class="store-result-thumb-ph">🏪</div>`;
+      const dist = s.distance!=null ? `<div class="store-result-dist">${(+s.distance).toFixed(1)} mi away</div>` : '';
+      const addr = [s.street, s.city, s.state].filter(Boolean).join(', ');
+      return `<div class="store-result-item" data-action="select-store" data-index="${i}">
+        ${thumb}
+        <div style="flex:1;min-width:0">
+          <div class="store-result-name">${escH(s.name)} <span style="font-weight:400;color:var(--ink-soft);font-size:11px">#${escH(s.id)}</span></div>
+          <div class="store-result-addr">${escH(addr)}</div>
+          ${dist}
+        </div>
+        <span style="color:var(--green);font-size:18px">›</span>
+      </div>`;
+    }).join('');
+    // cache stores for selectStore
+    window._storeSearchResults = stores;
+  }catch(e){
+    resultsEl.innerHTML = `<div class="store-no-results" style="color:var(--red)">Search failed: ${escH(e.message)}</div>`;
+  }
+}
+
+function selectStore(idx){
+  const s = (window._storeSearchResults||[])[idx];
+  if(!s) return;
+  setStoreSel(s);
+  savePrefs('store').catch(()=>{});
+  if(s.id !== _dealsStoreId) preloadDeals();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ITEMS
+// ═══════════════════════════════════════════════════════════════════
+// Items stored as strings; deal-checkbox adds title string
+function renderItems(){
+  const items=(prefs&&prefs.items)||[];
+  document.getElementById('items-ul').innerHTML=items.map((item,i)=>{
+    const name=decodeEntities(itemName(item));
+    return `<li class="item-row">
+      <span class="item-name">${escH(name)}<br><span class="item-freq list-item-freq" data-item="${escH(name)}"></span></span>
+      <div class="item-row-actions">
+        <button class="btn-rm" data-action="remove-item" data-index="${i}">×</button>
+      </div>
+    </li>`;
+  }).join('');
+  document.getElementById('items-ct').textContent=items.length+' item'+(items.length!==1?'s':'');
+  renderFreqHints();
+}
+function addItem(){
+  const inp=document.getElementById('new-item');const v=decodeEntities(inp.value.trim());
+  if(!v) return;if(!prefs) prefs={};if(!prefs.items) prefs.items=[];
+  if(!itemNames().map(n=>n.toLowerCase()).includes(v.toLowerCase())){prefs.items.push(v);renderItems();savePrefs('list').catch(()=>{});}
+  inp.value='';inp.focus();
+}
+function removeItem(i){if(!prefs||!prefs.items) return;prefs.items.splice(i,1);renderItems();syncDealCheckboxes();savePrefs('list').catch(()=>{});}
+function bulkImport(){
+  const lines=document.getElementById('bulk-ta').value.split('\n').map(l=>l.trim()).filter(Boolean);
+  if(!prefs) prefs={};if(!prefs.items) prefs.items=[];
+  const existing=new Set(itemNames().map(n=>n.toLowerCase()));
+  lines.forEach(l=>{if(!existing.has(l.toLowerCase())){prefs.items.push(l);existing.add(l.toLowerCase());}});
+  renderItems();document.getElementById('bulk-ta').value='';syncDealCheckboxes();
+  savePrefs('list').catch(()=>{});
+}
+function copyInboundAddr(){
+  const addr=document.getElementById('inbound-addr-display').textContent.trim();
+  const btn=document.getElementById('copy-inbound-btn');
+  const flash=()=>{btn.textContent='Copied!';btn.style.color='var(--green)';setTimeout(()=>{btn.textContent='Copy';btn.style.color='';},2000);};
+  if(navigator.clipboard&&window.isSecureContext){
+    navigator.clipboard.writeText(addr).then(flash).catch(()=>{});
+  } else {
+    const ta=document.createElement('textarea');
+    ta.value=addr;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy');flash();}catch(_){}
+    document.body.removeChild(ta);
+  }
+}
+function exportListDownload(){
+  const names=itemNames();
+  if(!names.length){alert('Your list is empty.');return;}
+  const text=names.join('\n');
+  const blob=new Blob([text],{type:'text/plain'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='shopping-list.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+async function exportListCopy(btn){
+  const names=itemNames();
+  if(!names.length){alert('Your list is empty.');return;}
+  try{
+    await navigator.clipboard.writeText(names.join('\n'));
+    const orig=btn.textContent;
+    btn.textContent='✓ Copied!';
+    setTimeout(()=>btn.textContent=orig,2000);
+  }catch(e){
+    // Fallback for browsers that block clipboard without user gesture
+    const ta=document.createElement('textarea');
+    ta.value=names.join('\n');
+    ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    const orig=btn.textContent;
+    btn.textContent='✓ Copied!';
+    setTimeout(()=>btn.textContent=orig,2000);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ACCOUNT
+// ═══════════════════════════════════════════════════════════════════
+async function changePin(){
+  const cur=getPin('.cur-pin'),nw=getPin('.new-pin');
+  if(cur.length!==4||nw.length!==4){setMsg('pin-msg','Fill in both PINs.','err');return;}
+  try{
+    const res=await fetch(API+'/auth/change-pin',{method:'POST',credentials:'include',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({current_pin:cur,new_pin:nw})});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    setMsg('pin-msg','✓ PIN updated — signing you out…','ok');clrPin('.cur-pin');clrPin('.new-pin');
+    // PDC-21: all sessions invalidated on PIN change — redirect to login
+    setTimeout(()=>doLogout(), 1500);
+  }catch(e){setMsg('pin-msg',e.message,'err');}
+}
+async function deleteAccount(){
+  closeOv('del-overlay');
+  try{await fetch(API+'/user/account',{method:'DELETE',credentials:'include',headers:authHeaders()});}catch(_){}
+  doLogout();
+}
+async function resendWeeklyEmail(){
+  const btn=document.getElementById('btn-resend-weekly');
+  if(btn){btn.disabled=true;btn.textContent='Queuing…';}
+  try{
+    const res=await fetch(API+'/user/resend-weekly',{method:'POST',credentials:'include',headers:authHeaders()});
+    const d=await res.json();
+    if(res.ok){
+      // Accurate timing: Lambda cold start + scrape + email delivery = 1–2 min realistically
+      setMsg('test-email-msg',d.message||'Email queued — check your inbox in a few minutes.','ok');
+      if(btn){btn.textContent='✓ Queued';setTimeout(()=>{btn.textContent='🛒 Resend This Week\'s Deals';btn.disabled=false;},4000);}
+    } else {
+      setMsg('test-email-msg',d.error||'Failed to queue email.','err');
+      if(btn){btn.disabled=false;btn.textContent='🛒 Resend This Week\'s Deals';}
+    }
+  }catch(e){
+    setMsg('test-email-msg','Network error.','err');
+    if(btn){btn.disabled=false;btn.textContent='🛒 Resend This Week\'s Deals';}
+  }
+}
+
+async function sendTestEmail(){
+  const btn=document.getElementById('btn-test-email');
+  const msgEl=document.getElementById('test-email-msg');
+  btn.disabled=true;msgEl.textContent='Sending…';msgEl.className='';
+  try{
+    const res=await fetch(API+'/user/test-email',{method:'POST',credentials:'include',headers:authHeaders()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    msgEl.textContent='✓ '+data.message;msgEl.style.color='var(--green)';
+    setTimeout(()=>{msgEl.textContent='';},5000);
+  }catch(e){msgEl.textContent='✗ '+e.message;msgEl.style.color='var(--red)';}
+  finally{btn.disabled=false;}
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// DEALS — PRELOAD + RENDER
+// ═══════════════════════════════════════════════════════════════════
+const DEPT_EMOJI={
+  'Meat':'🥩','Produce':'🥦','Dairy':'🧀','Deli':'🥪','Bakery':'🍞',
+  'Frozen':'🧊','Seafood':'🐟','Beverages':'🥤','Floral':'💐',
+  'Pharmacy':'💊','Health & Beauty':'💄','Household':'🧹','Baby':'👶',
+  'Pet':'🐾','Pets':'🐾','Natural Foods':'🌿','Snacks':'🍿',
+  'Canned & Packaged':'🥫','Breakfast':'🥞','Condiments':'🫙',
+  'International':'🌍','Pasta & Grains':'🍝','default':'🏷️'
+};
+function deptEmoji(d){
+  if(!d) return DEPT_EMOJI.default;
+  for(const[k,v] of Object.entries(DEPT_EMOJI)){if(d.toLowerCase().includes(k.toLowerCase()))return v;}
+  return DEPT_EMOJI.default;
+}
+
+// Preload: called on login and on store change. Skips if same store & already loaded.
+// Helper: is a deal a BOGO — trust server-side flag first, fall back to title/categories
+function isBogo(d){
+  if(d.is_bogo===true) return true;
+  const combined=((d.title||'')+' '+(d.savings||'')).toLowerCase();
+  return /\bbogo\b|b1g1|b2g1|buy \d.{0,8}get \d|buy one.{0,10}get one/.test(combined);
+}
+// Helper: is a deal "extra savings"
+function isExtra(d){
+  return d.saving_type==='ExtraSavings' || d.saving_type==='Stacked' || d.is_extra===true;
+}
+// Helper: is a deal a digital coupon
+function isCoupon(d){
+  return d.saving_type==='DigitalCoupon' || d.has_coupon;
+}
+
+async function preloadDeals() {
+  const sid=prefs?.store_id;
+  if(!sid) return;
+  // Only reload if we don't have deals yet for this store,
+  // or if the server's updated_at timestamp is newer than what we last loaded.
+  // We do a lightweight check: if _allDeals is empty or store changed, always load.
+  // Otherwise, reload only when navigating to deals/matches if the server timestamp changed.
+  if(_dealsStoreId !== sid || !_allDeals.length) {
+    await loadDeals(false);
+  } else {
+    // Already have deals for this store — check if server has newer data
+    const cachedTs = localStorage.getItem('cw_deals_ts_'+sid) || '';
+    if(_dealsUpdated && cachedTs === _dealsUpdated) return; // still fresh
+    await loadDeals(false);
+  }
+}
+
+let _dealsLoading = false;  // guard against concurrent loadDeals() calls
+
+async function loadDeals(forceRefresh=false){
+  if (_dealsLoading) return;  // already in flight — skip duplicate
+  _dealsLoading = true;
+  const sid=prefs?.store_id;
+  if(!sid){
+    _dealsLoading = false;
+    document.getElementById('deals-err').textContent='Set your store first (Store panel).';
+    document.getElementById('deals-err').style.display='';
+    return;
+  }
+  // Show loading state
+  document.getElementById('deals-err').style.display='none';
+  document.getElementById('deals-browser').style.display='none';
+  document.getElementById('deals-loading').style.display='block';
+  const refreshBtn=document.getElementById('btn-refresh-deals');
+  if(refreshBtn) refreshBtn.disabled=true;
+
+  try{
+    _tprLoaded = false;  // new deal set — TPR needs re-fetching
+    // Fire TPR fetch in parallel — don't await it, let it resolve in background
+    // while core deals load, render, and paint. This eliminates the 5-second gap.
+    const tprPromise = loadTprDeals(sid);
+
+    const res=await fetch(API+'/deals?store_id='+encodeURIComponent(sid)+'&types=core', {credentials:'include',headers:authHeaders()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed to load deals');
+
+    // Decode HTML entities from API data at the source so all downstream
+    // rendering (autocomplete, cards, modals) gets clean strings
+    _allDeals     = (data.deals||[]).map(d => ({
+      ...d,
+      title:       decodeEntities(d.title       || ''),
+      description: decodeEntities(d.description || ''),
+      save_line:   decodeEntities(d.save_line   || ''),
+      savings:     decodeEntities(d.savings     || ''),
+      fine_print:  decodeEntities(d.fine_print  || ''),
+      department:  decodeEntities(d.department  || ''),
+      brand:       decodeEntities(d.brand       || ''),
+    }));
+    _dealCounts   = data.counts||{};
+    _deptCounts   = data.dept_counts||{};
+    _dealsUpdated = data.updated_at||'';
+    _dealsStoreId = sid;
+    _savingTypes  = data.saving_types||[];
+    _totalAllDeals= data.total_all || _allDeals.length;
+
+    // Cache the timestamp so preloadDeals can skip reloading when data hasn't changed
+    if(_dealsUpdated) localStorage.setItem('cw_deals_ts_'+sid, _dealsUpdated);
+
+    // Populate Savings filter counts using correct saving_type mappings
+    document.getElementById('fcnt-all').textContent    = _totalAllDeals||'';
+    document.getElementById('fcnt-weekly').textContent = _allDeals.filter(d=>d.saving_type==='WeeklyAd'&&!isBogo(d)).length||'';
+    document.getElementById('fcnt-bogo').textContent   = _allDeals.filter(d=>isBogo(d)).length||'';
+    document.getElementById('fcnt-coupon').textContent = _allDeals.filter(d=>isCoupon(d)).length||'';
+    document.getElementById('fcnt-extra').textContent  = _allDeals.filter(d=>isExtra(d)).length||'';
+
+    // Validity sublabels on banner
+    const wa=_allDeals.find(d=>d.saving_type==='WeeklyAd'&&hasValidDates(d));
+    const ex=_allDeals.find(d=>d.is_extra&&hasValidDates(d));
+
+    // Validity banner
+    if(wa){
+      const vb=document.getElementById('deals-vbar');
+      vb.innerHTML=`📅 Weekly Ad: Valid <strong>${escH(wa.valid_from)}</strong> to <strong>${escH(wa.valid_thru)}</strong> &nbsp;·&nbsp; ${_totalAllDeals} total deals`;
+      vb.classList.add('vis');
+    }
+
+    // Dept filters
+    buildDeptFilters('dept-deals', _deptCounts, 'renderDeals');
+
+    const storeName=prefs?.store_name||('Store #'+sid);
+    const _dealsSubEl=document.getElementById('deals-sub'); if(_dealsSubEl) _dealsSubEl.textContent=`${storeName} · ${_totalAllDeals} all deals`;
+
+    document.getElementById('deals-loading').style.display='none';
+    document.getElementById('deals-browser').style.display='';
+    document.getElementById('deals-q').value='';
+    // Pre-tokenize all deals for fast search filtering
+    _dealTokenCache = new Map();
+    for (const d of _allDeals) {
+      _dealTokenCache.set(d.id, [...cwTokenize(d.title||''), ...cwTokenize(d.brand||'')]);
+    }
+    precomputeBadges();   // recompute badges with fresh deals (history may already be loaded)
+    _matchesDirty = true;  // deals just refreshed — recompute matches
+    loadMatches();          // computes matches then calls renderDeals()
+
+  }catch(e){
+    document.getElementById('deals-loading').style.display='none';
+    document.getElementById('deals-err').textContent=e.message;
+    document.getElementById('deals-err').style.display='';
+  }finally{
+    _dealsLoading = false;
+    if(refreshBtn) refreshBtn.disabled=false;
+  }
+}
+
+function buildDeptFilters(containerId, deptCounts, renderFn){
+  const el=document.getElementById(containerId);
+  if(!el) return;
+  const depts=Object.keys(deptCounts).sort();
+  el.innerHTML=depts.map(dept=>{
+    const label=decodeEntities(dept);
+    return `<label class="filter-opt">
+      <input type="checkbox" class="dept-cb" data-container="${containerId}" data-dept="${escH(dept)}" data-action="dept-filter" data-render-fn="${renderFn}">
+      <div><div class="filter-opt-label">${escH(label)}</div></div>
+      <span class="filter-opt-cnt">${deptCounts[dept]}</span>
+    </label>`;
+  }).join('');
+}
+
+function getCheckedDepts(cid){
+  return [...document.querySelectorAll(`#${cid} .dept-cb:checked`)].map(c=>c.dataset.dept);
+}
+function clearDeptCB(cid, dept){
+  const el=document.querySelector(`#${cid} .dept-cb[data-dept="${dept}"]`);
+  if(el) el.checked=false;
+}
+
+// Savings filter: selecting one unchecks others; if none checked, default to Weekly ad
+function onSavingsFilter(changed){
+  const ids=['f-all','f-weekly','f-bogo','f-coupon','f-extra'];
+  const els=Object.fromEntries(ids.map(id=>[id,document.getElementById(id)]));
+  if(changed==='all' && els['f-all'].checked){
+    // All deals — uncheck everything else
+    ['f-weekly','f-bogo','f-coupon','f-extra'].forEach(id=>els[id].checked=false);
+  } else if(changed!=='all'){
+    els['f-all'].checked=false;
+    // If nothing checked, revert to all four defaults
+    const anyChecked=['f-weekly','f-bogo','f-coupon','f-extra'].some(id=>els[id].checked);
+    if(!anyChecked) ['f-weekly','f-bogo','f-coupon','f-extra'].forEach(id=>els[id].checked=true);
+  }
+  renderDeals();
+}
+
+// ── Sort helper ───────────────────────────────────────────────────────────────
+function applySortOrder(arr, sortVal) {
+  const a = arr.slice(); // don't mutate original
+  if (sortVal === 'name-az') {
+    a.sort((x,y) => (x.title||'').localeCompare(y.title||''));
+  } else if (sortVal === 'name-za') {
+    a.sort((x,y) => (y.title||'').localeCompare(x.title||''));
+  } else if (sortVal === 'savings-desc') {
+    // Items with no parseable savings value (-Infinity) always sort last
+    a.sort((x,y) => {
+      const sx = dealSortSavings(x), sy = dealSortSavings(y);
+      if (!isFinite(sx) && !isFinite(sy)) return 0;
+      if (!isFinite(sx)) return 1;
+      if (!isFinite(sy)) return -1;
+      return sy - sx;
+    });
+  } else if (sortVal === 'score-desc') {
+    a.sort((x,y) => (y.match_score||0) - (x.match_score||0));
+  }
+  // 'default' — leave in original order
+  return a;
+}
+
+// ── CartWise Matcher (JS port of shared/matcher.py) ──────────────────────────
+// KEEP IN SYNC with shared/matcher.py — identical algorithm, identical results.
+// Changes to scoring logic must be mirrored in both files.
+
+const CW_SENSITIVITY_THRESHOLDS = { strict: 80, normal: 65, loose: 50 };
+const CW_NOISE = new Set([
+  'a','an','the','and','or','of','for','with','in','on','to',
+  'from','by','at','is','it','its','any','all','per','each',
+  'oz','fl','lb','lbs','ct','pk','pt','qt','gal','ml','mg',
+  'kg','liter','liters','ounce','ounces','pound','pounds',
+  'count','pack','size',
+]);
+
+function cwNormalize(text) {
+  if (!text) return '';
+  return text
+    .replace(/[^\w\s-]/g, ' ')   // strip specials, keep hyphens
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function cwTokenize(text) {
+  return cwNormalize(text).split(' ').filter(Boolean);
+}
+
+function cwCleanTokens(tokens) {
+  return tokens.filter(t => !CW_NOISE.has(t) && !/^\d+$/.test(t));
+}
+
+function cwGetThreshold(matchingCfg) {
+  const raw = matchingCfg && matchingCfg.threshold;
+  if (typeof raw === 'number' && raw >= 40 && raw <= 100) return Math.round(raw);
+  const sens = (matchingCfg && matchingCfg.sensitivity) || 'normal';
+  return CW_SENSITIVITY_THRESHOLDS[sens] || CW_SENSITIVITY_THRESHOLDS.normal;
+}
+
+function cwMatchScore(itemStr, deal) {
+  if (!itemStr) return 0;
+  const title       = deal.title       || '';
+  const brand       = deal.brand       || '';
+  const description = deal.description || '';
+  if (!title) return 0;
+
+  const itemNorm = cwNormalize(itemStr);
+  if (!itemNorm) return 0;
+
+  // Build deduplicated composite: brand + title + description
+  const seen = new Set();
+  const compositeParts = [];
+  for (const field of [brand, title, description]) {
+    for (const t of cwTokenize(field)) {
+      if (!seen.has(t)) { seen.add(t); compositeParts.push(t); }
+    }
+  }
+  const compositeTokens = compositeParts;
+  const titleTokens = cwTokenize(title);
+
+  // Clean item tokens; fall back to raw if cleaning removes everything
+  const itemTokensRaw = cwTokenize(itemStr);
+  let itemTokens = cwCleanTokens(itemTokensRaw);
+  if (!itemTokens.length) itemTokens = itemTokensRaw;
+  if (!itemTokens.length || !compositeTokens.length) return 0;
+
+  // Exact title match
+  if (itemNorm === cwNormalize(title)) return 100;
+
+  // Count matched item tokens (exact or prefix for plurals, min 5 chars)
+  let matched = 0;
+  for (const iw of itemTokens) {
+    if (compositeTokens.includes(iw)) {
+      matched++;
+    } else if (iw.length >= 5 && compositeTokens.some(ct =>
+      ct.length >= 5 && (iw.startsWith(ct) || ct.startsWith(iw))
+    )) {
+      matched++;
+    }
+  }
+  if (!matched) return 0;
+
+  const precision = matched / itemTokens.length;
+
+  // Coverage: fraction of title words the item covers
+  const titleClean = cwCleanTokens(titleTokens).length ? cwCleanTokens(titleTokens) : titleTokens;
+  let titleMatched = 0;
+  for (const tw of titleClean) {
+    if (itemTokens.includes(tw)) {
+      titleMatched++;
+    } else if (tw.length >= 5 && itemTokens.some(iw =>
+      iw.length >= 5 && (tw.startsWith(iw) || iw.startsWith(tw))
+    )) {
+      titleMatched++;
+    }
+  }
+  const coverage = titleClean.length ? titleMatched / titleClean.length : 0;
+
+  // Single-word items: broad match
+  if (itemTokens.length === 1) return matched ? 100 : 0;
+
+  // Brand boost/penalty
+  const brandNorm = cwNormalize(brand);
+  if (brandNorm) {
+    const brandTokens = brandNorm.split(' ').filter(Boolean);
+    const itemHasBrand = itemTokens.some(iw =>
+      brandTokens.includes(iw) ||
+      brandTokens.some(bt => iw.length >= 5 && bt.length >= 5 && (iw.startsWith(bt) || bt.startsWith(iw)))
+    );
+    const itemBrandCandidates = itemTokens.filter(t => t.length >= 4 && !brandTokens.includes(t));
+    if (itemBrandCandidates.length && !itemHasBrand) {
+      const firstCandidate = itemBrandCandidates[0];
+      const inTitle = titleTokens.includes(firstCandidate) || titleTokens.some(tt =>
+        firstCandidate.length >= 5 && tt.length >= 5 &&
+        (firstCandidate.startsWith(tt) || tt.startsWith(firstCandidate))
+      );
+      if (!inTitle) return Math.min(45, Math.round((precision * 0.65 + coverage * 0.35) * 100));
+    }
+    // Brand match bonus
+    // (precision already set; apply inline below)
+    const boostedPrecision = itemHasBrand ? Math.min(1.0, precision * 1.1) : precision;
+    const score = Math.round((boostedPrecision * 0.65 + coverage * 0.35) * 100);
+    return Math.min(100, score);
+  }
+
+  return Math.min(100, Math.round((precision * 0.65 + coverage * 0.35) * 100));
+}
+
+function cwMatchDealsForUser(deals, items, matchingCfg) {
+  const threshold = cwGetThreshold(matchingCfg);
+  const matches = [];
+  const seen = new Set();
+
+  for (const deal of deals) {
+    if (!deal.title) continue;
+    for (const item of items) {
+      const name = typeof item === 'string' ? item : (item && item.name) || '';
+      if (!name) continue;
+
+      const score = cwMatchScore(name, deal);
+      if (score >= threshold) {
+        const key = deal.id || deal.title;
+        if (!seen.has(key)) {
+          seen.add(key);
+          matches.push({
+            ...deal,
+            my_item:     name,
+            deal_name:   deal.title,
+            match_score: score,
+          });
+        }
+      }
+    }
+  }
+
+  matches.sort((a, b) => b.match_score - a.match_score);
+  return matches;
+}
+// ── End CartWise Matcher ──────────────────────────────────────────────────────
+
+
+function renderDeals(keepPage){
+  if (!keepPage) _dealsPageLimit = DEALS_PAGE_SIZE;  // reset on filter/search/sort change
+  const q    =(document.getElementById('deals-q').value||'').toLowerCase();
+  const fAll =document.getElementById('f-all').checked;
+  const fW   =document.getElementById('f-weekly').checked;
+  const fBogo=document.getElementById('f-bogo').checked;
+  const fCo  =document.getElementById('f-coupon').checked;
+  const fE   =document.getElementById('f-extra').checked;
+  const depts=getCheckedDepts('dept-deals');
+  const showMatchesFirst = (document.getElementById('matches-toggle')||{}).checked !== false;
+
+  let deals=_allDeals.filter(d=>{
+    if(fAll) return true;
+    if(fBogo && isBogo(d))   return true;
+    if(fCo   && isCoupon(d)) return true;
+    if(fE    && isExtra(d))  return true;
+    if(fW    && d.saving_type==='WeeklyAd' && !isBogo(d)) return true;
+    return false;
+  });
+  if(depts.length) deals=deals.filter(d=>depts.includes(d.department||''));
+  if(q) {
+    const qTerms = cwTokenize(q);
+    deals = deals.filter(d => {
+      const hay = _dealTokenCache.get(d.id) || cwTokenize((d.title||'') + ' ' + (d.brand||''));
+      return qTerms.every(t =>
+        hay.includes(t) ||
+        (t.length >= 5 && hay.some(ht => ht.length >= 5 && (ht.startsWith(t) || t.startsWith(ht))))
+      );
+    });
+  }
+
+  // Chips
+  const chips=[];
+  depts.forEach(d=>chips.push(decodeEntities(d)));
+  document.getElementById('deals-chips').innerHTML=chips.map(lbl=>
+    `<span class="chip" data-action="clear-dept-chip" data-container="dept-deals" data-dept="${escH(lbl)}">${escH(lbl)} <span class="chip-x">×</span></span>`
+  ).join('');
+
+  // ── Matches section ──────────────────────────────────────────────────────────
+  const matchSection = document.getElementById('matches-section');
+  const matchGrid    = document.getElementById('matches-grid');
+  const matchIdsInView = new Set();
+
+  if(showMatchesFirst && _allMatches.length && matchSection && matchGrid) {
+    // Filter matches by the same search query (not by deal type filter — matches are always shown)
+    let visibleMatches = _allMatches;
+    if(q) {
+      const qTerms = cwTokenize(q);
+      visibleMatches = visibleMatches.filter(d => {
+        const hay = _dealTokenCache.get(d.id) || cwTokenize((d.title||'') + ' ' + (d.my_item||''));
+        return qTerms.every(t =>
+          hay.includes(t) ||
+          (t.length >= 5 && hay.some(ht => ht.length >= 5 && (ht.startsWith(t) || t.startsWith(ht))))
+        );
+      });
+    }
+
+    if(visibleMatches.length) {
+      const sortedMatches = applySortOrder(visibleMatches, 'score-desc');
+      matchGrid.innerHTML = sortedMatches.map(d=>matchCardHtml(d)).join('');
+      matchSection.style.display = '';
+      sortedMatches.forEach(d=>matchIdsInView.add(d.id));
+
+      // Quality banner
+      const bannerEl = document.getElementById('quality-banner');
+      if(bannerEl){
+        if(_dealHistory && (_dealHistory.num_weeks||0) >= HIST_MIN.banner && visibleMatches.length){
+          const bannerText=buildQualityBanner(visibleMatches,_dealHistory);
+          if(bannerText){
+            bannerEl.innerHTML=`<div class="quality-banner-hd">This week's highlights</div>${bannerText}`;
+            bannerEl.className='quality-banner';bannerEl.style.display='';
+          } else { bannerEl.style.display='none'; }
+        } else { bannerEl.style.display='none'; }
+      }
+    } else {
+      matchSection.style.display = 'none';
+    }
+  } else if(matchSection) {
+    matchSection.style.display = 'none';
+  }
+
+  // ── All Deals grid (exclude items already shown as matches) ─────────────────
+  const dealsToShow = showMatchesFirst && matchIdsInView.size
+    ? deals.filter(d=>!matchIdsInView.has(d.id))
+    : deals;
+
+  // Meta count
+  const totalShown = dealsToShow.length + matchIdsInView.size;
+  const visibleCount = Math.min(dealsToShow.length, _dealsPageLimit);
+  const totalLabel = _totalAllDeals || _allDeals.length;
+  document.getElementById('deals-meta').textContent =
+    matchIdsInView.size
+      ? `${matchIdsInView.size} match${matchIdsInView.size!==1?'es':''} · showing ${visibleCount} of ${dealsToShow.length} other deals`
+      : dealsToShow.length > _dealsPageLimit
+        ? `Showing ${visibleCount} of ${deals.length} deals`
+        : `${deals.length} of ${totalLabel} deals`;
+
+  const grid=document.getElementById('deals-grid');
+  if(!dealsToShow.length && !matchIdsInView.size){
+    grid.innerHTML='<div class="empty"><div class="empty-icon">🔍</div>No deals match your filters.</div>';
+    syncDealCheckboxes(); attachDealCBListeners(); return;
+  }
+  if(!dealsToShow.length){
+    grid.innerHTML='';
+    syncDealCheckboxes(); attachDealCBListeners(); return;
+  }
+  const dealsSortVal = (document.getElementById('deals-sort')||{}).value || 'default';
+  const sortedDeals = applySortOrder(dealsToShow, dealsSortVal);
+  const pageDeals   = sortedDeals.slice(0, _dealsPageLimit);
+  const remaining   = sortedDeals.length - pageDeals.length;
+  grid.innerHTML = pageDeals.map(d=>dealCardHtml(d)).join('')
+    + (remaining > 0
+      ? `<div class="load-more-wrap"><button class="btn-load-more" data-action="load-more-deals">Show ${Math.min(remaining, DEALS_PAGE_SIZE)} more deal${Math.min(remaining, DEALS_PAGE_SIZE)!==1?'s':''} <span class="load-more-ct">(${remaining} remaining)</span></button></div>`
+      : '');
+  syncDealCheckboxes();
+  attachDealCBListeners();
+}
+
+// Render a matched deal using the deal card style + match reason annotation
+function matchCardHtml(d){
+  const emoji=deptEmoji(d.department);
+  const title=decodeEntities(d.title || d.deal_name);
+  const desc=decodeEntities(d.description);
+  const sv=savingsDisplay(d);
+  const cbId=`mcb-${d.id}`;
+  const img=d.image_url
+    ?`<img class="deal-card-img" src="${escH(d.image_url)}" alt="${escH(title)}" loading="lazy"
+        data-img-fallback>
+       <div class="deal-card-img-ph" style="display:none">${emoji}</div>`
+    :`<div class="deal-card-img-ph">${emoji}</div>`;
+  return `<div class="deal-card is-match" data-action="open-deal-modal" data-deal-id="${escH(d.id)}">
+    <div class="deal-add-wrap">
+      <input type="checkbox" class="deal-add-cb" id="${cbId}" data-title="${escH(title)}" data-id="${escH(d.id)}">
+      <label class="deal-add-lbl" for="${cbId}" title="Add to My List"></label>
+    </div>
+    ${img}
+    <div class="deal-card-body">
+      ${dealTypeTag(d)}
+      <div class="deal-card-title">${escH(title)}</div>
+      ${desc?`<div class="deal-card-desc">${escH(desc)}</div>`:''}
+      ${sv.text?`<div class="deal-card-price${sv.isDiscount?' is-discount':''}">${escH(sv.text)}</div>`:''}
+      ${sv.sub?`<div class="deal-card-save is-discount">${escH(sv.sub)}</div>`:''}
+      ${(()=>{const hb=_badgeCache.get(d.id)||null;return hb?`<span class="badge badge-${hb.type}">${hb.label}</span>`:'';})()}
+      <div class="match-reason">matched: ${escH(d.my_item)}</div>
+      <div class="match-score">${d.match_score}% match</div>
+      ${d.has_coupon?`<a class="btn-clip" href="https://www.publix.com/savings/digital-coupons${d.coupon_id?'?cid='+d.coupon_id:''}" target="_blank" rel="noopener">✂️ Clip Coupon</a>`:''}
+    </div></div>`;
+}
+
+
+// ── Deal type helpers ─────────────────────────────────────────────────────────
+// Returns a small coloured tag showing the deal type on every card.
+function dealTypeTag(d) {
+  if (isBogo(d))              return `<span class="deal-type-tag bogo">BOGO</span>`;
+  if (d.saving_type === 'StackedDeals') return `<span class="deal-type-tag stacked">Stacked</span>`;
+  if (d.saving_type === 'ExtraSavings') return `<span class="deal-type-tag extra">Extra Savings</span>`;
+  if (isCoupon(d))            return `<span class="deal-type-tag coupon">Coupon</span>`;
+  if (d.saving_type === 'WeeklyAd')     return `<span class="deal-type-tag weekly">Weekly Ad</span>`;
+  return '';
+}
+
+// For ExtraSavings and StackedDeals the `savings` field is a discount amount
+// (e.g. "$0.99 off"), not a sale price. Prefix those with "Save" so the user
+// isn't confused into thinking a $15 bottle of wine costs $0.99.
+function savingsDisplay(d) {
+  const sv  = decodeEntities(d.savings  || '');
+  const ai  = decodeEntities(d.save_line || '');  // additionalDealInfo from API
+  const fp  = d.final_price || 0;
+
+  // BOGO — savings string contains buy/get language; no single price to show
+  if (d.is_bogo || /buy\s*\d|get\s*\d\s*free/i.test(sv)) {
+    return {
+      text: sv || 'Buy 1 Get 1 Free',
+      isDiscount: true,
+      sub: ai && !/surprisingly low/i.test(ai) ? ai : null,
+    };
+  }
+
+  // Price + save amount (e.g. "$13.99 / Save $4.00")
+  // additionalDealInfo has "SAVE UP TO $X" or "SAVE $X ON N"
+  const saveMatch = ai.match(/save\s+(?:up\s+to\s+)?(\$[\d.]+)/i);
+  if (fp > 0 && saveMatch) {
+    return {
+      text: sv || `$${fp.toFixed(2)}`,
+      isDiscount: false,
+      sub: `Save ${saveMatch[1]}`,
+    };
+  }
+
+  // Stale cache: final_price missing but savings looks like a dollar price and
+  // ai has a save amount — show savings as price, save amount as sub
+  if (!fp && sv && /^\$[\d.]+/.test(sv) && saveMatch) {
+    return { text: sv, isDiscount: false, sub: `Save ${saveMatch[1]}` };
+  }
+
+  // TPR — has final_price (sale price) + savings (discount amount)
+  if (d.saving_type?.toLowerCase() === 'tpr') {
+    if (fp > 0 && sv && /^\$[\d.]+$/.test(sv.trim())) {
+      return { text: `$${fp.toFixed(2)}`, isDiscount: false, sub: `Save ${sv}` };
+    }
+    if (sv) return { text: 'Save ' + sv, isDiscount: true, sub: null };
+  }
+
+  // Price only or multi-buy (e.g. "$7.99", "2 for $5.00")
+  if (sv) {
+    const isDiscount = d.is_extra || d.saving_type === 'ExtraSavings' || d.saving_type === 'StackedDeals';
+    if (isDiscount && !/^save/i.test(sv)) {
+      return { text: 'Save ' + sv, isDiscount: true, sub: null };
+    }
+    return { text: sv, isDiscount: false, sub: null };
+  }
+
+  // Text-only deals (e.g. "20% Off", "Buy 2 Get $3.00 Off")
+  // Never show raw "SAVE UP TO $X" as the main price — that's a save amount, not a price
+  if (ai && !/surprisingly low/i.test(ai) && !/^save\s+up\s+to/i.test(ai)) {
+    return { text: ai, isDiscount: true, sub: null };
+  }
+
+  return { text: '', isDiscount: false, sub: null };
+}
+
+// Generate deal card HTML (checkbox overlay)
+// ── Deal detail modal ─────────────────────────────────────────────────────────
+
+// Human-readable labels for saving_type values from the Publix API
+const SAVING_TYPE_LABEL = {
+  WeeklyAd:        'Weekly Ad',
+  AllDeals:        'All Deals',
+  DigitalCoupon:   'Digital Coupon',
+  PrintableCoupon: 'Printable Coupon',
+  ExtraSavings:    'Extra Savings',
+  StackedDeals:    'Stacked Deal',
+};
+
+// Build an inline SVG price history chart inside svgEl for the given deal + history.
+// History dots are plotted as a scatter with a connecting polyline.
+// Current week (newest) dot is highlighted green with a glow ring.
+// A dashed amber line marks the best (lowest) price point.
+function buildDealChart(svgEl, deal, history) {
+  if (!history || !history.snapshots) return;
+
+  const dealTitle = (deal.title || '').toLowerCase();
+  const pts = [];
+
+  // Collect historical appearances, oldest-first for left-to-right plotting
+  const snaps = [...history.snapshots].reverse(); // API returns newest-first; reverse to chronological
+  snaps.forEach(snap => {
+    snap.deals.forEach(pastDeal => {
+      if (fuzzyScore(dealTitle, (pastDeal.title || '').toLowerCase()) >= 75) {
+        const amt = parseSavingsAmount(pastDeal.savings);
+        if (amt !== null) {
+          pts.push({ week: snap.week, amt, savings: pastDeal.savings });
+        }
+      }
+    });
+  });
+
+  // Deduplicate by week (keep first match per week)
+  const seen = new Set();
+  const uniq = pts.filter(p => { if (seen.has(p.week)) return false; seen.add(p.week); return true; });
+
+  const W   = Math.max(svgEl.getBoundingClientRect().width || 0, 240);
+  const H   = 90;
+  const PAD = { l: 36, r: 14, t: 12, b: 26 };
+
+  if (uniq.length < 2) {
+    svgEl.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svgEl.innerHTML = `<text x="${W/2}" y="${H/2}" text-anchor="middle" font-size="11" fill="#aaa" dy=".35em">Not enough history yet</text>`;
+    return;
+  }
+
+  const amts   = uniq.map(p => p.amt);
+  const minAmt = Math.min(...amts);
+  const maxAmt = Math.max(...amts);
+  const aRange = maxAmt - minAmt || 1;
+
+  // Parse week strings to timestamps for linear x positioning
+  const dates  = uniq.map(p => new Date(p.week).getTime());
+  const minD   = Math.min(...dates);
+  const maxD   = Math.max(...dates);
+  const dRange = maxD - minD || 1;
+
+  const cx = d => PAD.l + ((new Date(d).getTime() - minD) / dRange) * (W - PAD.l - PAD.r);
+  // Lower price = better deal = higher on chart (inverted y)
+  const cy = a => PAD.t + (1 - (a - minAmt) / aRange) * (H - PAD.t - PAD.b);
+
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  let svg = '';
+
+  // Axes
+  svg += `<line x1="${PAD.l}" y1="${PAD.t}" x2="${PAD.l}" y2="${H-PAD.b}" stroke="#ddd8ce" stroke-width="1"/>`;
+  svg += `<line x1="${PAD.l}" y1="${H-PAD.b}" x2="${W-PAD.r}" y2="${H-PAD.b}" stroke="#ddd8ce" stroke-width="1"/>`;
+
+  // Y axis labels: best and worst price
+  svg += `<text x="${PAD.l-4}" y="${cy(minAmt)}" text-anchor="end" font-size="8" fill="#aaa" dy=".35em">$${minAmt.toFixed(2)}</text>`;
+  if (maxAmt !== minAmt)
+    svg += `<text x="${PAD.l-4}" y="${cy(maxAmt)}" text-anchor="end" font-size="8" fill="#aaa" dy=".35em">$${maxAmt.toFixed(2)}</text>`;
+
+  // Best-price dashed reference line (amber, subtle)
+  const bestY = cy(minAmt);
+  svg += `<line x1="${PAD.l}" y1="${bestY}" x2="${W-PAD.r}" y2="${bestY}" stroke="rgba(180,83,9,.25)" stroke-width="1" stroke-dasharray="3,4"/>`;
+
+  // Month labels on x axis — one label per unique month, avoid crowding
+  const seenM = new Set();
+  uniq.forEach(p => {
+    const d   = new Date(p.week);
+    const mk  = `${d.getFullYear()}-${d.getMonth()}`;
+    const x   = cx(p.week);
+    if (!seenM.has(mk) && x > PAD.l + 10 && x < W - PAD.r - 10) {
+      seenM.add(mk);
+      svg += `<text x="${x}" y="${H-PAD.b+11}" text-anchor="middle" font-size="8" fill="#aaa">${months[d.getMonth()]}</text>`;
+    }
+  });
+
+  // Connecting polyline (very subtle)
+  const linePts = uniq.map(p => `${cx(p.week).toFixed(1)},${cy(p.amt).toFixed(1)}`).join(' ');
+  svg += `<polyline points="${linePts}" fill="none" stroke="rgba(26,107,60,.15)" stroke-width="1.5" stroke-linejoin="round"/>`;
+
+  // Historical dots
+  uniq.forEach((p, i) => {
+    const x        = cx(p.week).toFixed(1);
+    const y        = cy(p.amt).toFixed(1);
+    const isCur    = i === uniq.length - 1;
+    if (isCur) {
+      // Glow ring
+      svg += `<circle cx="${x}" cy="${y}" r="9" fill="#1a6b3c" opacity=".13"/>`;
+      // Filled dot
+      svg += `<circle cx="${x}" cy="${y}" r="5.5" fill="#1a6b3c"/>`;
+      // Price label above
+      svg += `<text x="${x}" y="${parseFloat(y)-10}" text-anchor="middle" font-size="8.5" fill="#1a6b3c" font-weight="700">$${p.amt.toFixed(2)}</text>`;
+    } else {
+      svg += `<circle cx="${x}" cy="${y}" r="3.5" fill="var(--green-dim)" stroke="#1a6b3c" stroke-width="1.5"/>`;
+    }
+  });
+
+  svgEl.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svgEl.innerHTML = svg;
+}
+
+let _modalDeal = null;
+
+function openDealModal(dealId) {
+  const d = _allDeals.find(x => x.id === dealId);
+  if (!d) return;
+  _modalDeal = d;
+
+  const emoji   = deptEmoji(d.department);
+  const title   = decodeEntities(d.title);
+  const desc    = decodeEntities(d.description);
+  const savings = decodeEntities(d.savings);
+  const saveLine= decodeEntities(d.save_line);
+  const fine    = decodeEntities(d.fine_print);
+
+  // ── Image / placeholder ───────────────────────────────────────────────────
+  const img = d.image_url
+    ? `<img class="deal-modal-img" src="${escH(d.image_url)}" alt="${escH(title)}"
+         data-img-fallback>
+       <div class="deal-modal-img-ph" style="display:none">${emoji}</div>`
+    : `<div class="deal-modal-img-ph">${emoji}</div>`;
+
+  // ── Badges ────────────────────────────────────────────────────────────────
+  const badges = [];
+  if (d.is_publix_brand) badges.push(`<span class="badge badge-publix">Publix Brand</span>`);
+  if (d.is_bogo)         badges.push(`<span class="badge badge-bogo">BOGO</span>`);
+  if (d.has_coupon)      badges.push(`<span class="badge badge-coupon">Digital Coupon</span>`);
+  if (d.is_extra)        badges.push(`<span class="badge badge-extra">Extra Savings</span>`);
+  if (d.is_stacked)      badges.push(`<span class="badge badge-stacked">Stacked Deal</span>`);
+  const histBadge = _badgeCache.get(d.id) || null;
+  if (histBadge) badges.push(`<span class="badge badge-${histBadge.type}">${histBadge.label}</span>`);
+
+  // ── Structured data rows (Option C influence) ─────────────────────────────
+  const rows = [];
+  const dr = (lbl, val, cls='') =>
+    `<div class="dm-data-row"><span class="dm-data-lbl">${lbl}</span><span class="dm-data-val${cls?' '+cls:''}">${val}</span></div>`;
+
+  if (d.department)
+    rows.push(dr('Department', escH(decodeEntities(d.department))));
+  if (d.brand)
+    rows.push(dr('Brand', escH(decodeEntities(d.brand))));
+  if (hasValidDates(d))
+    rows.push(dr('Valid', `${escH(decodeEntities(d.valid_from))} – ${escH(decodeEntities(d.valid_thru))}`));
+  if (d.saving_type)
+    rows.push(dr('Deal type', escH(SAVING_TYPE_LABEL[d.saving_type] || d.saving_type)));
+  if (fine)
+    rows.push(dr('Fine print', escH(fine), 'fine'));
+
+  // Frequency hint — only if we have enough history
+  const freqHint = computeFreqHint(title, _dealHistory);
+  if (freqHint)
+    rows.push(dr('On sale', escH(freqHint), 'freq'));
+
+  // ── Actions ───────────────────────────────────────────────────────────────
+  const actions = [];
+  if (d.has_coupon) {
+    const url = `https://www.publix.com/savings/digital-coupons${d.coupon_id ? '?cid=' + d.coupon_id : ''}`;
+    actions.push(`<a class="btn-clip" href="${escH(url)}" target="_blank" rel="noopener">✂️ Clip Coupon</a>`);
+  }
+  const onList = itemNames().map(n => n.toLowerCase()).includes(title.toLowerCase());
+  actions.push(`<button class="btn-load" style="padding:8px 16px;font-size:13px" data-action="modal-toggle-list"
+    id="modal-list-btn">${onList ? '✓ On My List' : '+ Add to My List'}</button>`);
+
+  // ── Timeline: only show section if history is loaded ──────────────────────
+  const validCaption = hasValidDates(d)
+    ? `📅 Week of ${escH(decodeEntities(d.valid_from))}${d.valid_thru ? ' – ' + escH(decodeEntities(d.valid_thru)) : ''}`
+    : '';
+
+  const timelineHtml = _dealHistory
+    ? `<div class="dm-timeline">
+        <div class="dm-timeline-hd">Price History — past 12 months</div>
+        <svg id="dm-chart-svg" class="dm-chart"></svg>
+        ${validCaption ? `<div class="dm-timeline-caption">${validCaption}</div>` : ''}
+      </div>`
+    : '';
+
+  // ── Render ────────────────────────────────────────────────────────────────
+  document.getElementById('deal-modal-content').innerHTML = `
+    ${img}
+    <div class="deal-modal-body">
+      ${dealTypeTag(d)}
+      <div class="deal-modal-title">${escH(title)}</div>
+      ${desc ? `<div class="deal-modal-desc">${escH(desc)}</div>` : ''}
+      <div class="deal-modal-price">${escH(savings)}</div>
+      ${saveLine ? `<div class="deal-modal-save">${escH(saveLine)}</div>` : ''}
+      ${badges.length ? `<div class="deal-card-badges" style="margin-bottom:10px">${badges.join('')}</div>` : ''}
+      ${rows.length ? `<div class="dm-data-rows">${rows.join('')}</div>` : ''}
+      ${actions.length ? `<div class="deal-modal-actions">${actions.join('')}</div>` : ''}
+      ${timelineHtml}
+    </div>`;
+
+  document.getElementById('deal-modal-overlay').classList.add('vis');
+  document.body.style.overflow = 'hidden';
+
+  // Draw chart after layout paint so SVG has real dimensions
+  if (_dealHistory) {
+    requestAnimationFrame(() => {
+      const svgEl = document.getElementById('dm-chart-svg');
+      if (svgEl) buildDealChart(svgEl, d, _dealHistory);
+    });
+  }
+}
+
+function closeDealModal() {
+  document.getElementById('deal-modal-overlay').classList.remove('vis');
+  document.body.style.overflow = '';
+  _modalDeal = null;
+}
+
+function modalToggleList() {
+  if (!_modalDeal) return;
+  const title = decodeEntities(_modalDeal.title);
+  if (!prefs) prefs = {};
+  if (!prefs.items) prefs.items = [];
+  const names = itemNames().map(n => n.toLowerCase());
+  if (names.includes(title.toLowerCase())) {
+    prefs.items = prefs.items.filter(i => itemName(i).toLowerCase() !== title.toLowerCase());
+  } else {
+    prefs.items.push(title);
+  }
+  renderItems();
+  syncDealCheckboxes();
+  savePrefs('list').catch(() => {});
+  // Update button label in modal
+  const onList = itemNames().map(n => n.toLowerCase()).includes(title.toLowerCase());
+  const btn = document.getElementById('modal-list-btn');
+  if (btn) btn.textContent = onList ? '✓ On My List' : '+ Add to My List';
+}
+
+function dealCardHtml(d){
+  const emoji=deptEmoji(d.department);
+  const title=decodeEntities(d.title);
+  const desc=decodeEntities(d.description);
+  const finePrint=decodeEntities(d.fine_print);
+  const saveLine=decodeEntities(d.save_line);
+  const sv=savingsDisplay(d);
+  const img=d.image_url
+    ?`<img class="deal-card-img" src="${escH(d.image_url)}" alt="${escH(title)}" loading="lazy"
+        data-img-fallback>
+       <div class="deal-card-img-ph" style="display:none">${emoji}</div>`
+    :`<div class="deal-card-img-ph">${emoji}</div>`;
+  const badges=[];
+  if(d.is_publix_brand) badges.push(`<span class="badge badge-publix">Publix</span>`);
+  if(d.has_coupon)      badges.push(`<span class="badge badge-coupon">Coupon</span>`);
+  if(d.is_extra)        badges.push(`<span class="badge badge-extra">Extra</span>`);
+  if(d.is_stacked)      badges.push(`<span class="badge badge-stacked">Stacked</span>`);
+  const histBadge = _badgeCache.get(d.id) || null;
+  if(histBadge) badges.push(`<span class="badge badge-${histBadge.type}">${histBadge.label}</span>`);
+  const cbId=`dcb-${d.id}`;
+  return `<div class="deal-card" data-action="open-deal-modal" data-deal-id="${escH(d.id)}">
+    <div class="deal-add-wrap">
+      <input type="checkbox" class="deal-add-cb" id="${cbId}" data-title="${escH(title)}" data-id="${escH(d.id)}">
+      <label class="deal-add-lbl" for="${cbId}" title="Add to My List"></label>
+    </div>
+    ${img}
+    <div class="deal-card-body">
+      ${dealTypeTag(d)}
+      ${d.department?`<div class="deal-card-dept">${escH(decodeEntities(d.department))}</div>`:''}
+      <div class="deal-card-title">${escH(title)}</div>
+      ${desc?`<div class="deal-card-desc">${escH(desc)}</div>`:''}
+      ${sv.text?`<div class="deal-card-price${sv.isDiscount?' is-discount':''}">${escH(sv.text)}</div>`:''}
+      ${sv.sub?`<div class="deal-card-save is-discount">${escH(sv.sub)}</div>`:''}
+      ${hasValidDates(d)?`<div class="deal-card-valid">📅 Valid ${escH(decodeEntities(d.valid_from))}–${escH(decodeEntities(d.valid_thru))}</div>`:''}
+      ${finePrint?`<div class="deal-card-fine">${escH(finePrint)}</div>`:''}
+      ${badges.length?`<div class="deal-card-badges">${badges.join('')}</div>`:''}
+      ${d.has_coupon?`<a class="btn-clip" href="https://www.publix.com/savings/digital-coupons${d.coupon_id?'?cid='+d.coupon_id:''}" target="_blank" rel="noopener">✂️ Clip Coupon</a>`:''}
+    </div></div>`;
+}
+
+// Sync checkbox states to match prefs.items
+function syncDealCheckboxes(){
+  const names=itemNames().map(s=>s.toLowerCase());
+  document.querySelectorAll('.deal-add-cb').forEach(cb=>{
+    const title=(cb.dataset.title||'').toLowerCase();
+    cb.checked = names.includes(title);
+  });
+}
+
+// Attach listeners to deal card checkboxes (called after render)
+function attachDealCBListeners(){
+  document.querySelectorAll('.deal-add-cb').forEach(cb=>{
+    cb.addEventListener('change', ()=>{
+      const title=cb.dataset.title||'';
+      if(!prefs) prefs={};if(!prefs.items) prefs.items=[];
+      if(cb.checked){
+        if(!itemNames().map(n=>n.toLowerCase()).includes(title.toLowerCase())) prefs.items.push(title);
+      } else {
+        prefs.items=prefs.items.filter(i=>itemName(i).toLowerCase()!==title.toLowerCase());
+      }
+      renderItems();
+      savePrefs('list').catch(()=>{});
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MATCHES
+// ═══════════════════════════════════════════════════════════════════
+let _matchesLoading = false;
+let _matchesDirty    = true;  // force fetch on first visit; set false after load, true when list changes
+
+function loadMatches(){
+  // Client-side matching: runs the JS port of shared/matcher.py against
+  // _allDeals (already loaded) and the user's current prefs.items.
+  // No network call — results are always in sync with the current list/sensitivity.
+  if(!_matchesDirty && _allMatches.length) {
+    renderDeals();
+    return;
+  }
+
+  const items     = (prefs && prefs.items) || [];
+  const matching  = (prefs && prefs.matching) || {};
+
+  if(!_allDeals.length || !items.length) {
+    _allMatches = [];
+    _matchesDirty = false;
+    renderDeals();
+    return;
+  }
+
+  _allMatches = cwMatchDealsForUser(_allDeals, items, matching);
+  _matchesDirty = false;
+
+  // Update match count pill
+  const pill = document.getElementById('match-count-pill');
+  if(pill) {
+    pill.textContent = _allMatches.length + ' match' + (_allMatches.length!==1?'es':'');
+    pill.style.display = _allMatches.length ? '' : 'none';
+  }
+
+  renderDeals();
+}
+function onThresholdChange(){
+  savePrefs('matching').then(()=>loadMatches()).catch(()=>{});
+}
+
+let _searchTimer = null;
+function debouncedRenderDeals(){
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(renderDeals, 300);
+}
+
+function loadMoreDeals(){
+  _dealsPageLimit += DEALS_PAGE_SIZE;
+  renderDeals(true);  // true = keepPage — don't reset _dealsPageLimit
+}
+
+// ── Phased TPR loading ──────────────────────────────────────────────────────
+// TPR deals (63% of all deals) are fetched in parallel with core deals.
+// The fetch fires alongside the core request; by the time the TPR response
+// arrives (~900ms), core has already rendered (~650ms). Matches update silently.
+async function loadTprDeals(sid){
+  if(_tprLoaded || _tprLoading) return;
+  if(!sid) sid = prefs?.store_id;
+  if(!sid) return;
+  _tprLoading=true;
+  try{
+    const res=await fetch(API+'/deals?store_id='+encodeURIComponent(sid)+'&types=tpr', {credentials:'include',headers:authHeaders()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed to load TPR deals');
+    // Discard if store changed while fetching
+    if(sid !== _dealsStoreId) return;
+
+    const tprDeals=(data.deals||[]).map(d=>({
+      ...d,
+      title:       decodeEntities(d.title       || ''),
+      description: decodeEntities(d.description || ''),
+      save_line:   decodeEntities(d.save_line   || ''),
+      savings:     decodeEntities(d.savings     || ''),
+      fine_print:  decodeEntities(d.fine_print  || ''),
+      department:  decodeEntities(d.department  || ''),
+      brand:       decodeEntities(d.brand       || ''),
+    }));
+
+    // Merge into _allDeals (skip duplicates)
+    const existingIds=new Set(_allDeals.map(d=>d.id));
+    const newDeals=tprDeals.filter(d=>!existingIds.has(d.id));
+    _allDeals=_allDeals.concat(newDeals);
+
+    // Extend token cache for new deals
+    for(const d of newDeals){
+      _dealTokenCache.set(d.id, [...cwTokenize(d.title||''), ...cwTokenize(d.brand||'')]);
+    }
+
+    // Extend badge cache for new deals
+    if(_dealHistory){
+      for(const d of newDeals){
+        const b=computeBadge(d,_dealHistory);
+        if(b) _badgeCache.set(d.id, b);
+      }
+    }
+
+    // Merge dept counts (TPR deals mostly have no department but handle gracefully)
+    const tprDeptCounts=data.dept_counts||{};
+    for(const [dept,cnt] of Object.entries(tprDeptCounts)){
+      _deptCounts[dept]=(_deptCounts[dept]||0)+cnt;
+    }
+    buildDeptFilters('dept-deals', _deptCounts, 'renderDeals');
+
+    _tprLoaded=true;
+    _matchesDirty=true;
+    loadMatches();  // re-runs matcher with expanded deal set → renderDeals()
+  }catch(e){
+    console.warn('TPR deal load failed:', e);
+  }finally{
+    _tprLoading=false;
+  }
+}
+
+function onMatchesToggle(){
+  const on = document.getElementById('matches-toggle').checked;
+  const lbl = document.getElementById('toggle-bar-label');
+  if(lbl){ lbl.textContent = on ? 'My Matches first' : 'Browse all deals'; lbl.className='toggle-bar-label'+(on?'':' off'); }
+  renderDeals();
+}
+
+// ── fuzzyScore: title-to-title comparison for history badges ─────────────────
+// This is precision-only (all item words found in title) and is intentionally
+// different from the backend matcher — used only for deal quality indicators.
+function fuzzyScore(item, title) {
+  if (!item || !title) return 0;
+  if (title.includes(item)) return 100;
+  const iT = item.split(/\s+/).filter(Boolean);
+  const tT = title.split(/\s+/).filter(Boolean);
+  if (!iT.length) return 0;
+  let m = 0;
+  for (const t of iT) { if (tT.some(tt => tt.includes(t))) m++; }
+  return Math.round((m / iT.length) * 100);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ADMIN
+// ═══════════════════════════════════════════════════════════════════
+// ── Admin sidebar navigation ─────────────────────────────────────────────────
+let _adminActivePage = 'users';
+function adminNav(name){
+  _adminActivePage = name;
+  ['users','reports','logging','inbound'].forEach(t=>{
+    document.getElementById('anav-'+t).classList.toggle('active', t===name);
+    document.getElementById('apage-'+t).classList.toggle('active', t===name);
+  });
+  // Lazy-load on first visit
+  if(name==='reports'){
+    const sb=document.getElementById('admin-stats-body');
+    if(sb && (sb.textContent.includes('Loading')||sb.textContent.trim()==='')) adminLoadStats();
+  }
+  if(name==='logging'){
+    const le=document.getElementById('admin-logs-el');
+    if(le && (le.textContent.includes('Loading')||le.textContent.trim()==='')) adminLoadLogs();
+  }
+  if(name==='inbound'){
+    const iw=document.getElementById('inbound-log-wrap');
+    if(iw && iw.textContent.includes('Click Refresh')) adminLoadInboundLogs();
+  }
+}
+
+// ── Email Import (inbound) log viewer ────────────────────────────────────────
+let _allInboundLogs = [];
+const INBOUND_ACTION_LABELS = {
+  'inbound-webhook-received':  {icon:'📨', label:'Webhook received',    color:'var(--ink)'},
+  'inbound-sig-fail':          {icon:'🔐', label:'Signature failed',     color:'var(--red)'},
+  'inbound-sender-extracted':  {icon:'📬', label:'Sender identified',    color:'var(--ink)'},
+  'inbound-no-from':           {icon:'⚠️', label:'No sender',           color:'var(--amber)'},
+  'inbound-wrong-dest':        {icon:'🎯', label:'Wrong destination',    color:'var(--amber)'},
+  'inbound-user-matched':      {icon:'✅', label:'User matched',         color:'var(--green)'},
+  'inbound-no-user':           {icon:'👤', label:'User not found',       color:'var(--red)'},
+  'inbound-user-lookup-error': {icon:'💥', label:'Lookup error',         color:'var(--red)'},
+  'inbound-notify-scan-error': {icon:'💥', label:'Scan error',           color:'var(--red)'},
+  'inbound-fetching-body':     {icon:'⬇️', label:'Fetching email body',  color:'var(--ink)'},
+  'inbound-fetch-failed':      {icon:'❌', label:'Fetch failed',          color:'var(--red)'},
+  'inbound-config-error':      {icon:'⚙️', label:'Config error',         color:'var(--red)'},
+  'inbound-html-parsed':       {icon:'🔍', label:'HTML parsed',          color:'var(--ink)'},
+  'inbound-no-items':          {icon:'📭', label:'No items found',       color:'var(--amber)'},
+  'inbound-list-imported':     {icon:'🛒', label:'Items imported',       color:'var(--green)'},
+};
+
+async function adminLoadInboundLogs(){
+  const wrap = document.getElementById('inbound-log-wrap');
+  wrap.innerHTML = '<div style="color:var(--ink-soft);font-size:13px;padding:12px">Loading…</div>';
+  const sender = (document.getElementById('inbound-sender-filter').value || '').trim();
+  const qs = sender ? `?sender=${encodeURIComponent(sender)}&limit=300` : '?limit=300';
+  try{
+    const res  = await fetch(API+'/admin/inbound-logs'+qs, {credentials:'include',headers:adminHdrs()});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    _allInboundLogs = data.logs || [];
+    adminRenderInboundLogs(sender);
+  }catch(e){
+    wrap.innerHTML = `<div style="color:var(--red);font-size:13px;padding:12px">Error: ${escH(e.message)}</div>`;
+  }
+}
+
+function adminRenderInboundLogs(senderFilter){
+  const wrap = document.getElementById('inbound-log-wrap');
+  const logs = _allInboundLogs;
+  if(!logs.length){
+    const hint = senderFilter
+      ? `No inbound log entries found for <strong>${escH(senderFilter)}</strong>. Check the address matches the forwarding email exactly.`
+      : 'No inbound email events logged yet. Forward a Publix My List email to trigger the webhook.';
+    wrap.innerHTML = `<div style="color:var(--ink-soft);font-size:13px;padding:14px">${hint}</div>`;
+    return;
+  }
+
+  // Group logs by email_id so each forwarded email is a collapsible chain
+  const chains = {};
+  const order  = [];
+  logs.forEach(l => {
+    const key = l.email_id || ('no-id-' + (l.sender || l.user || l.ts));
+    if(!chains[key]){ chains[key]=[]; order.push(key); }
+    chains[key].push(l);
+  });
+
+  const rows = order.map((key, ci) => {
+    const entries = chains[key];
+    const first   = entries[entries.length-1]; // oldest first
+    const last    = entries[0];                // newest first
+    const sender  = first.sender || last.sender || last.user || '?';
+    const outcome = last.action || '';
+    const outcomeInfo = INBOUND_ACTION_LABELS[outcome] || {icon:'•', label:outcome, color:'var(--ink)'};
+    const dt = new Date(last.ts);
+    const est = dt.toLocaleString('en-US',{timeZone:'America/New_York',month:'numeric',day:'numeric',
+      hour:'numeric',minute:'2-digit',hour12:true});
+    const chainId = 'ichain-'+ci;
+
+    const stepRows = entries.slice().reverse().map(l => {
+      const info = INBOUND_ACTION_LABELS[l.action] || {icon:'•', label:l.action||'?', color:'var(--ink)'};
+      const extra = [];
+      if(l.message) extra.push(`<span style="color:var(--ink-mid)">${escH(l.message)}</span>`);
+      if(l.match_type) extra.push(`match: <strong>${escH(l.match_type)}</strong>`);
+      if(l.items_found !== undefined) extra.push(`items found: <strong>${l.items_found}</strong>`);
+      if(l.added !== undefined) extra.push(`added: <strong>${l.added}</strong>`);
+      if(l.skipped_duplicates !== undefined) extra.push(`dupes skipped: <strong>${l.skipped_duplicates}</strong>`);
+      if(l.added_items && l.added_items !== '[]') extra.push(`<span style="color:var(--green)">${escH(l.added_items)}</span>`);
+      if(l.hint) extra.push(`<em style="color:var(--amber)">${escH(l.hint)}</em>`);
+      if(l.html_bytes !== undefined) extra.push(`html: ${l.html_bytes}B`);
+      if(l.html_snippet) extra.push(`<code style="font-size:10px;color:var(--ink-soft)">${escH((l.html_snippet||'').slice(0,120))}</code>`);
+      if(l.has_svix_id !== undefined) extra.push(`svix-id present: ${l.has_svix_id}`);
+      if(l.secret_configured !== undefined) extra.push(`secret configured: ${l.secret_configured}`);
+
+      const stepTime = new Date(l.ts).toLocaleString('en-US',{timeZone:'America/New_York',
+        hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true});
+      return `<div style="display:flex;gap:10px;padding:6px 14px;border-bottom:1px solid var(--border);font-size:12px;align-items:flex-start">
+        <span style="white-space:nowrap;color:var(--ink-soft);min-width:72px">${stepTime}</span>
+        <span style="min-width:18px">${info.icon}</span>
+        <span style="min-width:160px;color:${info.color};font-weight:600">${escH(info.label)}</span>
+        <span style="color:var(--ink-mid);flex:1">${extra.join(' &nbsp;·&nbsp; ')}</span>
+      </div>`;
+    }).join('');
+
+    return `<div style="border-bottom:2px solid var(--border)">
+      <div data-action="toggle-chain" data-chain="${chainId}"
+        style="display:flex;gap:12px;align-items:center;padding:10px 14px;cursor:pointer;background:var(--green-bg);user-select:none">
+        <span style="font-size:13px;font-weight:700;color:var(--ink);flex:1">
+          ${escH(sender)}
+          <span style="font-weight:400;color:var(--ink-soft);margin-left:8px">${est}</span>
+        </span>
+        <span style="color:${outcomeInfo.color};font-size:12px;font-weight:700">${outcomeInfo.icon} ${escH(outcomeInfo.label)}</span>
+        <span style="color:var(--ink-soft);font-size:11px">${entries.length} step${entries.length!==1?'s':''} ▾</span>
+      </div>
+      <div id="${chainId}" style="display:none">${stepRows}</div>
+    </div>`;
+  }).join('');
+
+  wrap.innerHTML = `<div style="font-size:12px;color:var(--ink-soft);padding:8px 14px;border-bottom:1px solid var(--border)">
+    ${logs.length} event${logs.length!==1?'s':''} across ${order.length} email attempt${order.length!==1?'s':''}
+    ${senderFilter ? ' — filtered to: <strong>'+escH(senderFilter)+'</strong>' : ''}
+  </div>${rows}`;
+}
+
+
+async function adminSignOut(){
+  // PDC-21: revoke the server-side admin session (cookie cleared by response)
+  try{
+    await fetch(API+'/admin/logout',{method:'POST',credentials:'include',headers:adminHdrs()});
+  }catch(_){}
+  _adminLoggedIn=false;
+  _adminDataLoaded = false;  // allow re-fetch on next login
+  document.getElementById('admin-dash').style.display='none';
+  document.getElementById('admin-login-sec').style.display='';
+  document.getElementById('admin-secret-inp').value='';
+  setMsg('admin-login-msg','','');
+}
+
+// Called once per admin login (fresh login OR restored session) — not on every page visit.
+// Pre-fetches all log panels so every tab is ready without a manual Refresh click.
+// Reset _adminDataLoaded to false on adminSignOut() so next login re-fetches fresh data.
+let _adminDataLoaded = false;
+async function adminPostLogin() {
+  if (_adminDataLoaded) return;
+  _adminDataLoaded = true;
+  // Fire all fetches in parallel — each populates its own panel independently
+  adminLoadLogs();      // Logging tab: scrape jobs
+  adminLoadStats();     // Reports tab
+  adminLoadAuthLogs();  // Users tab: authentication log
+  adminLoadAppLogs();   // Logging tab: application logs
+}
+async function initAdmin(){
+  // PDC-21: admin token is in HttpOnly cookie — validate by making an authenticated call
+  try{
+    const res=await fetch(API+'/admin/scrape-logs',{credentials:'include',headers:adminHdrs()});
+    if(res.ok){
+      _adminLoggedIn=true;
+      document.getElementById('admin-login-sec').style.display='none';
+      document.getElementById('admin-dash').style.display='block';
+      adminLoadUsers();
+      adminPostLogin();
+      return;
+    }
+  }catch(_){}
+  // No valid session — show login form
+  _adminLoggedIn=false;
+}
+async function adminLogin(){
+  const s=document.getElementById('admin-secret-inp').value.trim();
+  if(!s){setMsg('admin-login-msg','Enter the admin secret.','err');return;}
+  const btn=document.querySelector('#admin-login-sec .btn-save');
+  if(btn){btn.disabled=true;btn.textContent='Verifying…';}
+  try{
+    // PDC-04/21: exchange secret for HttpOnly cookie session
+    const res=await fetch(API+'/admin/login',{
+      method:'POST',
+      credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({secret:s})
+    });
+    if(res.status===401){
+      setMsg('admin-login-msg','Incorrect admin secret.','err');
+      return;
+    }
+    if(!res.ok){
+      setMsg('admin-login-msg','Server error — try again.','err');
+      return;
+    }
+    _adminLoggedIn=true;
+    document.getElementById('admin-secret-inp').value=''; // clear secret from DOM
+    adminPostLogin();
+    document.getElementById('admin-login-sec').style.display='none';
+    document.getElementById('admin-dash').style.display='block';
+    adminLoadUsers();
+  }catch(e){
+    setMsg('admin-login-msg','Could not reach the server.','err');
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='Authenticate';}
+  }
+}
+// PDC-21: admin token in HttpOnly cookie — browser sends automatically with credentials:'include'
+function adminHdrs(){return{'Content-Type':'application/json'};}
+function adminFetchOpts(extra={}){return{credentials:'include',headers:adminHdrs(),...extra};}
+
+
+async function adminLoadStats(){
+  const el=document.getElementById('admin-stats-body');
+  if(!el) return;
+  el.innerHTML='<div style="color:var(--ink-soft);font-size:13px">Loading…</div>';
+  try{
+    const res=await fetch(API+'/admin/stats',{credentials:'include',headers:adminHdrs()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+
+    const s=data;
+    const totalUsers=s.total_users||0;
+    const deletedUsers=s.deleted_users||0;
+    const avgItems=s.avg_items||0;
+    const noItems=s.no_items_count||0;
+    const byMonth=s.by_month||[];
+    const byGeo=s.by_geography||[];
+    const popular=s.popular_items||[];
+
+    // Monthly chart
+    const maxMonth=Math.max(1,...byMonth.map(m=>m.count));
+    const monthBars=byMonth.slice(-12).map(m=>{
+      const pct=Math.round((m.count/maxMonth)*100);
+      const lbl=m.month.slice(5); // "MM"
+      return `<div class="smc-bar-wrap" title="${m.month}: ${m.count} users">
+        <div class="smc-bar" style="height:${pct}%;flex:1"></div>
+        <div class="smc-lbl">${lbl}</div>
+      </div>`;
+    }).join('');
+
+    // Geography bars
+    const maxGeo=Math.max(1,...byGeo.map(g=>g.count));
+    const geoBars=byGeo.map(g=>{
+      const pct=Math.round((g.count/maxGeo)*100);
+      return `<li><span style="flex:0 0 130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escH(g.location)}">${escH(g.location)}</span>
+        <div class="sl-bar-wrap"><div class="sl-bar" style="width:${pct}%"></div></div>
+        <span class="sl-ct">${g.count}</span></li>`;
+    }).join('');
+
+    // Popular items bars
+    const maxPop=Math.max(1,...popular.map(p=>p.count));
+    const popBars=popular.map(p=>{
+      const pct=Math.round((p.count/maxPop)*100);
+      return `<li><span style="flex:0 0 160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escH(p.item)}">${escH(p.item)}</span>
+        <div class="sl-bar-wrap"><div class="sl-bar" style="width:${pct}%;background:var(--amber)"></div></div>
+        <span class="sl-ct">${p.count}</span></li>`;
+    }).join('');
+
+    el.innerHTML=`
+      <div class="stats-grid">
+        <div class="stat-card"><div class="stat-val">${totalUsers}</div><div class="stat-lbl">Total Users</div></div>
+        <div class="stat-card"><div class="stat-val">${avgItems}</div><div class="stat-lbl">Avg List Items</div></div>
+        <div class="stat-card"><div class="stat-val">${totalUsers-noItems}</div><div class="stat-lbl">Active Lists</div></div>
+        <div class="stat-card"><div class="stat-val">${noItems}</div><div class="stat-lbl">Empty Lists</div></div>
+        <div class="stat-card"><div class="stat-val">${deletedUsers}</div><div class="stat-lbl">Users Deleted</div></div>
+      </div>
+
+      <div style="margin-bottom:8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft)">Users Added by Month</div>
+      ${byMonth.length
+        ? `<div class="stat-month-chart">${monthBars}</div>`
+        : '<div style="font-size:13px;color:var(--ink-soft)">No data yet</div>'}
+
+      <div class="stats-two" style="margin-top:20px">
+        <div>
+          <div style="margin-bottom:8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft)">Users by Geography</div>
+          ${byGeo.length
+            ? `<ul class="stat-list">${geoBars}</ul>`
+            : '<div style="font-size:13px;color:var(--ink-soft)">No store data</div>'}
+        </div>
+        <div>
+          <div style="margin-bottom:8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft)">Most Popular List Items</div>
+          ${popular.length
+            ? `<ul class="stat-list">${popBars}</ul>`
+            : '<div style="font-size:13px;color:var(--ink-soft)">No list data yet</div>'}
+        </div>
+      </div>`;
+  }catch(e){
+    el.innerHTML=`<div style="color:var(--red);font-size:13px">Failed to load stats: ${escH(e.message)}</div>`;
+  }
+}
+async function adminLoadLogs(){
+  document.getElementById('admin-logs-el').innerHTML='<div style="color:var(--ink-soft);font-size:13px;padding:12px 0">Loading…</div>';
+  try{
+    const res=await fetch(API+'/admin/scrape-logs',{credentials:'include',headers:adminHdrs()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    const logs=data.logs||[];
+    const bar=document.getElementById('admin-scrape-bar');
+    if(logs.length){
+      const last=logs[0];
+      const dt=new Date(last.started_at);
+      const est=dt.toLocaleString('en-US',{timeZone:'America/New_York',month:'numeric',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true});
+      bar.className='scrape-bar';
+      bar.innerHTML=`<span>Last import: <span class="scrape-stat">${est} ET</span></span>
+        <span><span class="scrape-stat">${last.stores_examined||0}</span> stores examined &nbsp;·&nbsp;
+              <span class="scrape-stat">${last.total_deals||0}</span> deals imported &nbsp;·&nbsp;
+              <span class="scrape-stat">${last.emails_sent||0}</span> emails sent</span>`;
+    } else {
+      bar.className='scrape-bar loading';
+      bar.innerHTML='<span>No scrape jobs recorded yet.</span>';
+    }
+    if(!logs.length){document.getElementById('admin-logs-el').innerHTML='<div style="color:var(--ink-soft);font-size:13px">No scrape jobs yet.</div>';return;}
+    document.getElementById('admin-logs-el').innerHTML=logs.map(log=>{
+      const dt=new Date(log.started_at);
+      const est=dt.toLocaleString('en-US',{timeZone:'America/New_York',month:'numeric',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true});
+      const dur=log.finished_at?Math.round((new Date(log.finished_at)-dt)/1000)+'s':'–';
+      const errs=log.errors||[];
+      return `<div class="log-row">
+        <div class="log-icon">${errs.length?'⚠️':'✅'}</div>
+        <div class="log-detail">
+          <div class="log-summary">${log.stores_examined||0} stores · ${log.total_deals||0} deals · ${log.emails_sent||0} emails</div>
+          <div class="log-meta">${est} ET · ${dur}</div>
+          ${errs.length?`<div class="log-errors">${errs.slice(0,3).map(escH).join(' | ')}</div>`:''}
+        </div></div>`;
+    }).join('');
+  }catch(e){
+    const bar=document.getElementById('admin-scrape-bar');
+    bar.className='scrape-bar error';
+    bar.innerHTML=`<span>Error: ${escH(e.message)}</span>`;
+  }
+}
+async function adminRunScrape(btn){
+  btn.disabled=true;btn.textContent='Invoking…';
+  try{
+    const res=await fetch(API+'/admin/scrape-now',{method:'POST',credentials:'include',headers:adminHdrs()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    btn.textContent='✓ Invoked!';
+    setTimeout(()=>{btn.disabled=false;btn.textContent='▶ Run Now';},3000);
+    setTimeout(adminLoadLogs,35000);
+  }catch(e){alert('Error: '+e.message);btn.disabled=false;btn.textContent='▶ Run Now';}
+}
+async function adminLoadTail(){
+  const termEl=document.getElementById('admin-tail');
+  const loadEl=document.getElementById('admin-tail-loading');
+  loadEl.textContent='Fetching logs…';termEl.style.display='none';
+  try{
+    const res=await fetch(API+'/admin/logs/tail',{credentials:'include',headers:adminHdrs()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    const lines=data.lines||[];
+    if(!lines.length){loadEl.textContent='No log events found.';return;}
+    loadEl.textContent='';termEl.style.display='block';
+    termEl.innerHTML=lines.map(l=>{
+      const e=l.msg.toLowerCase().includes('error');
+      const o=l.msg.includes('Email sent')||l.msg.includes('Done.');
+      return `<div><span class="ts">${(l.ts||'').replace('T',' ').replace(/\..*/,'')}</span><span class="${e?'terr':o?'tok':''}">${escH(l.msg)}</span></div>`;
+    }).join('');
+    termEl.scrollTop=termEl.scrollHeight;
+  }catch(e){loadEl.textContent='Error: '+e.message;}
+}
+let _allAdminUsers=[];
+let _adminUserPage=0;
+const ADMIN_PAGE_SIZE=25;
+
+async function adminLoadUsers(){
+  try{
+    const res=await fetch(API+'/admin/users',{credentials:'include',headers:adminHdrs()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    _allAdminUsers=data.users||[];
+    _adminUserPage=0;
+    document.getElementById('admin-user-ct').textContent=`(${_allAdminUsers.length})`;
+    document.getElementById('admin-user-search').value='';
+    adminRenderUsers();
+  }catch(e){document.getElementById('admin-tbody').innerHTML=`<tr><td colspan="6" style="color:var(--red);font-size:13px">Error: ${escH(e.message)}</td></tr>`;}
+}
+
+function adminFilterUsers(){
+  _adminUserPage=0;
+  adminRenderUsers();
+}
+
+function adminRenderUsers(){
+  const q=(document.getElementById('admin-user-search').value||'').toLowerCase();
+  const filtered=_allAdminUsers.filter(u=>
+    !q ||
+    (u.email||'').toLowerCase().includes(q) ||
+    (u.notify_email||'').toLowerCase().includes(q) ||
+    (u.store_id||'').includes(q) ||
+    (u.store_name||'').toLowerCase().includes(q)
+  );
+
+  const total=filtered.length;
+  const totalPages=Math.max(1,Math.ceil(total/ADMIN_PAGE_SIZE));
+  if(_adminUserPage>=totalPages) _adminUserPage=totalPages-1;
+  const start=_adminUserPage*ADMIN_PAGE_SIZE;
+  const page=filtered.slice(start, start+ADMIN_PAGE_SIZE);
+
+  document.getElementById('admin-tbody').innerHTML=page.length
+    ? page.map(u=>`
+      <tr>
+        <td><strong>${escH(u.email)}</strong><br><span style="font-size:11px;color:var(--ink-soft)">${escH(u.created_at?.slice(0,10)||'')}</span></td>
+        <td><span style="font-size:12px">${escH(u.notify_email||u.email)}</span></td>
+        <td>${u.store_id?`<span style="font-family:var(--mono);font-size:12px">#${escH(u.store_id)}</span><br><span style="font-size:11px;color:var(--ink-soft)">${escH(u.store_name||'')}</span>`:'<span style="color:var(--ink-soft);font-size:12px">—</span>'}</td>
+        <td><button class="abn a" data-email="${escH(u.email)}" data-items="${escH(JSON.stringify(u.items))}" data-action="admin-show-items">${u.item_count} item${u.item_count!==1?'s':''}</button></td>
+        <td style="font-size:11px;color:var(--ink-soft)">${escH(u.created_at?.slice(0,10)||'—')}</td>
+        <td><div style="display:flex;gap:5px;flex-wrap:wrap">
+          <button class="abn g" data-email="${escH(u.email)}" data-action="admin-show-pin">Reset PIN</button>
+          <button class="abn a" data-email="${escH(u.email)}" data-action="admin-show-email">Reset Email</button>
+          <button class="abn r" data-email="${escH(u.email)}" data-action="admin-del-user">Delete</button>
+        </div></td>
+      </tr>`).join('')
+    : `<tr><td colspan="6" style="color:var(--ink-soft);font-size:13px;padding:16px">${q?'No users match your search.':'No users found.'}</td></tr>`;
+
+  // Pagination controls
+  const pages=document.getElementById('admin-user-pages');
+  if(total<=ADMIN_PAGE_SIZE){pages.innerHTML='';return;}
+  pages.innerHTML=`
+    <span>Showing ${start+1}–${Math.min(start+ADMIN_PAGE_SIZE,total)} of ${total}</span>
+    <div style="display:flex;gap:6px">
+      <button class="abn g" data-action="admin-user-page" data-dir="-1" ${_adminUserPage===0?'disabled':''}>← Prev</button>
+      <span style="padding:4px 8px">${_adminUserPage+1} / ${totalPages}</span>
+      <button class="abn g" data-action="admin-user-page" data-dir="1" ${_adminUserPage>=totalPages-1?'disabled':''}>Next →</button>
+    </div>`;
+}
+
+function adminUserPage(dir){
+  _adminUserPage+=dir;
+  adminRenderUsers();
+}
+function showCreateUser(){
+  document.getElementById('ac-email').value='';clrPin('.ac-pin');setMsg('ac-msg','','');
+  document.getElementById('admin-create-ov').classList.add('vis');
+}
+async function adminDoCreate(){
+  const em=document.getElementById('ac-email').value.trim().toLowerCase();
+  const pin=getPin('.ac-pin');
+  if(!em||pin.length!==4){setMsg('ac-msg','Enter email and 4-digit PIN.','err');return;}
+  try{
+    const res=await fetch(API+'/admin/users',{method:'POST',credentials:'include',headers:adminHdrs(),body:JSON.stringify({email:em,pin})});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    setMsg('ac-msg','✓ Created.','ok');
+    setTimeout(()=>{closeOv('admin-create-ov');adminLoadUsers();},1000);
+  }catch(e){setMsg('ac-msg',e.message,'err');}
+}
+async function adminDelUser(em){
+  if(!confirm(`Delete ${em}? Cannot be undone.`)) return;
+  try{
+    const res=await fetch(API+'/admin/users/'+encodeURIComponent(em),{method:'DELETE',credentials:'include',headers:adminHdrs()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    _allAdminUsers=_allAdminUsers.filter(u=>u.email!==em);
+    document.getElementById('admin-user-ct').textContent=`(${_allAdminUsers.length})`;
+    adminRenderUsers();
+  }catch(e){alert('Error: '+e.message);}
+}
+let _apEmail='';
+function adminShowPin(em){_apEmail=em;document.getElementById('apoe').textContent=em;clrPin('.ap-pin');setMsg('ap-msg','','');document.getElementById('admin-pin-ov').classList.add('vis');}
+async function adminDoResetPin(){
+  const pin=getPin('.ap-pin');if(pin.length!==4){setMsg('ap-msg','Enter 4-digit PIN.','err');return;}
+  try{
+    const res=await fetch(API+'/admin/users/'+encodeURIComponent(_apEmail)+'/reset-pin',{method:'POST',credentials:'include',headers:adminHdrs(),body:JSON.stringify({new_pin:pin})});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    setMsg('ap-msg','✓ PIN reset.','ok');setTimeout(()=>closeOv('admin-pin-ov'),1200);
+  }catch(e){setMsg('ap-msg',e.message,'err');}
+}
+let _aeEmail='';
+function adminShowEmail(em){_aeEmail=em;document.getElementById('aeoe').textContent=em;document.getElementById('ae-new-inp').value='';setMsg('ae-msg','','');document.getElementById('admin-email-ov').classList.add('vis');}
+async function adminDoResetEmail(){
+  const ne=document.getElementById('ae-new-inp').value.trim().toLowerCase();
+  if(!ne){setMsg('ae-msg','Enter new email.','err');return;}
+  try{
+    const res=await fetch(API+'/admin/users/'+encodeURIComponent(_aeEmail)+'/reset-email',{method:'POST',credentials:'include',headers:adminHdrs(),body:JSON.stringify({new_email:ne})});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    setMsg('ae-msg','✓ Updated.','ok');setTimeout(()=>{closeOv('admin-email-ov');adminLoadUsers();},1200);
+  }catch(e){setMsg('ae-msg',e.message,'err');}
+}
+let _aiEmail='';
+function adminShowItems(em,items){
+  _aiEmail=em;document.getElementById('ai-email').textContent=em;setMsg('ai-msg','','');
+  document.getElementById('ai-list').innerHTML=!items.length
+    ?'<p style="color:var(--ink-soft);font-style:italic">No items on list.</p>'
+    :`<ol style="padding-left:20px">${items.map(i=>`<li style="padding:3px 0">${escH(i)}</li>`).join('')}</ol>`;
+  document.getElementById('admin-items-ov').classList.add('vis');
+}
+async function adminClearItems(){
+  if(!confirm(`Clear all items for ${_aiEmail}?`)) return;
+  try{
+    const res=await fetch(API+'/admin/users/'+encodeURIComponent(_aiEmail)+'/items',{method:'DELETE',credentials:'include',headers:adminHdrs()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    setMsg('ai-msg','✓ Cleared.','ok');setTimeout(()=>{closeOv('admin-items-ov');adminLoadUsers();},1000);
+  }catch(e){setMsg('ai-msg',e.message,'err');}
+}
+
+
+// ── Auth Log ──────────────────────────────────────────────────────────────────
+let _allAuthLogs = [];
+async function adminLoadAuthLogs(){
+  document.getElementById('auth-log-wrap').innerHTML='<div style="color:var(--ink-soft);font-size:13px;padding:8px">Loading…</div>';
+  try{
+    const res=await fetch(API+'/admin/auth-logs?limit=200',{credentials:'include',headers:adminHdrs()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    _allAuthLogs=data.logs||[];
+    adminRenderAuthLogs();
+  }catch(e){
+    document.getElementById('auth-log-wrap').innerHTML=`<div style="color:var(--red);font-size:13px;padding:8px">Error: ${escH(e.message)}</div>`;
+  }
+}
+function adminRenderAuthLogs(){
+  const filter=document.getElementById('auth-log-filter').value;
+  let logs=_allAuthLogs;
+  if(filter==='success') logs=logs.filter(l=>l.success);
+  if(filter==='fail')    logs=logs.filter(l=>!l.success);
+  if(!logs.length){
+    document.getElementById('auth-log-wrap').innerHTML='<div style="color:var(--ink-soft);font-size:13px;padding:10px">No auth events found.</div>';
+    return;
+  }
+  const rows=logs.map(l=>{
+    const dt=new Date(l.ts);
+    const est=dt.toLocaleString('en-US',{timeZone:'America/New_York',month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true});
+    const geo=[l.city,l.region,l.country].filter(Boolean).join(', ')||'—';
+    const ua=(l.user_agent||'').replace(/Mozilla\/5\.0\s*/,'').slice(0,60);
+    const badge=l.success
+      ?'<span class="ok">✓ Login</span>'
+      :'<span class="fail">✗ Fail</span>';
+    return `<tr>
+      <td style="white-space:nowrap">${est}</td>
+      <td>${badge}</td>
+      <td><strong style="font-size:12px">${escH(l.email)}</strong></td>
+      <td style="font-family:var(--mono);font-size:11px">${escH(l.ip||'—')}</td>
+      <td style="font-size:11px">${escH(geo)}</td>
+      <td style="font-size:11px;color:var(--ink-soft);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escH(l.user_agent||'')}">${escH(ua)}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('auth-log-wrap').innerHTML=`
+    <table class="auth-log-tbl">
+      <thead><tr><th>Time (ET)</th><th>Result</th><th>Email</th><th>IP</th><th>Location</th><th>Browser</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+// ── App / Frontend / API / Email / Cache Logs ────────────────────────────────
+let _allAppLogs = [];
+async function adminLoadAppLogs(){
+  document.getElementById('app-log-wrap').innerHTML='<div style="color:var(--ink-soft);font-size:13px;padding:8px">Loading…</div>';
+  try{
+    const srcFilter=document.getElementById('app-log-filter').value;
+    const srcParam=srcFilter!=='all'?`&source=${encodeURIComponent(srcFilter)}`:"";    
+    const res=await fetch(API+`/admin/app-logs?limit=500${srcParam}`,{credentials:'include',headers:adminHdrs()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    _allAppLogs=data.logs||[];
+    adminRenderAppLogs();
+  }catch(e){
+    document.getElementById('app-log-wrap').innerHTML=`<div style="color:var(--red);font-size:13px;padding:8px">Error: ${escH(e.message)}</div>`;
+  }
+}
+function adminRenderAppLogs(){
+  const filter=document.getElementById('app-log-filter').value;
+  let logs=_allAppLogs;
+  if(filter!=='all') logs=logs.filter(l=>l.source===filter);
+  const el=document.getElementById('app-log-wrap');
+  if(!logs.length){
+    el.innerHTML='<div style="color:var(--ink-soft);font-size:13px;padding:10px">No logs found.</div>';
+    return;
+  }
+  const SOURCE_ICONS={'frontend':'💻','api':'⚡','email':'✉️','cache':'🗄️'};
+  const rows=logs.map(l=>{
+    const dt=new Date(l.ts);
+    const est=dt.toLocaleString('en-US',{timeZone:'America/New_York',month:'numeric',day:'numeric',
+      hour:'numeric',minute:'2-digit',hour12:true});
+    const lvl=l.level||'info';
+    const src=l.source||'?';
+    const icon=SOURCE_ICONS[src]||'•';
+    let detail='';
+    if(src==='email'){
+      detail=`to: ${escH(l.to||'')} | subj: ${escH((l.subject||'').slice(0,40))} | ${l.ok?'✓ sent':'✗ failed'}`;
+    } else if(src==='cache'){
+      detail=`store ${escH(l.store_id||'?')} | ${l.hit?'● hit':'○ miss'} | ${escH(l.endpoint||'')}`;
+    } else if(src==='api' && (l.action||'').startsWith('inbound-')){
+      const parts=[];
+      if(l.action) parts.push(`<strong>${escH(l.action)}</strong>`);
+      if(l.sender) parts.push(`from: ${escH(l.sender)}`);
+      if(l.user)   parts.push(`user: ${escH(l.user)}`);
+      if(l.message) parts.push(escH(l.message.slice(0,100)));
+      if(l.items_found!==undefined) parts.push(`items: ${l.items_found}`);
+      if(l.added!==undefined) parts.push(`added: ${l.added}`);
+      detail=parts.join(' · ');
+    } else if(src==='api'){
+      detail=`${escH(l.method||'?')} ${escH(l.path||'')} → ${l.status||'?'} | ${escH((l.message||'').slice(0,80))}`;
+    } else {
+      const msg=(l.message||'')+(l.stack?' │ '+l.stack.split('\n')[0]:'');
+      detail=escH(msg.slice(0,200));
+      if(l.url) detail+=` <span style="color:var(--ink-soft);font-size:10px">[${escH(l.url.slice(0,60))}]</span>`;
+    }
+    return `<div class="app-log-row lv-${escH(lvl)}">
+      <span class="alts">${est}</span>
+      <span class="alsrc">${icon} ${escH(src)}</span>
+      <span class="almsg">${detail}</span>
+    </div>`;
+  }).join('');
+  el.innerHTML=rows;
+}
+
+// ── Cache stats widget ────────────────────────────────────────────────────────
+async function adminLoadCacheStats(){
+  const el=document.getElementById('cache-stats-wrap');
+  el.innerHTML='<div style="color:var(--ink-soft);font-size:13px">Loading…</div>';
+  try{
+    const res=await fetch(API+'/admin/app-logs?limit=500&source=cache',{credentials:'include',headers:adminHdrs()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    const cacheLogs=(data.logs||[]).filter(l=>l.source==='cache');
+    if(!cacheLogs.length){
+      el.innerHTML='<div style="color:var(--ink-soft);font-size:13px">No cache events recorded yet.</div>';
+      return;
+    }
+    // Group by store
+    const byStore={};
+    for(const l of cacheLogs){
+      const s=l.store_id||'unknown';
+      if(!byStore[s]) byStore[s]={hits:0,misses:0,store:s};
+      if(l.hit) byStore[s].hits++; else byStore[s].misses++;
+    }
+    const totalHits=cacheLogs.filter(l=>l.hit).length;
+    const totalMiss=cacheLogs.length-totalHits;
+    const hitPct=cacheLogs.length?Math.round(totalHits/cacheLogs.length*100):0;
+    const rows=Object.values(byStore).sort((a,b)=>(b.hits+b.misses)-(a.hits+a.misses)).map(s=>{
+      const total=s.hits+s.misses;
+      const pct=total?Math.round(s.hits/total*100):0;
+      return `<tr>
+        <td style="font-family:var(--mono);font-size:12px">#${escH(s.store)}</td>
+        <td style="font-size:12px;color:var(--green)">${s.hits}</td>
+        <td style="font-size:12px;color:var(--red)">${s.misses}</td>
+        <td style="font-size:12px">${pct}%</td>
+        <td style="min-width:100px"><div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:var(--green);border-radius:3px"></div></div></td>
+      </tr>`;
+    }).join('');
+    el.innerHTML=`
+      <div class="stats-grid" style="margin-bottom:16px">
+        <div class="stat-card"><div class="stat-val">${totalHits+totalMiss}</div><div class="stat-lbl">Total Requests</div></div>
+        <div class="stat-card"><div class="stat-val" style="color:var(--green)">${totalHits}</div><div class="stat-lbl">Cache Hits</div></div>
+        <div class="stat-card"><div class="stat-val" style="color:var(--amber)">${totalMiss}</div><div class="stat-lbl">Cache Misses</div></div>
+        <div class="stat-card"><div class="stat-val">${hitPct}%</div><div class="stat-lbl">Hit Rate</div></div>
+      </div>
+      <table class="admin-tbl" style="font-size:13px">
+        <thead><tr><th>Store</th><th>Hits</th><th>Misses</th><th>Rate</th><th style="min-width:100px"></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }catch(e){
+    el.innerHTML=`<div style="color:var(--red);font-size:13px">Error: ${escH(e.message)}</div>`;
+  }
+}
+
+// ── Frontend error reporting ───────────────────────────────────────────────────
+window.onerror = function(msg, src, line, col, err){
+  if(!userEmail) return; // skip silently — /log/error requires auth (PDC-11)
+  try{fetch(API+'/log/error',{method:'POST',credentials:'include',headers:{...authHeaders(),'Content-Type':'application/json'},
+    body:JSON.stringify({level:'error',message:String(msg),stack:err&&err.stack||'',url:src+'#L'+line+':'+col})});}catch(_){}
+};
+window.onunhandledrejection = function(e){
+  if(!userEmail) return; // skip silently — /log/error requires auth (PDC-11)
+  try{fetch(API+'/log/error',{method:'POST',credentials:'include',headers:{...authHeaders(),'Content-Type':'application/json'},
+    body:JSON.stringify({level:'error',message:'Unhandled rejection: '+String(e.reason),stack:e.reason&&e.reason.stack||'',url:window.location.href})});}catch(_){}
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// WELCOME MODAL
+// ═══════════════════════════════════════════════════════════════════
+let _wlcStep = 0;
+const WLC_STEPS = 3;
+
+function wlcShow(){
+  _wlcStep = 0;
+  _wlcRender();
+  document.getElementById('wlc-overlay').classList.add('vis');
+}
+
+function _wlcRender(){
+  // Show correct step
+  for(let i=0;i<WLC_STEPS;i++){
+    document.getElementById('wlc-step-'+i).classList.toggle('active', i===_wlcStep);
+    document.getElementById('wlc-dot-'+i).classList.toggle('active', i===_wlcStep);
+  }
+  // Update button label
+  const btn = document.getElementById('wlc-next-btn');
+  if(_wlcStep < WLC_STEPS-1){
+    btn.textContent = 'Next →';
+  } else {
+    btn.textContent = "Let’s go →";
+    btn.style.background = 'var(--green)';
+  }
+}
+
+function wlcNext(){
+  if(_wlcStep < WLC_STEPS-1){
+    _wlcStep++;
+    _wlcRender();
+  } else {
+    wlcDismiss();
+  }
+}
+
+function wlcDismiss(){
+  document.getElementById('wlc-overlay').classList.remove('vis');
+  // Mark this user as welcomed so we never show again
+  if(userEmail) localStorage.setItem('cw_welcomed_'+userEmail, '1');
+  // Ensure we're on the store panel after dismissal
+  showPanel('store');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// UTILS
+// ═══════════════════════════════════════════════════════════════════
+function decodeEntities(s){
+  if(!s) return '';
+  // Use the browser's own HTML parser — handles every named entity (&euml; &rsquo; &ndash; etc.)
+  // without maintaining a lookup table. The textarea trick is safe: no script execution.
+  const ta=document.createElement('textarea');
+  ta.innerHTML=String(s);
+  return ta.value.replace(/[\r\n]+/g,' ').trim();
+}
+function escH(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function closeOv(id){document.getElementById(id).classList.remove('vis');}
+
+// ═══════════════════════════════════════════════════════════════════
+// AUTO-LOGIN
+// ═══════════════════════════════════════════════════════════════════
+(async function init(){
+  // Check active session via token
+  try{
+    const res=await fetch(API+'/user/prefs', {credentials:'include',headers:authHeaders()});
+    if(!res.ok){localStorage.removeItem('cw_email');return;}
+    const data=await res.json();
+    prefs=data.prefs;userEmail=data.email;
+    enterApp({isFirstLogin: !localStorage.getItem('cw_welcomed_'+data.email) && !(prefs && prefs.store_id)});
+  }catch(_){}
+})();
+
+document.querySelectorAll('.overlay').forEach(o=>{
+  o.addEventListener('click',e=>{if(e.target===o) o.classList.remove('vis');});
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// AUTOCOMPLETE
+// ═══════════════════════════════════════════════════════════════════
+let _acIdx = -1;
+
+function acGetTitles() {
+  const seen = new Set();
+  const titles = [];
+  // Merge current-week deal titles with persistent corpus
+  const allSources = [
+    ..._allDeals.map(d => d.title || ''),
+    ..._corpusTitles,
+  ];
+  // Exclude items already on the list
+  const alreadyAdded = new Set(itemNames().map(n => n.toLowerCase()));
+  for (const t of allSources) {
+    const trimmed = t.trim(); // entities already decoded at load time in loadCorpus / _allDeals
+    if (trimmed && !seen.has(trimmed.toLowerCase()) && !alreadyAdded.has(trimmed.toLowerCase())) {
+      seen.add(trimmed.toLowerCase());
+      titles.push(trimmed);
+    }
+  }
+  return titles;
+}
+
+function acInput() {
+  const q = (document.getElementById('new-item').value || '').trim();
+  const drop = document.getElementById('ac-drop');
+  if (!q) { drop.style.display = 'none'; return; }
+
+  const qLow = q.toLowerCase();
+  const all = acGetTitles();
+  const words = qLow.split(/\s+/).filter(Boolean);
+  const matches = all.filter(t => words.some(w => t.toLowerCase().includes(w)));
+
+  matches.sort((a, b) => {
+    const aStart = a.toLowerCase().startsWith(qLow) ? 0 : 1;
+    const bStart = b.toLowerCase().startsWith(qLow) ? 0 : 1;
+    return aStart - bStart || a.localeCompare(b);
+  });
+
+  const suggestions = matches.slice(0, 8);
+  _acIdx = -1;
+
+  drop.innerHTML = [
+    `<div class="ac-item ac-item-free" data-val="${escH(q)}" onmousedown="acSelect(this.dataset.val)">${escH(q)} <span style="font-size:10px;opacity:.55;margin-left:4px">add custom</span></div>`,
+    ...suggestions.map(s =>
+      `<div class="ac-item ac-item-deal" data-val="${escH(s)}" onmousedown="acSelect(this.dataset.val)">${escH(s)}</div>`
+    )
+  ].join('');
+
+  drop.style.display = q ? '' : 'none';
+}
+
+function acKeydown(e) {
+  const drop = document.getElementById('ac-drop');
+  const items = drop.querySelectorAll('.ac-item');
+  if (drop.style.display === 'none' || !items.length) {
+    if (e.key === 'Enter') addItem();
+    return;
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    _acIdx = Math.min(_acIdx + 1, items.length - 1);
+    items.forEach((el, i) => el.classList.toggle('ac-sel', i === _acIdx));
+    if (_acIdx >= 0) document.getElementById('new-item').value = items[_acIdx].dataset.val || items[_acIdx].textContent.trim();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    _acIdx = Math.max(_acIdx - 1, 0);
+    items.forEach((el, i) => el.classList.toggle('ac-sel', i === _acIdx));
+    if (_acIdx >= 0) document.getElementById('new-item').value = items[_acIdx].dataset.val || items[_acIdx].textContent.trim();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (_acIdx >= 0 && items[_acIdx]) {
+      acSelect(items[_acIdx].dataset.val || items[_acIdx].textContent.trim());
+    } else {
+      addItem();
+    }
+  } else if (e.key === 'Escape') {
+    acHide();
+    closeDealModal();
+  }
+}
+
+function acSelect(val) {
+  document.getElementById('new-item').value = decodeEntities(val);
+  acHide();
+  addItem();
+}
+
+function acHide() {
+  const drop = document.getElementById('ac-drop');
+  if (drop) drop.style.display = 'none';
+  _acIdx = -1;
+}
+document.addEventListener('DOMContentLoaded', () => {
+  initPinInputs('.auth-pin');
+  initPinInputs('.ac-pin');
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PDC-21: EVENT DELEGATION — replaces all inline on* handlers
+  // ═══════════════════════════════════════════════════════════════════
+
+  // ── Image error fallback (must use capture phase) ─────────────────
+  document.addEventListener('error', (e) => {
+    if (e.target.tagName === 'IMG' && e.target.hasAttribute('data-img-fallback')) {
+      e.target.style.display = 'none';
+      const sib = e.target.nextElementSibling;
+      if (sib) sib.style.display = 'flex';
+    }
+  }, true);
+
+  // ── Auth form submit ──────────────────────────────────────────────
+  const authForm = document.getElementById('auth-form');
+  if (authForm) authForm.addEventListener('submit', (e) => { e.preventDefault(); doAuth(); });
+
+  // ── Click delegation ──────────────────────────────────────────────
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-action]');
+    if (!el) return;
+    const action = el.dataset.action;
+
+    // -- Auth / Nav --
+    if (action === 'switch-tab')        return switchTab(el.dataset.tab);
+    if (action === 'do-logout')         return doLogout();
+    if (action === 'open-mobile-nav')   return openMobileNav();
+    if (action === 'close-mobile-nav')  return closeMobileNav();
+    if (action === 'nav-panel')         return showPanel(el.dataset.panel);
+    if (action === 'nav-panel-mobile')  { showPanel(el.dataset.panel); closeMobileNav(); return; }
+
+    // -- Verify banner --
+    if (action === 'resend-verification') return resendVerification();
+    if (action === 'hide-verify-banner')  return showVerifyBanner(false);
+
+    // -- Store --
+    if (action === 'do-store-search')   return doStoreSearch();
+    if (action === 'clear-store')       return clearStore();
+    if (action === 'select-store')      return selectStore(parseInt(el.dataset.index));
+
+    // -- Deals --
+    if (action === 'refresh-deals')     return loadDeals(true);
+    if (action === 'load-more-deals')   return loadMoreDeals();
+    if (action === 'clear-dept-chip')   { clearDeptCB(el.dataset.container, el.dataset.dept); renderDeals(); return; }
+    if (action === 'open-deal-modal') {
+      if (!e.target.closest('.deal-add-wrap,.btn-clip')) openDealModal(el.dataset.dealId);
+      return;
+    }
+
+    // -- Deal modal --
+    if (action === 'deal-modal-backdrop') { if (e.target === el) closeDealModal(); return; }
+    if (action === 'close-deal-modal')  return closeDealModal();
+    if (action === 'modal-toggle-list') return modalToggleList();
+
+    // -- List --
+    if (action === 'add-item')          return addItem();
+    if (action === 'remove-item')       return removeItem(parseInt(el.dataset.index));
+    if (action === 'bulk-import')       return bulkImport();
+    if (action === 'copy-inbound')      return copyInboundAddr();
+    if (action === 'export-download')   return exportListDownload();
+    if (action === 'export-copy')       return exportListCopy(el);
+
+    // -- Notifications --
+    if (action === 'send-test-email')   return sendTestEmail();
+    if (action === 'resend-weekly')     return resendWeeklyEmail();
+
+    // -- Account --
+    if (action === 'change-pin')        return changePin();
+    if (action === 'wlc-show')          return wlcShow();
+    if (action === 'show-delete-overlay') { document.getElementById('del-overlay').classList.add('vis'); return; }
+    if (action === 'delete-account')    return deleteAccount();
+
+    // -- Welcome tour --
+    if (action === 'wlc-dismiss')       return wlcDismiss();
+    if (action === 'wlc-next')          return wlcNext();
+
+    // -- Overlays --
+    if (action === 'close-overlay')     return closeOv(el.dataset.ov);
+
+    // -- Admin auth --
+    if (action === 'admin-login')       return adminLogin();
+    if (action === 'admin-sign-out')    return adminSignOut();
+
+    // -- Admin nav --
+    if (action === 'admin-nav')         return adminNav(el.dataset.tab);
+    if (action === 'show-create-user')  return showCreateUser();
+    if (action === 'admin-refresh-users') return adminLoadUsers();
+
+    // -- Admin actions --
+    if (action === 'admin-load-auth-logs')  return adminLoadAuthLogs();
+    if (action === 'admin-load-stats')      return adminLoadStats();
+    if (action === 'admin-run-scrape')      return adminRunScrape(el);
+    if (action === 'admin-load-logs')       return adminLoadLogs();
+    if (action === 'admin-load-tail')       return adminLoadTail();
+    if (action === 'admin-load-app-logs')   return adminLoadAppLogs();
+    if (action === 'admin-load-cache-stats') return adminLoadCacheStats();
+    if (action === 'admin-load-inbound-logs') return adminLoadInboundLogs();
+    if (action === 'admin-clear-inbound-filter') {
+      document.getElementById('inbound-sender-filter').value = '';
+      return adminLoadInboundLogs();
+    }
+
+    // -- Admin user table (delegated from dynamic content) --
+    if (action === 'admin-show-items')  return adminShowItems(el.dataset.email, JSON.parse(el.dataset.items));
+    if (action === 'admin-show-pin')    return adminShowPin(el.dataset.email);
+    if (action === 'admin-show-email')  return adminShowEmail(el.dataset.email);
+    if (action === 'admin-del-user')    return adminDelUser(el.dataset.email);
+    if (action === 'admin-do-reset-pin') return adminDoResetPin();
+    if (action === 'admin-do-reset-email') return adminDoResetEmail();
+    if (action === 'admin-clear-items') return adminClearItems();
+    if (action === 'admin-do-create')   return adminDoCreate();
+    if (action === 'admin-user-page')   return adminUserPage(parseInt(el.dataset.dir));
+
+    // -- Inbound chain toggle --
+    if (action === 'toggle-chain') {
+      const c = document.getElementById(el.dataset.chain);
+      if (c) c.style.display = c.style.display === 'none' ? 'block' : 'none';
+      return;
+    }
+  });
+
+  // ── Change delegation ─────────────────────────────────────────────
+  document.addEventListener('change', (e) => {
+    const el = e.target.closest('[data-action]');
+    if (!el) return;
+    const action = el.dataset.action;
+
+    if (action === 'matches-toggle')    return onMatchesToggle();
+    if (action === 'threshold-slider')  return onThresholdChange();
+    if (action === 'savings-filter')    return onSavingsFilter(el.dataset.filter);
+    if (action === 'deals-sort')        return renderDeals();
+    if (action === 'email-enabled-toggle') {
+      document.getElementById('email-settings-wrap').style.display = el.checked ? '' : 'none';
+      savePrefs('account');
+      return;
+    }
+    if (action === 'save-schedule')     return savePrefs('schedule');
+    if (action === 'dept-filter') {
+      const fn = el.dataset.renderFn;
+      if (fn === 'renderDeals')       renderDeals();
+      else if (fn === 'renderTpr')    { if (typeof renderTpr === 'function') renderTpr(); }
+      return;
+    }
+    if (action === 'admin-render-auth-logs') return adminRenderAuthLogs();
+    if (action === 'admin-render-app-logs')  return adminRenderAppLogs();
+  });
+
+  // ── Input delegation ──────────────────────────────────────────────
+  document.addEventListener('input', (e) => {
+    const el = e.target.closest('[data-action]');
+    if (!el) return;
+    const action = el.dataset.action;
+
+    if (action === 'sanitize-email')    return sanitizeEmailInput(el);
+    if (action === 'store-input-type')  return onStoreInputType();
+    if (action === 'threshold-slider') {
+      document.getElementById('threshold-val').textContent = el.value;
+      return;
+    }
+    if (action === 'deals-search-input') return debouncedRenderDeals();
+    if (action === 'ac-input')          return acInput();
+    if (action === 'notify-email-input') return sanitizeEmailInput(el);
+    if (action === 'admin-filter-users') return adminFilterUsers();
+  });
+
+  // ── Keydown delegation ────────────────────────────────────────────
+  document.addEventListener('keydown', (e) => {
+    const el = e.target.closest('[data-action]');
+    if (!el) return;
+    const action = el.dataset.action;
+
+    if (action === 'store-search-key' && e.key === 'Enter')  return doStoreSearch();
+    if (action === 'ac-input')           return acKeydown(e);
+    if (action === 'notify-email-input' && e.key === 'Enter') return savePrefs('account');
+    if (action === 'admin-secret-key' && e.key === 'Enter')  return adminLogin();
+  });
+
+  // ── Blur delegation ───────────────────────────────────────────────
+  document.addEventListener('blur', (e) => {
+    const el = e.target.closest('[data-action]');
+    if (!el) return;
+    const action = el.dataset.action;
+
+    if (action === 'ac-input')           return setTimeout(acHide, 150);
+    if (action === 'notify-email-input') return savePrefs('account');
+  }, true); // blur doesn't bubble — use capture
+});

@@ -1,0 +1,1217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- PDC-07/21: Security headers via meta tags -->
+<!-- PDC-21: connect-src restricted to known API domains (was wildcard *) -->
+<!-- PDC-21: All inline handlers removed — unsafe-inline no longer needed in script-src -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' https://cartwise.shopping https://*.cartwise.shopping; img-src 'self' data: https:; frame-ancestors 'none';">
+<meta http-equiv="X-Content-Type-Options" content="nosniff">
+<meta http-equiv="X-Frame-Options" content="DENY">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta http-equiv="Permissions-Policy" content="camera=(), microphone=(), geolocation=()">
+<title>Cartwise</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='52' font-size='56'>🛒</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --green:#1a6b3c;--green-lt:#2d8f55;--green-bg:#f0f7f3;--green-dim:#e0efe7;
+  --cream:#faf8f3;--ink:#1c1c1c;--ink-mid:#4a4a4a;--ink-soft:#8a8a8a;
+  --border:#ddd8ce;--red:#c0392b;--red-bg:#fdf3f2;
+  --amber:#b45309;--amber-bg:#fffbeb;--white:#fff;
+  --blue:#1e40af;--blue-bg:#eff6ff;--purple:#6b21a8;--purple-bg:#faf5ff;
+  --sh-sm:0 1px 3px rgba(0,0,0,.08);--sh-md:0 4px 16px rgba(0,0,0,.1);
+  --sh-lg:0 12px 40px rgba(0,0,0,.14);--rad:10px;
+  --serif:'DM Serif Display',Georgia,serif;--mono:'DM Mono',monospace;
+  --body:'Lato',sans-serif;--t:.18s ease;--bar:54px;
+}
+body{font-family:var(--body);background:var(--cream);color:var(--ink);min-height:100vh;font-size:15px;line-height:1.55}
+
+/* AUTH */
+#auth-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;
+  background:radial-gradient(ellipse 80% 60% at 10% 10%,rgba(26,107,60,.08),transparent 60%),
+             radial-gradient(ellipse 60% 50% at 90% 90%,rgba(26,107,60,.06),transparent 60%),var(--cream)}
+.auth-card{background:var(--white);border:1px solid var(--border);border-radius:16px;box-shadow:var(--sh-lg);width:100%;max-width:400px;overflow:hidden}
+.auth-hd{background:var(--green);padding:32px 32px 28px;color:white}
+.auth-hd h1{font-family:var(--serif);font-size:26px;font-weight:400;margin-bottom:4px}
+.auth-hd p{opacity:.75;font-size:13px}
+.auth-tabs{display:flex;border-bottom:1px solid var(--border)}
+.auth-tab{flex:1;padding:14px;font-size:13px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;background:none;border:none;cursor:pointer;color:var(--ink-soft);border-bottom:2px solid transparent;transition:var(--t)}
+.auth-tab.active{color:var(--green);border-bottom-color:var(--green)}
+.auth-body{padding:28px 32px 32px}
+.field{margin-bottom:18px}
+.field label{display:block;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px}
+.field input[type=email]{width:100%;padding:10px 13px;border:1.5px solid var(--border);border-radius:8px;font-size:14px;outline:none;transition:border-color var(--t)}
+.field input[type=email]:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)}
+.pin-wrap{display:flex;gap:8px}
+.pin-d{width:48px;height:52px;text-align:center;font-size:22px;font-family:var(--mono);border:1.5px solid var(--border);border-radius:8px;outline:none;transition:border-color var(--t)}
+.pin-d:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)}
+.btn-primary{width:100%;padding:13px;background:var(--green);color:white;border:none;border-radius:9px;font-size:14px;font-weight:700;cursor:pointer;transition:background var(--t);margin-top:8px}
+.btn-primary:hover{background:var(--green-lt)}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.msg{margin-top:12px;font-size:13px;min-height:18px}
+.msg.err{color:var(--red)}.msg.ok{color:var(--green)}
+
+/* APP SHELL */
+#app-screen{display:none}
+#app-screen.visible{display:block}
+.topbar{height:var(--bar);background:var(--green);color:white;display:flex;align-items:center;justify-content:space-between;padding:0 24px;position:sticky;top:0;z-index:200;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+.tb-brand{font-family:var(--serif);font-size:18px;font-weight:400}
+.tb-right{display:flex;align-items:center;gap:12px}
+.tb-email{font-size:12px;opacity:.8}
+.btn-ghost{padding:6px 14px;border:1.5px solid rgba(255,255,255,.4);border-radius:6px;background:transparent;color:white;font-size:12px;font-weight:700;cursor:pointer;transition:background var(--t)}
+.btn-ghost:hover{background:rgba(255,255,255,.12)}
+.app-layout{display:flex;max-width:1400px;margin:0 auto;padding:0 24px;min-height:calc(100vh - var(--bar))}
+
+/* SIDEBAR NAV */
+.sidebar{width:188px;flex-shrink:0;padding:20px 0;position:sticky;top:var(--bar);height:calc(100vh - var(--bar));overflow-y:auto}
+.nav-item{display:flex;align-items:center;gap:10px;width:100%;padding:10px 14px;border:none;background:none;border-radius:8px;font-size:13px;font-weight:600;color:var(--ink-mid);cursor:pointer;text-align:left;transition:background var(--t),color var(--t);margin-bottom:2px}
+.nav-item:hover{background:var(--green-bg);color:var(--green)}
+.nav-item.active{background:var(--green-dim);color:var(--green)}
+.nav-icon{font-size:16px}
+.nav-sep{height:1px;background:var(--border);margin:8px 14px}
+.main-content{flex:1;padding:28px 0 48px 24px;min-width:0}
+.panel{display:none}
+.panel.active{display:block}
+.panel-title{font-family:var(--serif);font-size:26px;font-weight:400;margin-bottom:4px}
+.panel-sub{color:var(--ink-soft);font-size:13px;margin-bottom:22px}
+
+/* CARDS / FORMS */
+.card{background:var(--white);border:1px solid var(--border);border-radius:var(--rad);padding:20px 22px;margin-bottom:18px;box-shadow:var(--sh-sm)}
+.card-title{font-size:13px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:14px}
+.row{margin-bottom:16px}
+.row label{display:block;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px}
+.row input,.row select{width:100%;padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:14px;font-family:var(--body);outline:none;transition:border-color var(--t);background:var(--white)}
+.row input:focus,.row select:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)}
+.hint{font-size:12px;color:var(--ink-soft);margin-top:5px;line-height:1.5}
+textarea{width:100%;padding:10px 13px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-family:var(--mono);color:var(--ink);resize:vertical;min-height:90px;outline:none;transition:border-color var(--t)}
+textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)}
+
+/* BUTTONS */
+.save-bar{display:flex;align-items:center;gap:14px;padding-top:4px}
+.btn-save{padding:10px 22px;background:var(--green);color:white;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;transition:background var(--t)}
+.btn-save:hover{background:var(--green-lt)}
+.save-st{font-size:13px}.save-st.ok{color:var(--green)}.save-st.err{color:var(--red)}
+.btn-sec{padding:9px 16px;border:1.5px solid var(--green);border-radius:8px;background:white;color:var(--green);font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;cursor:pointer;transition:var(--t)}
+.btn-sec:hover{background:var(--green-bg)}
+.btn-danger{padding:9px 18px;background:var(--red-bg);color:var(--red);border:1.5px solid #f5c6c2;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;transition:var(--t)}
+.btn-danger:hover{background:#fae0de}
+.btn-load{display:inline-flex;align-items:center;gap:8px;padding:9px 18px;background:var(--green);color:white;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;transition:var(--t)}
+.btn-load:hover{background:var(--green-lt)}
+.btn-load:disabled{opacity:.5;cursor:not-allowed}
+.btn-test{display:inline-flex;align-items:center;gap:8px;padding:9px 18px;background:var(--blue-bg);color:var(--blue);border:1.5px solid #bfdbfe;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;transition:var(--t)}
+.btn-add-to-list{display:inline-flex;align-items:center;gap:4px;margin-top:6px;padding:5px 10px;background:#f0fdf4;color:#16a34a;border:1.5px solid #bbf7d0;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;transition:var(--t)}
+.btn-add-to-list:hover{background:#dcfce7}
+.btn-add-to-list.on-list{background:#f1f5f9;color:var(--ink-soft);border-color:#e2e8f0;cursor:default}
+.btn-add-to-list:disabled{opacity:.7;cursor:default}
+.btn-test:hover{background:#dbeafe}
+.btn-test:disabled{opacity:.5;cursor:not-allowed}
+
+/* STORE */
+/* Store panel */
+.store-search-wrap{position:relative}
+.store-search-input{width:100%;padding:11px 40px 11px 14px;border:1.5px solid var(--border);border-radius:10px;font-size:14px;outline:none;transition:border-color var(--t);box-sizing:border-box}
+.store-search-input:focus{border-color:var(--green)}
+.store-search-icon{position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:16px;pointer-events:none;color:var(--ink-soft)}
+.store-results{margin-top:8px;display:flex;flex-direction:column;gap:6px}
+.store-result-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1.5px solid var(--border);border-radius:10px;cursor:pointer;transition:all var(--t);background:var(--white)}
+.store-result-item:hover{border-color:var(--green);background:var(--green-bg)}
+.store-result-thumb{width:44px;height:44px;object-fit:cover;border-radius:6px;flex-shrink:0;background:var(--green-bg)}
+.store-result-thumb-ph{width:44px;height:44px;border-radius:6px;background:var(--green-bg);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+.store-result-name{font-weight:700;font-size:13px;color:var(--ink)}
+.store-result-addr{font-size:12px;color:var(--ink-mid);margin-top:1px}
+.store-result-dist{font-size:11px;color:var(--ink-soft);margin-top:1px}
+.store-no-results{font-size:13px;color:var(--ink-soft);padding:12px 0;text-align:center}
+/* Selected store card */
+.store-card{border-radius:12px;overflow:hidden;border:1.5px solid var(--green-dim);background:var(--white);box-shadow:var(--sh-sm);margin-bottom:4px}
+.store-card-hero{width:100%;height:140px;object-fit:cover;display:block}
+.store-card-hero-ph{width:100%;height:140px;background:linear-gradient(135deg,var(--green) 0%,var(--green-lt) 100%);display:flex;align-items:center;justify-content:center;font-size:48px}
+.store-card-body{padding:16px}
+.store-card-name{font-family:var(--serif);font-size:20px;color:var(--green);margin-bottom:2px}
+.store-card-id{font-family:var(--mono);font-size:11px;color:var(--ink-soft);margin-bottom:10px}
+.store-card-row{display:flex;align-items:flex-start;gap:8px;font-size:13px;color:var(--ink-mid);margin-bottom:6px}
+.store-card-row-icon{font-size:14px;flex-shrink:0;margin-top:1px}
+.store-card-row a{color:var(--green);text-decoration:none}
+.store-card-row a:hover{text-decoration:underline}
+.store-card-footer{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-top:1px solid var(--border);background:var(--green-bg)}
+.store-card-footer .btn-change{color:var(--ink-mid);font-size:12px;font-weight:700;cursor:pointer;background:none;border:1.5px solid var(--border);border-radius:6px;padding:5px 12px;transition:all var(--t)}
+.store-card-footer .btn-change:hover{border-color:var(--red);color:var(--red)}
+.store-hours-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-top:4px}
+.store-hour-day{text-align:center;font-size:10px}
+.store-hour-day-name{color:var(--ink-soft);text-transform:uppercase;font-weight:700;letter-spacing:.03em}
+.store-hour-time{color:var(--ink-mid);margin-top:1px;line-height:1.3}
+.store-hour-day.today .store-hour-day-name{color:var(--green)}
+.store-hour-day.today .store-hour-time{font-weight:700;color:var(--green)}
+
+/* ITEMS */
+.items-add{display:flex;gap:8px;margin-bottom:14px}
+.items-add input{flex:1;padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:14px;outline:none;transition:border-color var(--t)}
+.items-add input:focus{border-color:var(--green)}
+.btn-add{padding:9px 16px;background:var(--green);color:white;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer}
+.btn-add:hover{background:var(--green-lt)}
+.items-ul{list-style:none;margin-bottom:10px}
+.item-row{display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--border)}
+.item-row:last-child{border-bottom:none}
+.item-name{font-size:14px;flex:1;min-width:0}
+.item-row-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
+/* Match reason label on card */
+.match-reason{font-size:10px;color:var(--ink-soft);margin-top:3px}
+.btn-rm{background:none;border:none;color:var(--ink-soft);font-size:18px;cursor:pointer;padding:0 4px;line-height:1}
+.btn-rm:hover{color:var(--red)}
+.items-ct{font-size:12px;color:var(--ink-soft)}
+
+/* ACCOUNT */
+.acct-info{display:flex;align-items:center;gap:16px}
+.acct-avatar{width:48px;height:48px;border-radius:50%;background:var(--green);color:white;font-size:20px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.acct-email{font-weight:700;font-size:15px}
+.acct-joined{font-size:12px;color:var(--ink-soft);margin-top:3px}
+.danger-zone{background:var(--red-bg);border:1px solid #f5c6c2;border-radius:var(--rad);padding:18px 20px}
+.danger-zone h3{color:var(--red);font-size:14px;margin-bottom:6px}
+.danger-zone p{font-size:13px;color:var(--ink-mid);margin-bottom:14px}
+
+/* DEALS LAYOUT — filter sidebar + main col */
+.deals-layout{display:flex;gap:20px;align-items:flex-start}
+
+/* ── FILTER SIDEBAR — fixed height with internal scroll ── */
+.filter-col{
+  width:224px;flex-shrink:0;
+  position:sticky;top:calc(var(--bar) + 20px);
+  max-height:calc(100vh - var(--bar) - 40px);
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  /* scrollbar */
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent;
+}
+.filter-col::-webkit-scrollbar{width:4px}
+.filter-col::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+
+.filter-sec{background:var(--white);border:1px solid var(--border);border-radius:var(--rad);padding:14px 16px;margin-bottom:10px;box-shadow:var(--sh-sm)}
+.filter-hd{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+.filter-opt{display:flex;align-items:flex-start;justify-content:space-between;padding:7px 0;border-bottom:1px solid #f0ede8;cursor:pointer;gap:8px;text-align:center}
+.filter-opt:last-child{border-bottom:none}
+.filter-opt input[type=checkbox]{accent-color:var(--green);margin-top:2px;flex-shrink:0;width:15px;height:15px;cursor:pointer}
+.filter-opt-label{font-size:13px;font-weight:600;color:var(--ink);flex:1;line-height:1.3;text-align:left}
+.filter-opt-sub{font-size:10px;color:var(--ink-soft);margin-top:1px}
+.filter-opt-cnt{font-size:11px;color:var(--ink-soft);font-family:var(--mono);white-space:nowrap;flex-shrink:0}
+
+/* DEALS MAIN */
+.deals-main{flex:1;min-width:0}
+.deals-topbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.deals-search{flex:1;min-width:160px;padding:9px 13px;border:1.5px solid var(--border);border-radius:8px;font-size:14px;outline:none;transition:border-color var(--t)}
+.deals-search:focus{border-color:var(--green)}
+.sort-select{padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;color:var(--ink-mid);background:var(--white);outline:none;cursor:pointer;transition:border-color var(--t)}
+.sort-select:focus{border-color:var(--green)}
+.deals-meta{font-size:12px;color:var(--ink-soft);margin-bottom:10px}
+.validity-bar{background:var(--green-bg);border:1px solid var(--green-dim);border-radius:8px;padding:9px 14px;font-size:13px;color:var(--green);font-weight:600;margin-bottom:12px;display:none}
+.validity-bar.vis{display:flex;align-items:center;gap:8px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;background:var(--green-dim);color:var(--green);border-radius:20px;font-size:12px;font-weight:700;cursor:pointer}
+.chip:hover{background:var(--green-bg)}
+.chip-x{font-size:14px;line-height:1}
+
+/* DEAL CARD */
+.deals-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:14px}
+.deal-card{background:var(--white);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh-sm);transition:box-shadow var(--t),transform var(--t);display:flex;flex-direction:column;position:relative}
+.deal-card:hover{box-shadow:var(--sh-md);transform:translateY(-2px)}
+.deal-card-img{width:100%;aspect-ratio:1/1;object-fit:contain;background:#f7f7f5;padding:12px;display:block}
+.deal-card-img-ph{width:100%;aspect-ratio:1/1;background:#f7f7f5;display:flex;align-items:center;justify-content:center;font-size:38px}
+.deal-card-body{padding:11px 12px;flex:1;display:flex;flex-direction:column;gap:3px}
+.deal-card-dept{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft)}
+.deal-card-title{font-size:13px;font-weight:700;color:var(--ink);line-height:1.3}
+.deal-card-desc{font-size:11px;color:var(--ink-mid);line-height:1.4}
+.deal-card-price{font-family:var(--mono);font-size:17px;font-weight:700;color:var(--green);margin-top:auto;padding-top:6px}
+.deal-card-price.is-discount{color:var(--amber)}
+.deal-card-save{font-size:11px;color:var(--ink-soft)}
+.deal-card-save.is-discount{font-size:11px;color:var(--amber);font-weight:700}
+.deal-type-tag{display:inline-block;font-size:9px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;border-radius:4px;padding:1px 5px;margin-bottom:4px}
+.deal-type-tag.weekly{background:#e8f5e9;color:#2e7d32}
+.deal-type-tag.bogo{background:#fff3e0;color:#e65100}
+.deal-type-tag.coupon{background:#e3f2fd;color:#1565c0}
+.deal-type-tag.extra{background:#fce4ec;color:#880e4f}
+.deal-type-tag.stacked{background:#ede7f6;color:#4527a0}
+.deal-card-valid{font-size:10px;color:var(--ink-soft);margin-top:1px}
+.deal-card-fine{font-size:10px;color:var(--ink-soft);font-style:italic}
+.deal-card-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.badge{display:inline-block;padding:2px 6px;border-radius:4px;font-size:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}
+.badge-publix{background:var(--green-dim);color:var(--green)}
+.badge-coupon{background:var(--purple-bg);color:var(--purple)}
+.badge-extra{background:var(--blue-bg);color:var(--blue)}
+.badge-stacked{background:var(--amber-bg);color:var(--amber)}
+
+/* History quality badges */
+.badge-best    {background:#fff3cd;color:#856404}
+.badge-recent  {background:#d1ecf1;color:#0c5460}
+.badge-repeat  {background:#e2e3e5;color:#383d41}
+.badge-rare    {background:#f8d7da;color:#721c24}
+
+/* Frequency hint under list items */
+.item-freq{font-size:11px;color:var(--ink-soft);margin-top:2px;font-style:italic}
+
+/* Matches quality banner */
+.quality-banner{background:linear-gradient(135deg,#e8f5e9,#f1f8f1);border:1px solid var(--green-dim);border-radius:10px;padding:12px 16px;margin-bottom:14px;font-size:13px;color:var(--ink);line-height:1.5}
+.quality-banner.neutral{background:#f8f9fa;border-color:var(--border)}
+.quality-banner-hd{font-weight:700;margin-bottom:4px;color:var(--green)}
+
+/* Badge legend */
+.badge-legend{font-size:11px;color:var(--ink-soft);margin-bottom:10px}
+.badge-legend summary{cursor:pointer;color:var(--ink-mid)}
+.badge-legend-body{margin-top:6px;display:flex;flex-wrap:wrap;gap:6px}
+
+/* ADD-TO-LIST CHECKBOX on deal card */
+.deal-add-wrap{position:absolute;top:8px;right:8px;z-index:2}
+.deal-add-cb{display:none}
+.deal-add-lbl{
+  display:flex;align-items:center;justify-content:center;
+  width:28px;height:28px;border-radius:50%;
+  background:rgba(255,255,255,.92);border:1.5px solid var(--border);
+  cursor:pointer;transition:background var(--t),border-color var(--t);
+  box-shadow:var(--sh-sm);font-size:14px;
+}
+.deal-add-lbl:hover{background:var(--green-bg);border-color:var(--green)}
+.deal-add-cb:checked + .deal-add-lbl{background:var(--green);border-color:var(--green);color:white}
+.deal-add-cb:checked + .deal-add-lbl::after{content:'✓';color:white;font-weight:900}
+.deal-add-lbl::after{content:'+';color:var(--green);font-weight:900}
+
+/* MATCH CARD */
+.matches-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px}
+.match-card{background:var(--white);border:2px solid var(--green-dim);border-radius:12px;overflow:hidden;box-shadow:var(--sh-sm);display:flex;flex-direction:column;transition:box-shadow var(--t),transform var(--t);position:relative}
+.match-card:hover{box-shadow:var(--sh-md);transform:translateY(-2px)}
+.match-card-img{width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--green-bg);padding:12px}
+.match-card-img-ph{width:100%;aspect-ratio:1/1;background:var(--green-bg);display:flex;align-items:center;justify-content:center;font-size:38px}
+.match-card-body{padding:11px 12px;flex:1;display:flex;flex-direction:column;gap:3px}
+.match-myitem{font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--green);background:var(--green-dim);border-radius:4px;padding:2px 6px;display:inline-block;margin-bottom:4px}
+.match-title{font-size:13px;font-weight:700;color:var(--ink);line-height:1.3}
+.match-desc{font-size:11px;color:var(--ink-mid)}
+.match-price{font-family:var(--mono);font-size:17px;font-weight:700;color:var(--green);margin-top:auto;padding-top:6px}
+.match-price.is-discount{color:var(--amber)}
+.match-save{font-size:11px;color:var(--ink-soft)}
+.match-save.is-discount{font-size:11px;color:var(--amber);font-weight:700}
+.match-valid{font-size:10px;color:var(--ink-soft)}
+.match-score{font-size:10px;color:var(--ink-soft);margin-top:2px}
+.match-banner{background:var(--green-bg);border:1.5px solid var(--green-dim);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;color:var(--green)}
+
+/* THRESHOLD inline on matches page */
+.sensitivity-bar{background:var(--white);border:1px solid var(--border);border-radius:var(--rad);padding:16px 20px;margin-bottom:18px;box-shadow:var(--sh-sm);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.sensitivity-bar label{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-soft);white-space:nowrap}
+.sensitivity-bar input[type=range]{flex:1;min-width:120px;accent-color:var(--green)}
+.threshold-val{font-family:var(--mono);font-size:15px;font-weight:700;color:var(--green);min-width:28px}
+.sensitivity-bar .hint{font-size:12px;color:var(--ink-soft);white-space:nowrap}
+/* ── Unified deals/matches panel ── */
+.deals-panel-header{margin-bottom:16px}
+.match-toggle-bar{display:flex;align-items:center;gap:12px;background:var(--green-bg);border:1.5px solid var(--green-dim);border-radius:10px;padding:10px 16px;margin-bottom:14px;flex-wrap:wrap}
+.toggle-switch{position:relative;width:36px;height:20px;flex-shrink:0}
+.toggle-switch input{opacity:0;width:0;height:0;position:absolute}
+.toggle-track{position:absolute;inset:0;background:#ccc;border-radius:10px;cursor:pointer;transition:background .2s}
+.toggle-track::after{content:'';position:absolute;width:14px;height:14px;background:white;border-radius:50%;top:3px;left:3px;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.25)}
+.toggle-switch input:checked+.toggle-track{background:var(--green)}
+.toggle-switch input:checked+.toggle-track::after{transform:translateX(16px)}
+.toggle-bar-label{font-size:13px;font-weight:700;color:var(--green);flex:1;min-width:80px}
+.toggle-bar-label.off{color:var(--ink-soft)}
+.match-count-pill{background:var(--green);color:white;font-size:11px;font-weight:700;padding:2px 9px;border-radius:10px;font-family:var(--mono);white-space:nowrap}
+.toggle-sensitivity{display:flex;align-items:center;gap:8px;border-left:1px solid var(--green-dim);padding-left:12px;flex-shrink:0}
+.toggle-sensitivity-label{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-soft);white-space:nowrap}
+.toggle-sensitivity input[type=range]{width:90px;accent-color:var(--green)}
+.toggle-sensitivity .threshold-val{font-size:12px;font-family:var(--mono);color:var(--ink-soft);min-width:18px}
+.section-divider{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);margin:18px 0 12px;display:flex;align-items:center;gap:10px}
+.section-divider::before,.section-divider::after{content:'';flex:1;height:1px;background:var(--border)}
+.section-divider-matches{color:var(--green)}
+.section-divider-matches::before,.section-divider-matches::after{background:var(--green-dim)}
+.deal-card.is-match{border:2px solid var(--green-dim)}
+.deal-card .match-reason{font-size:10px;color:var(--ink-soft);margin-top:3px}
+.deal-card .match-score{font-size:10px;color:var(--ink-soft)}
+
+/* SCRAPE LOGS */
+.scrape-bar{background:var(--green-bg);border:1px solid var(--green-dim);border-radius:8px;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:18px;font-size:13px;color:var(--green)}
+.scrape-bar.error{background:var(--red-bg);border-color:#f5c6c2;color:var(--red)}
+.scrape-bar.loading{background:var(--amber-bg);border-color:#fde68a;color:var(--amber)}
+.scrape-stat{font-weight:700}
+.log-row{background:var(--white);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:flex-start;gap:14px;box-shadow:var(--sh-sm)}
+.log-icon{font-size:24px;flex-shrink:0}
+.log-detail{flex:1;min-width:0}
+.log-summary{font-weight:700;font-size:14px}
+.log-meta{font-size:12px;color:var(--ink-soft);margin-top:3px}
+.log-errors{font-size:11px;color:var(--red);margin-top:4px}
+.terminal{background:#1a1a2e;border-radius:8px;padding:14px 16px;font-family:var(--mono);font-size:12px;color:#e2e8f0;max-height:380px;overflow-y:auto;line-height:1.6;white-space:pre-wrap;word-break:break-all}
+.terminal .ts{color:#64748b;margin-right:8px}
+.terminal .terr{color:#f87171}
+.terminal .tok{color:#4ade80}
+
+/* ADMIN TABLE */
+.admin-tbl{width:100%;border-collapse:collapse;font-size:13px}
+.admin-tbl th{padding:10px 12px;background:var(--green);color:white;text-align:left;font-size:11px;letter-spacing:.05em;text-transform:uppercase;white-space:nowrap}
+.admin-tbl td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+.admin-tbl tr:hover td{background:var(--green-bg)}
+.admin-tbl tr:last-child td{border-bottom:none}
+.abn{padding:4px 10px;border-radius:5px;font-size:11px;font-weight:700;cursor:pointer;border:1.5px solid;transition:var(--t);white-space:nowrap}
+.abn.g{border-color:var(--green);color:var(--green);background:var(--green-bg)}.abn.g:hover{background:var(--green-dim)}
+.abn.r{border-color:var(--red);color:var(--red);background:var(--red-bg)}.abn.r:hover{background:#fae0de}
+.abn.a{border-color:var(--amber);color:var(--amber);background:var(--amber-bg)}.abn.a:hover{background:#fef3c7}
+.adm-sec{margin-bottom:28px}
+.adm-sec-title{font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:12px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+/* Admin sidebar layout */
+.adm-layout{display:flex;gap:0;min-height:500px}
+.adm-sidebar{width:160px;flex-shrink:0;border-right:1px solid var(--border);padding:4px 0;margin-right:24px}
+.adm-sidebar-item{display:flex;align-items:center;gap:8px;width:100%;padding:9px 14px;font-size:13px;font-weight:500;border:none;background:none;cursor:pointer;color:var(--ink-soft);border-radius:8px;transition:var(--t);text-align:left;box-sizing:border-box}
+.adm-sidebar-item:hover{background:var(--green-bg);color:var(--ink)}
+.adm-sidebar-item.active{background:var(--green-bg);color:var(--green);font-weight:700}
+.adm-sidebar-item .adm-si-icon{font-size:15px;width:20px;text-align:center;flex-shrink:0}
+.adm-content{flex:1;min-width:0}
+.adm-subpage{display:none}.adm-subpage.active{display:block}
+@media(max-width:600px){.adm-layout{flex-direction:column}.adm-sidebar{width:100%;border-right:none;border-bottom:1px solid var(--border);padding:0 0 8px;margin-right:0;margin-bottom:16px;display:flex;flex-wrap:wrap;gap:4px}.adm-sidebar-item{width:auto;padding:6px 12px;font-size:12px}}
+/* Auth log table */
+.auth-log-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.auth-log-tbl th{padding:8px 10px;background:var(--green);color:white;text-align:left;font-size:11px;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+.auth-log-tbl td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.auth-log-tbl tr:hover td{background:var(--green-bg)}
+.auth-log-tbl tr:last-child td{border-bottom:none}
+.auth-log-tbl .fail{color:var(--red)}.auth-log-tbl .ok{color:var(--green)}
+/* App log rows */
+.app-log-row{font-family:var(--mono);font-size:11px;padding:5px 8px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:baseline}
+.app-log-row:last-child{border-bottom:none}
+.app-log-row .alts{color:var(--ink-soft);white-space:nowrap;flex:0 0 140px}
+.app-log-row .alsrc{font-weight:700;flex:0 0 70px}
+.app-log-row .almsg{color:var(--ink);word-break:break-all}
+.app-log-row.lv-error .almsg{color:var(--red)}
+.app-log-row.lv-warn .almsg{color:var(--amber)}
+
+/* MODAL */
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:500;align-items:center;justify-content:center;padding:24px}
+.overlay.vis{display:flex}
+.dialog{background:white;border-radius:14px;padding:28px;max-width:420px;width:100%;box-shadow:var(--sh-lg)}
+.dialog h3{font-size:18px;font-weight:700;margin-bottom:10px}
+.dialog p{font-size:14px;color:var(--ink-mid);margin-bottom:20px;line-height:1.5}
+/* Welcome modal */
+.wlc-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:600;align-items:center;justify-content:center;padding:20px}
+.wlc-overlay.vis{display:flex}
+.wlc-modal{background:var(--white);border-radius:20px;max-width:480px;width:100%;box-shadow:0 24px 64px rgba(0,0,0,.22);overflow:hidden;animation:wlcIn .32s cubic-bezier(.22,1,.36,1)}
+@keyframes wlcIn{from{opacity:0;transform:translateY(24px) scale(.97)}to{opacity:1;transform:none}}
+.wlc-header{background:var(--green);padding:28px 32px 24px;color:white;position:relative}
+.wlc-header h2{font-family:var(--serif);font-size:28px;font-weight:400;margin-bottom:4px}
+.wlc-header p{font-size:13px;opacity:.78}
+.wlc-body{padding:28px 32px}
+.wlc-step{display:none}.wlc-step.active{display:block}
+.wlc-steps-row{display:flex;gap:6px;justify-content:center;margin-bottom:24px}
+.wlc-dot{width:8px;height:8px;border-radius:50%;background:var(--border);transition:background .2s}
+.wlc-dot.active{background:var(--green)}
+.wlc-feature{display:flex;align-items:flex-start;gap:14px;margin-bottom:18px}
+.wlc-icon{width:40px;height:40px;border-radius:10px;background:var(--green-bg);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+.wlc-feature h4{font-size:14px;font-weight:700;margin-bottom:3px;color:var(--ink)}
+.wlc-feature p{font-size:13px;color:var(--ink-soft);line-height:1.5;margin:0}
+.wlc-step-title{font-family:var(--serif);font-size:22px;font-weight:400;margin-bottom:6px;color:var(--ink)}
+.wlc-step-sub{font-size:13px;color:var(--ink-soft);margin-bottom:22px;line-height:1.5}
+.wlc-instruction{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px;padding:12px 14px;background:var(--green-bg);border-radius:10px;border:1px solid var(--green-dim)}
+.wlc-num{width:24px;height:24px;border-radius:50%;background:var(--green);color:white;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+.wlc-instruction p{font-size:13px;color:var(--ink-mid);line-height:1.5;margin:0}
+.wlc-footer{display:flex;align-items:center;justify-content:space-between;padding:0 32px 24px}
+.wlc-skip{font-size:12px;color:var(--ink-soft);background:none;border:none;cursor:pointer;padding:8px 0}
+.wlc-skip:hover{color:var(--ink)}
+.wlc-next{padding:11px 28px;background:var(--green);color:white;border:none;border-radius:9px;font-size:14px;font-weight:700;cursor:pointer;transition:background var(--t)}
+.wlc-next:hover{background:var(--green-lt)}
+.dlg-btns{display:flex;gap:10px;justify-content:flex-end}
+.btn-cancel{padding:9px 18px;background:var(--green-bg);color:var(--green);border:1.5px solid var(--green-dim);border-radius:8px;font-size:13px;font-weight:700;cursor:pointer}
+
+/* TOGGLES */
+.slider-wrap{display:flex;align-items:center;gap:12px;margin-top:8px}
+.slider-wrap input[type=range]{flex:1;accent-color:var(--green)}
+.slider-val{font-family:var(--mono);font-size:14px;font-weight:700;color:var(--green);min-width:28px}
+
+/* EMPTY STATES */
+.empty{text-align:center;padding:60px 24px;color:var(--ink-soft)}
+.empty-icon{font-size:48px;margin-bottom:12px}
+
+/* LOADING SPINNER */
+.spinning{display:inline-block;width:18px;height:18px;border:2.5px solid rgba(255,255,255,.4);border-top-color:white;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* BURGER MENU */
+.burger{display:none;flex-direction:column;gap:5px;background:none;border:none;cursor:pointer;padding:6px;border-radius:6px;transition:background var(--t)}
+.burger:hover{background:rgba(255,255,255,.15)}
+.burger span{display:block;width:22px;height:2px;background:white;border-radius:2px;transition:var(--t)}
+
+/* MOBILE NAV DRAWER */
+.mobile-nav{display:none;position:fixed;inset:0;z-index:300}
+.mobile-nav.open{display:block}
+.mobile-nav-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.45)}
+.mobile-nav-drawer{position:absolute;top:0;left:0;bottom:0;width:240px;background:var(--white);box-shadow:var(--sh-lg);padding:0;display:flex;flex-direction:column;transform:translateX(-100%);transition:transform .22s ease}
+.mobile-nav.open .mobile-nav-drawer{transform:translateX(0)}
+.mobile-nav-hd{background:var(--green);color:white;padding:16px 20px;font-family:var(--serif);font-size:17px;display:flex;align-items:center;justify-content:space-between}
+.mobile-nav-close{background:none;border:none;color:white;font-size:22px;cursor:pointer;line-height:1;padding:0 4px}
+.mobile-nav-body{padding:12px 8px;flex:1;overflow-y:auto}
+
+/* RESPONSIVE */
+@media(max-width:900px){.filter-col{display:none}.deals-layout{flex-direction:column}}
+@media(max-width:680px){
+  .sidebar{display:none}
+  .burger{display:flex}
+  .main-content{padding:20px 0}
+  .topbar{padding:0 16px}
+  .tb-email{display:none}
+  .app-layout{padding:0 12px}
+  .card{padding:16px}
+  .deals-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+}
+
+/* Auto-save toast */
+#save-toast{position:fixed;bottom:24px;right:24px;background:var(--green);color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.18);opacity:0;transform:translateY(8px);transition:opacity .25s,transform .25s;pointer-events:none;z-index:9999}
+#save-toast.show{opacity:1;transform:translateY(0)}
+
+.btn-clip{display:inline-flex;align-items:center;gap:5px;margin-top:6px;padding:5px 10px;background:var(--purple-bg);color:var(--purple);border:1.5px solid var(--purple);border-radius:6px;font-size:11px;font-weight:700;text-decoration:none;cursor:pointer;transition:background var(--t)}
+.btn-clip:hover{background:var(--purple);color:#fff}
+
+/* Load More pagination */
+.load-more-wrap{grid-column:1/-1;text-align:center;padding:18px 0 8px}
+.btn-load-more{background:var(--green);color:#fff;border:none;border-radius:8px;padding:12px 28px;font-size:14px;font-weight:600;cursor:pointer;transition:background .15s,transform .1s}
+.btn-load-more:hover{background:var(--green-dim)}
+.btn-load-more:active{transform:scale(.97)}
+.load-more-ct{font-weight:400;opacity:.75;font-size:12px}
+
+/* Deal detail modal */
+.deal-modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:550;align-items:flex-end;justify-content:center}
+.deal-modal-overlay.vis{display:flex}
+@media(min-width:600px){.deal-modal-overlay{align-items:center}}
+.deal-modal{background:var(--white);width:100%;max-width:540px;border-radius:20px 20px 0 0;max-height:90vh;overflow-y:auto;box-shadow:0 -8px 40px rgba(0,0,0,.18);animation:slideUp .25s cubic-bezier(.22,1,.36,1)}
+@media(min-width:600px){.deal-modal{border-radius:20px;animation:fadeScale .22s cubic-bezier(.22,1,.36,1)}}
+@keyframes slideUp{from{transform:translateY(60px);opacity:0}to{transform:none;opacity:1}}
+@keyframes fadeScale{from{transform:scale(.95);opacity:0}to{transform:none;opacity:1}}
+.deal-modal-img{width:100%;max-height:200px;object-fit:contain;background:#f7f7f5;padding:20px;display:block}
+.deal-modal-img-ph{width:100%;height:140px;background:#f7f7f5;display:flex;align-items:center;justify-content:center;font-size:52px}
+.deal-modal-body{padding:20px 22px 28px}
+.deal-modal-dept{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:4px}
+.deal-modal-title{font-family:var(--serif);font-size:21px;font-weight:400;color:var(--ink);line-height:1.3;margin-bottom:6px}
+.deal-modal-desc{font-size:13px;color:var(--ink-mid);line-height:1.5;margin-bottom:12px}
+.deal-modal-price{font-family:var(--mono);font-size:26px;font-weight:700;color:var(--green);margin-bottom:4px}
+.deal-modal-save{font-size:13px;color:var(--amber);font-weight:700;margin-bottom:10px}
+.deal-modal-actions{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}
+.deal-modal-close{position:sticky;top:0;z-index:2;display:flex;justify-content:flex-end;padding:12px 14px 0;background:transparent}
+.deal-modal-close button{background:var(--border);border:none;border-radius:50%;width:30px;height:30px;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--ink-mid);transition:background var(--t)}
+.deal-modal-close button:hover{background:var(--ink-soft);color:white}
+/* ── Deal modal: structured data rows (Option A+C hybrid) ── */
+.dm-data-rows{border-top:1px solid var(--border);padding-top:12px;margin-top:14px}
+.dm-data-row{display:flex;align-items:flex-start;gap:8px;padding:6px 0;font-size:12px;border-bottom:1px solid rgba(221,216,206,.4)}
+.dm-data-row:nth-child(odd){background:rgba(240,247,243,.45)}
+.dm-data-row:last-child{border-bottom:none}
+.dm-data-lbl{min-width:84px;flex-shrink:0;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);padding-top:1px}
+.dm-data-val{flex:1;color:var(--ink-mid);line-height:1.45}
+.dm-data-val.fine{font-style:italic;font-size:11px;color:var(--ink-soft)}
+.dm-data-val.freq{color:var(--green);font-weight:700}
+/* ── Deal modal: price history chart ── */
+.dm-timeline{border-top:1px solid var(--border);padding-top:14px;margin-top:18px}
+.dm-timeline-hd{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:10px}
+.dm-chart{display:block;width:100%;height:90px}
+.dm-timeline-caption{font-size:11px;color:var(--ink-soft);margin-top:10px}
+.deal-card{cursor:pointer}
+.deal-card:active{transform:scale(.98)}
+
+/* Autocomplete dropdown */
+.ac-wrap{position:relative;flex:1}
+.ac-drop{position:absolute;top:100%;left:0;right:0;background:var(--white);border:1.5px solid var(--green);border-top:none;border-radius:0 0 8px 8px;max-height:240px;overflow-y:auto;z-index:500;box-shadow:0 6px 20px rgba(0,0,0,.1)}
+.ac-item{padding:9px 12px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)}
+.ac-item:last-child{border-bottom:none}
+.ac-item:hover,.ac-item.ac-sel{background:var(--green-bg)}
+.ac-item-free{font-weight:700;color:var(--green)}
+.ac-item-free::before{content:'✏️ ';font-size:11px}
+.ac-item-deal::before{content:'🏷️ ';font-size:11px;opacity:.6}
+
+/* Admin stats */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
+.stat-card{background:var(--green-bg);border:1px solid var(--green-dim);border-radius:10px;padding:14px 16px;text-align:center}
+.stat-val{font-size:28px;font-weight:800;color:var(--green);font-family:var(--mono)}
+.stat-lbl{font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
+.stats-two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:600px){.stats-two{grid-template-columns:1fr}}
+.stat-list{list-style:none;padding:0;margin:0}
+.stat-list li{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px}
+.stat-list li:last-child{border-bottom:none}
+.stat-list .sl-bar-wrap{flex:1;margin:0 10px;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.stat-list .sl-bar{height:100%;background:var(--green);border-radius:3px;transition:width .4s}
+.stat-list .sl-ct{font-family:var(--mono);font-size:12px;color:var(--ink-soft);min-width:20px;text-align:right}
+.stat-month-chart{display:flex;align-items:flex-end;gap:4px;height:60px;margin-top:8px}
+.smc-bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px}
+.smc-bar{width:100%;background:var(--green);border-radius:3px 3px 0 0;min-height:2px;transition:height .4s}
+.smc-lbl{font-size:9px;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+
+/* Email toggle */
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border);margin-bottom:12px}
+.toggle-row:last-of-type{border-bottom:none;margin-bottom:0}
+.toggle-label{font-size:14px;font-weight:600;color:var(--ink)}
+.toggle-hint{font-size:12px;color:var(--ink-soft);margin-top:2px}
+.toggle-switch{position:relative;width:44px;height:24px;flex-shrink:0}
+.toggle-switch input{opacity:0;width:0;height:0;position:absolute}
+.toggle-track{position:absolute;inset:0;background:var(--border);border-radius:24px;cursor:pointer;transition:background var(--t)}
+.toggle-switch input:checked+.toggle-track{background:var(--green)}
+.toggle-track::after{content:'';position:absolute;left:3px;top:3px;width:18px;height:18px;background:white;border-radius:50%;transition:transform var(--t);box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.toggle-switch input:checked+.toggle-track::after{transform:translateX(20px)}
+</style>
+</head>
+<body>
+
+<!-- AUTH -->
+<div id="auth-screen">
+  <div class="auth-card">
+    <div class="auth-hd"><h1>Cartwise</h1><p>Get notified when your grocery list goes on sale</p></div>
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-action="switch-tab" data-tab="login">Sign In</button>
+      <button class="auth-tab" data-action="switch-tab" data-tab="register">Create Account</button>
+    </div>
+    <div class="auth-body">
+      <form id="auth-form">
+      <div class="field"><label>Email address</label>
+        <input type="email" id="auth-email" placeholder="you@example.com" autocomplete="email" data-action="sanitize-email"></div>
+      <div class="field"><label>4-digit PIN</label>
+        <div class="pin-wrap">
+          <input class="pin-d auth-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·" autocomplete="off">
+          <input class="pin-d auth-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·" autocomplete="off">
+          <input class="pin-d auth-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·" autocomplete="off">
+          <input class="pin-d auth-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·" autocomplete="off">
+        </div></div>
+      <button class="btn-primary" id="auth-btn" type="submit">Sign In</button>
+      <div class="msg" id="auth-msg"></div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app-screen">
+  <div class="topbar">
+    <div style="display:flex;align-items:center;gap:12px">
+      <button class="burger" id="burger-btn" data-action="open-mobile-nav" aria-label="Open menu">
+        <span></span><span></span><span></span>
+      </button>
+      <div class="tb-brand">Cartwise</div>
+    </div>
+    <div class="tb-right">
+      <span class="tb-email" id="topbar-email"></span>
+      <button class="btn-ghost" data-action="do-logout">Sign Out</button>
+    </div>
+  </div>
+
+  <!-- MOBILE NAV DRAWER -->
+  <div class="mobile-nav" id="mobile-nav">
+    <div class="mobile-nav-backdrop" data-action="close-mobile-nav"></div>
+    <div class="mobile-nav-drawer">
+      <div class="mobile-nav-hd">
+        <span>Menu</span>
+        <button class="mobile-nav-close" data-action="close-mobile-nav">✕</button>
+      </div>
+      <div class="mobile-nav-body">
+        <button class="nav-item" data-action="nav-panel-mobile" data-panel="deals"   id="mnav-deals">   <span class="nav-icon">🏷️</span> Deals</button>
+        <button class="nav-item" data-action="nav-panel-mobile" data-panel="list"    id="mnav-list">    <span class="nav-icon">📋</span> My List</button>
+        <button class="nav-item" data-action="nav-panel-mobile" data-panel="schedule"id="mnav-schedule"><span class="nav-icon">🔔</span> Notifications</button>
+        <button class="nav-item" data-action="nav-panel-mobile" data-panel="store"   id="mnav-store">   <span class="nav-icon">🏪</span> My Store</button>
+        <button class="nav-item" data-action="nav-panel-mobile" data-panel="account" id="mnav-account"> <span class="nav-icon">👤</span> Account</button>
+        <div class="nav-sep"></div>
+        <button class="nav-item" data-action="nav-panel-mobile" data-panel="admin"   id="mnav-admin">   <span class="nav-icon">⚙️</span> Admin</button>
+      </div>
+    </div>
+  </div>
+  <div class="app-layout">
+    <nav class="sidebar">
+      <button class="nav-item"        data-action="nav-panel" data-panel="deals"    id="nav-deals">   <span class="nav-icon">🏷️</span> Deals</button>
+      <button class="nav-item"        data-action="nav-panel" data-panel="list"     id="nav-list">    <span class="nav-icon">📋</span> My List</button>
+      <button class="nav-item"        data-action="nav-panel" data-panel="schedule" id="nav-schedule"><span class="nav-icon">🔔</span> Notifications</button>
+      <button class="nav-item"        data-action="nav-panel" data-panel="store"    id="nav-store">   <span class="nav-icon">🏪</span> My Store</button>
+      <button class="nav-item"        data-action="nav-panel" data-panel="account"  id="nav-account"> <span class="nav-icon">👤</span> Account</button>
+      <div class="nav-sep"></div>
+      <button class="nav-item"        data-action="nav-panel" data-panel="admin"    id="nav-admin">   <span class="nav-icon">⚙️</span> Admin</button>
+    </nav>
+
+    <div class="main-content">
+
+<!-- ══ STORE ══════════════════════════════════════════════════════════════ -->
+<div class="panel active" id="panel-store">
+  <div class="panel-title">Store Settings</div>
+  <div class="panel-sub">Find and set your Publix location to see the right deals.</div>
+
+  <!-- Selected store card (shown when store is set) -->
+  <div id="store-card-wrap" style="display:none;margin-bottom:16px">
+    <div class="store-card" id="store-card-el"></div>
+  </div>
+
+  <!-- Search UI (shown when no store set) -->
+  <div id="store-search-ui">
+    <div class="card">
+      <div class="card-title">Find Your Store</div>
+      <div class="store-search-wrap">
+        <input type="text" id="store-id-input" class="store-search-input"
+          placeholder="City, ZIP code, or store #…"
+          autocomplete="off"
+          data-action="store-input-type"
+          data-action="store-search-key">
+        <span class="store-search-icon">🔍</span>
+      </div>
+      <div style="margin-top:8px;text-align:right">
+        <button class="btn-load" style="padding:7px 16px;font-size:12px" data-action="do-store-search">Search</button>
+      </div>
+      <div id="store-results" class="store-results"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ══ DEALS ══════════════════════════════════════════════════════════════ -->
+<div class="panel" id="panel-deals">
+  <div class="deals-panel-header">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      <div class="panel-title">This Week's Deals</div>
+      <button class="btn-load" style="padding:7px 14px;font-size:12px" id="btn-refresh-deals" data-action="refresh-deals">↻ Refresh</button>
+    </div>
+
+    <!-- Match toggle bar -->
+    <div class="match-toggle-bar" id="match-toggle-bar">
+      <label class="toggle-switch" title="Show your matches first">
+        <input type="checkbox" id="matches-toggle" checked data-action="matches-toggle">
+        <span class="toggle-track"></span>
+      </label>
+      <span class="toggle-bar-label" id="toggle-bar-label">My Matches first</span>
+      <span class="match-count-pill" id="match-count-pill" style="display:none"></span>
+      <div class="toggle-sensitivity">
+        <span class="toggle-sensitivity-label">Sensitivity</span>
+        <input type="range" id="threshold" min="40" max="100" value="75"
+          data-action="threshold-slider">
+        <span class="threshold-val" id="threshold-val">75</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="deals-loading" style="display:none;text-align:center;padding:48px">
+    <div class="spinning" style="width:32px;height:32px;border-color:rgba(26,107,60,.3);border-top-color:var(--green);margin:0 auto 12px"></div>
+    <div style="font-size:14px;color:var(--ink-soft)">Loading deals…</div>
+  </div>
+  <div id="deals-err" style="display:none;color:var(--red);font-size:13px;padding:8px 0"></div>
+  <div id="matches-loading-inline" style="display:none;font-size:13px;color:var(--ink-soft);padding:4px 0 8px">Finding your matches…</div>
+
+  <div id="deals-browser" style="display:none">
+    <div class="validity-bar" id="deals-vbar"></div>
+    <div class="deals-layout">
+      <div class="filter-col" id="deals-filter-col">
+        <div class="filter-sec">
+          <div class="filter-hd">Savings</div>
+          <label class="filter-opt"><input type="checkbox" id="f-all" data-action="savings-filter" data-filter="all">
+            <div><div class="filter-opt-label">All deals</div></div>
+            <span class="filter-opt-cnt" id="fcnt-all"></span></label>
+          <label class="filter-opt"><input type="checkbox" id="f-weekly" checked data-action="savings-filter" data-filter="weekly">
+            <div><div class="filter-opt-label">Weekly ad</div></div>
+            <span class="filter-opt-cnt" id="fcnt-weekly"></span></label>
+          <label class="filter-opt"><input type="checkbox" id="f-bogo" checked data-action="savings-filter" data-filter="bogo">
+            <div><div class="filter-opt-label">BOGOs</div></div>
+            <span class="filter-opt-cnt" id="fcnt-bogo"></span></label>
+          <label class="filter-opt"><input type="checkbox" id="f-coupon" checked data-action="savings-filter" data-filter="coupon">
+            <div><div class="filter-opt-label">Digital coupons</div></div>
+            <span class="filter-opt-cnt" id="fcnt-coupon"></span></label>
+          <label class="filter-opt"><input type="checkbox" id="f-extra" checked data-action="savings-filter" data-filter="extra">
+            <div><div class="filter-opt-label">Extra savings</div></div>
+            <span class="filter-opt-cnt" id="fcnt-extra"></span></label>
+        </div>
+        <div class="filter-sec"><div class="filter-hd">Department</div><div id="dept-deals"></div></div>
+      </div>
+      <div class="deals-main">
+        <div class="deals-topbar">
+          <input class="deals-search" type="text" id="deals-q" placeholder="Search deals…" data-action="deals-search-input">
+          <select class="sort-select" id="deals-sort" data-action="deals-sort">
+            <option value="default">Sort: Default</option>
+            <option value="name-az">Name A→Z</option>
+            <option value="name-za">Name Z→A</option>
+            <option value="savings-desc">Savings ↓</option>
+          </select>
+        </div>
+        <div class="chips" id="deals-chips"></div>
+        <div class="deals-meta" id="deals-meta"></div>
+        <details class="badge-legend" id="badge-legend-deals" style="display:none">
+          <summary>What do these badges mean?</summary>
+          <div class="badge-legend-body">
+            <span class="badge badge-best">🔥 Best price this year</span>
+            <span class="badge badge-recent">✨ Best price in 6 weeks</span>
+            <span class="badge badge-repeat">🔁 Repeat deal</span>
+            <span class="badge badge-rare">📅 Rarely on sale</span>
+          </div>
+        </details>
+        <!-- Matches section (shown when toggle is on and matches exist) -->
+        <div id="matches-section" style="display:none">
+          <div id="quality-banner" class="quality-banner" style="display:none"></div>
+          <div class="section-divider section-divider-matches">✓ Your Matches</div>
+          <div class="matches-grid" id="matches-grid"></div>
+          <div class="section-divider section-divider-all">All Deals</div>
+        </div>
+        <div class="deals-grid" id="deals-grid"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MY LIST ════════════════════════════════════════════════════════════ -->
+<div class="panel" id="panel-list">
+  <div class="panel-title">My Shopping List</div>
+  <div class="panel-sub">Add items you regularly buy. Fuzzy matching finds deals even with partial names.</div>
+  <div class="card">
+    <div class="card-title">Add Items</div>
+    <div class="items-add">
+      <div class="ac-wrap">
+        <input type="text" id="new-item" placeholder="e.g. chicken breast, greek yogurt…"
+          data-action="ac-input" autocomplete="off">
+        <div id="ac-drop" class="ac-drop" style="display:none"></div>
+      </div>
+      <button class="btn-add" data-action="add-item">+ Add</button>
+    </div>
+    <div class="hint" style="margin-top:5px;font-size:12px;color:var(--ink-soft)">Selecting from the dropdown adds a known deal title. Type your own text to search for anything.</div>
+    <ul class="items-ul" id="items-ul"></ul>
+    <div class="items-ct" id="items-ct">0 items</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Bulk Import</div>
+    <div class="row"><label>Paste a list (one item per line)</label>
+      <textarea id="bulk-ta" placeholder="chicken breast&#10;greek yogurt&#10;tide pods&#10;orange juice"></textarea></div>
+    <button class="btn-sec" data-action="bulk-import">Import Items</button>
+  </div>
+
+  <div class="card">
+    <div class="card-title">📧 Email a List</div>
+    <div class="row">
+      <label>Import your grocery list by email</label>
+      <div class="hint" style="margin-bottom:8px">
+        Forward your <strong>Publix &ldquo;My List&rdquo; email</strong> to:
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <code id="inbound-addr-display"
+          style="background:var(--green-bg);border:1.5px solid var(--green-dim);
+          border-radius:6px;padding:6px 14px;font-size:13px;
+          font-family:var(--mono);color:var(--green);display:inline-block">
+          cartwise@minaushii.resend.app
+        </code>
+        <button class="btn-sec" style="padding:6px 14px;font-size:12px"
+          data-action="copy-inbound" id="copy-inbound-btn">Copy</button>
+      </div>
+      <div class="hint" style="margin-top:10px">
+        Send the email <strong>from the same address you use to log in</strong>
+        (or your notification email). Items already on your list are skipped.
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Export List</div>
+    <div class="row"><label>Download your shopping list as a plain text file, or copy it to the clipboard.</label></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn-sec" data-action="export-download">⬇ Download .txt</button>
+      <button class="btn-sec" data-action="export-copy">📋 Copy to Clipboard</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- ══ SCHEDULE ═══════════════════════════════════════════════════════════ -->
+<div class="panel" id="panel-schedule">
+  <div class="panel-title">Notifications</div>
+  <div class="panel-sub">Control how and when you receive deal alerts.</div>
+  <div class="card">
+    <div class="card-title">Email Alerts</div>
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">Weekly email digest</div>
+        <div class="toggle-hint">Receive a weekly email when your list items go on sale</div>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="email-enabled" data-action="email-enabled-toggle">
+        <div class="toggle-track"></div>
+      </label>
+    </div>
+    <div id="email-settings-wrap">
+      <div class="row">
+        <label>Send deal alerts to</label>
+        <input type="email" id="notify-email" placeholder="you@example.com" data-action="notify-email-input">
+        <div class="hint">Defaults to your account email. Change to send alerts to a different address.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:4px;flex-wrap:wrap">
+        <button class="btn-test" id="btn-test-email" data-action="send-test-email">📧 Send Test Email</button>
+        <button class="btn-test" id="btn-resend-weekly" data-action="resend-weekly" style="background:var(--green-bg,#f0fdf4);color:var(--green,#16a34a);border-color:#bbf7d0">🛒 Resend This Week's Deals</button>
+        <span id="test-email-msg" style="font-size:13px;width:100%"></span>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">Alert Schedule</div>
+    <div class="row"><label>Day of week</label>
+      <select id="sched-day" data-action="save-schedule">
+        <option value="1">Monday</option><option value="2">Tuesday</option>
+        <option value="3" selected>Wednesday (recommended)</option>
+        <option value="4">Thursday</option><option value="5">Friday</option>
+        <option value="6">Saturday</option><option value="0">Sunday</option>
+      </select></div>
+    <div class="row" style="display:flex;gap:12px">
+      <div style="flex:1"><label>Hour</label>
+        <select id="sched-hour" data-action="save-schedule">
+          <option value="6">6</option><option value="7">7</option><option value="8" selected>8</option>
+          <option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option>
+        </select></div>
+      <div style="width:80px"><label>AM/PM</label>
+        <select id="sched-ampm" data-action="save-schedule"><option value="AM" selected>AM</option><option value="PM">PM</option></select></div>
+    </div>
+    <div class="hint">The scraper runs via AWS EventBridge cron every Wednesday at 12:00 UTC (8 AM ET).</div>
+  </div>
+
+</div>
+
+<!-- ══ ACCOUNT ════════════════════════════════════════════════════════════ -->
+<div class="panel" id="panel-account">
+  <div class="panel-title">Account</div>
+  <div class="panel-sub">Manage your account settings and PIN.</div>
+  <div class="card">
+    <div class="acct-info">
+      <div class="acct-avatar" id="acct-avatar">?</div>
+      <div><div class="acct-email" id="acct-email-disp"></div>
+           <div class="acct-joined">Cartwise member</div></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">Change PIN</div>
+    <div class="row"><label>Current PIN</label>
+      <div class="pin-wrap" style="max-width:220px">
+        <input class="pin-d cur-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+        <input class="pin-d cur-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+        <input class="pin-d cur-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+        <input class="pin-d cur-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+      </div></div>
+    <div class="row"><label>New PIN</label>
+      <div class="pin-wrap" style="max-width:220px">
+        <input class="pin-d new-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+        <input class="pin-d new-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+        <input class="pin-d new-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+        <input class="pin-d new-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+      </div></div>
+    <button class="btn-sec" data-action="change-pin">Update PIN</button>
+    <div class="msg" id="pin-msg" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Getting Started</div>
+    <div style="font-size:13px;color:var(--ink-mid);margin-bottom:12px">Replay the intro tour to see how to set up your store, list, and email alerts.</div>
+    <button class="btn-sec" data-action="wlc-show">▶ View intro tour</button>
+  </div>
+
+  <div class="danger-zone">
+    <h3>Delete Account</h3>
+    <p>Permanently removes your account and all preferences. Cannot be undone.</p>
+    <button class="btn-danger" data-action="show-delete-overlay">Delete My Account</button>
+  </div>
+</div>
+
+<!-- ══ ADMIN ══════════════════════════════════════════════════════════════ -->
+<div class="panel" id="panel-admin">
+  <div class="panel-title">Admin</div>
+  <div class="panel-sub">Manage users, view logs, and analytics.</div>
+
+  <!-- LOGIN -->
+  <div id="admin-login-sec" style="max-width:380px;margin:0 auto">
+    <div class="card">
+      <div class="card-title">Admin Authentication</div>
+      <div class="row"><label>Admin Secret</label>
+        <input type="password" id="admin-secret-inp" placeholder="Enter admin secret" data-action="admin-secret-key"></div>
+      <button class="btn-save" data-action="admin-login">Authenticate</button>
+      <div class="msg" id="admin-login-msg" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <!-- DASHBOARD -->
+  <div id="admin-dash" style="display:none">
+    <!-- Top bar: scrape status + sign out -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;gap:12px">
+      <div class="scrape-bar loading" id="admin-scrape-bar" style="flex:1;margin-bottom:0"><span>Loading scrape status…</span></div>
+      <button class="btn-sec" data-action="admin-sign-out" style="font-size:12px;padding:5px 12px;white-space:nowrap">🔒 Sign out</button>
+    </div>
+
+    <!-- Sidebar + Content layout -->
+    <div class="adm-layout">
+      <nav class="adm-sidebar">
+        <button class="adm-sidebar-item active" data-action="admin-nav" data-tab="users"   id="anav-users">  <span class="adm-si-icon">👥</span> Users</button>
+        <button class="adm-sidebar-item"        data-action="admin-nav" data-tab="reports" id="anav-reports"><span class="adm-si-icon">📊</span> Reports</button>
+        <button class="adm-sidebar-item"        data-action="admin-nav" data-tab="logging" id="anav-logging"><span class="adm-si-icon">📋</span> Logging</button>
+        <button class="adm-sidebar-item"        data-action="admin-nav" data-tab="inbound" id="anav-inbound"><span class="adm-si-icon">📧</span> Email Import</button>
+      </nav>
+
+      <div class="adm-content">
+
+        <!-- ══════════════════════ USERS ══════════════════════ -->
+        <div class="adm-subpage active" id="apage-users">
+          <div class="adm-sec">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+              <div class="adm-sec-title" style="margin-bottom:0">User Accounts <span id="admin-user-ct" style="font-size:13px;color:var(--ink-soft);font-weight:400"></span></div>
+              <div style="display:flex;gap:8px">
+                <button class="btn-load" style="padding:7px 14px;font-size:12px" data-action="show-create-user">+ Add User</button>
+                <button class="abn g" data-action="admin-refresh-users">↻ Refresh</button>
+              </div>
+            </div>
+            <input type="text" id="admin-user-search" placeholder="Search by email or store…"
+              style="width:100%;box-sizing:border-box;padding:8px 12px;border:1px solid var(--border);border-radius:var(--rad);font-size:13px;margin-bottom:10px;outline:none"
+              data-action="admin-filter-users">
+            <div style="overflow-x:auto">
+              <table class="admin-tbl">
+                <thead><tr><th>Email</th><th>Notify To</th><th>Store</th><th>Items</th><th>Joined</th><th>Actions</th></tr></thead>
+                <tbody id="admin-tbody"><tr><td colspan="6" style="color:var(--ink-soft);font-size:13px;padding:16px">Loading…</td></tr></tbody>
+              </table>
+            </div>
+            <div id="admin-user-pages" style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;font-size:13px;color:var(--ink-soft)"></div>
+          </div>
+
+          <div class="adm-sec">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+              <div class="adm-sec-title" style="margin-bottom:0">🔐 Authentication Log</div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <select id="auth-log-filter" data-action="admin-render-auth-logs" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:5px;background:var(--white)">
+                  <option value="all">All events</option>
+                  <option value="success">Success only</option>
+                  <option value="fail">Failures only</option>
+                </select>
+                <button class="abn g" data-action="admin-load-auth-logs">↻ Refresh</button>
+              </div>
+            </div>
+            <div id="auth-log-wrap" style="overflow-x:auto">
+              <div style="color:var(--ink-soft);font-size:13px">Click Refresh to load auth events.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ══════════════════════ REPORTS ══════════════════════ -->
+        <div class="adm-subpage" id="apage-reports">
+          <div class="adm-sec">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+              <div class="adm-sec-title" style="margin-bottom:0">📊 Analytics &amp; Reports</div>
+              <button class="abn g" data-action="admin-load-stats">↻ Refresh</button>
+            </div>
+            <div id="admin-stats-body"><div style="color:var(--ink-soft);font-size:13px">Loading…</div></div>
+          </div>
+        </div>
+
+        <!-- ══════════════════════ LOGGING ══════════════════════ -->
+        <div class="adm-subpage" id="apage-logging">
+
+          <!-- Retention note -->
+          <div style="background:var(--green-bg);border:1px solid var(--green-dim);border-radius:8px;padding:10px 14px;font-size:12px;color:var(--ink-mid);margin-bottom:16px">
+            📦 <strong>Data retention:</strong> Auth logs · App logs · Scrape logs expire after <strong>1 year</strong>. Deal cache expires after <strong>10 days</strong>. Sessions expire after <strong>72 hours</strong>. All enforced via DynamoDB TTL on <code>expires_at</code>.
+          </div>
+
+          <!-- Scrape jobs -->
+          <div class="adm-sec">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+              <div class="adm-sec-title" style="margin-bottom:0">🔄 Scrape Jobs</div>
+              <div style="display:flex;gap:8px">
+                <button class="btn-load" style="padding:7px 14px;font-size:12px" data-action="admin-run-scrape">▶ Run Now</button>
+                <button class="abn g" data-action="admin-load-logs">↻ Refresh</button>
+              </div>
+            </div>
+            <div id="admin-logs-el"><div style="color:var(--ink-soft);font-size:13px;padding:12px 0">Loading…</div></div>
+          </div>
+
+          <!-- CloudWatch -->
+          <div class="adm-sec">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+              <div class="adm-sec-title" style="margin-bottom:0">☁️ CloudWatch Tail</div>
+              <button class="abn g" data-action="admin-load-tail">↻ Fetch Latest</button>
+            </div>
+            <div id="admin-tail-loading" style="color:var(--ink-soft);font-size:13px">Click “Fetch Latest” to load logs.</div>
+            <div id="admin-tail" class="terminal" style="display:none"></div>
+          </div>
+
+          <!-- App / Frontend / API error logs -->
+          <div class="adm-sec">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+              <div class="adm-sec-title" style="margin-bottom:0">🌐 Application Logs</div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <select id="app-log-filter" data-action="admin-render-app-logs" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:5px;background:var(--white)">
+                  <option value="all">All sources</option>
+                  <option value="frontend">Frontend JS</option>
+                  <option value="api">API errors</option>
+                  <option value="email">Email delivery</option>
+                  <option value="cache">Cache</option>
+                </select>
+                <button class="abn g" data-action="admin-load-app-logs">↻ Refresh</button>
+              </div>
+            </div>
+            <div id="app-log-wrap" style="border:1px solid var(--border);border-radius:8px;overflow:hidden;max-height:400px;overflow-y:auto">
+              <div style="color:var(--ink-soft);font-size:13px;padding:12px">Click Refresh to load application logs.</div>
+            </div>
+          </div>
+
+          <!-- Deal cache stats -->
+          <div class="adm-sec">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+              <div class="adm-sec-title" style="margin-bottom:0">🎯 Deal Cache Stats</div>
+              <button class="abn g" data-action="admin-load-cache-stats">↻ Refresh</button>
+            </div>
+            <div id="cache-stats-wrap"><div style="color:var(--ink-soft);font-size:13px">Click Refresh to load cache metrics.</div></div>
+          </div>
+
+        </div><!-- /apage-logging -->
+
+        <!-- ══════════════════════ EMAIL IMPORT ══════════════════════ -->
+        <div class="adm-subpage" id="apage-inbound">
+          <div class="adm-sec">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+              <div class="adm-sec-title" style="margin-bottom:0">📧 Email Import Logs</div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <input type="email" id="inbound-sender-filter" placeholder="Filter by sender email…"
+                  style="font-size:12px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;width:220px">
+                <button class="abn g" data-action="admin-load-inbound-logs">↻ Refresh</button>
+                <button class="abn" data-action="admin-clear-inbound-filter">✕ Clear</button>
+              </div>
+            </div>
+            <div style="font-size:12px;color:var(--ink-soft);margin-bottom:12px">
+              Shows all inbound webhook events. Each forwarded email produces a chain of log entries — use the sender filter to trace a specific user's attempt.
+            </div>
+            <div id="inbound-log-wrap" style="border:1px solid var(--border);border-radius:8px;overflow:hidden;max-height:600px;overflow-y:auto">
+              <div style="color:var(--ink-soft);font-size:13px;padding:12px">Click Refresh to load inbound email logs.</div>
+            </div>
+          </div>
+        </div><!-- /apage-inbound -->
+
+      </div><!-- /adm-content -->
+    </div><!-- /adm-layout -->
+
+  </div><!-- /admin-dash -->
+</div>
+
+    </div><!-- /main-content -->
+  </div><!-- /app-layout -->
+</div><!-- /app-screen -->
+
+<!-- WELCOME ONBOARDING MODAL -->
+<div class="wlc-overlay" id="wlc-overlay">
+  <div class="wlc-modal">
+    <div class="wlc-header">
+      <h2>Welcome to Cartwise 🛒</h2>
+      <p>Your personal grocery savings assistant</p>
+    </div>
+    <div class="wlc-body">
+      <div class="wlc-steps-row">
+        <div class="wlc-dot active" id="wlc-dot-0"></div>
+        <div class="wlc-dot"       id="wlc-dot-1"></div>
+        <div class="wlc-dot"       id="wlc-dot-2"></div>
+      </div>
+      <!-- Step 1: What is this -->
+      <div class="wlc-step active" id="wlc-step-0">
+        <div class="wlc-step-title">Save money every week</div>
+        <div class="wlc-step-sub">Cartwise watches this week’s sales and alerts you when items from your shopping list go on sale — including BOGOs.</div>
+        <div class="wlc-feature">
+          <div class="wlc-icon">🏷️</div>
+          <div><h4>Browse all deals</h4><p>See every sale at your Publix, filtered by category, savings type, or BOGO.</p></div>
+        </div>
+        <div class="wlc-feature">
+          <div class="wlc-icon">🎯</div>
+          <div><h4>Personalized matches</h4><p>Add items to your list and we’ll surface deals that match — powered by smart matching that checks titles, brands, and descriptions.</p></div>
+        </div>
+        <div class="wlc-feature">
+          <div class="wlc-icon">📧</div>
+          <div><h4>Weekly email alerts</h4><p>Get notified every Wednesday when your items go on sale. You control the email address.</p></div>
+        </div>
+      </div>
+      <!-- Step 2: How to use -->
+      <div class="wlc-step" id="wlc-step-1">
+        <div class="wlc-step-title">Getting set up takes 2 minutes</div>
+        <div class="wlc-step-sub">Three things to do to get the most out of Deal Checker:</div>
+        <div class="wlc-instruction">
+          <div class="wlc-num">1</div>
+          <p><strong>Set your store</strong> — search by city, ZIP, or store number. Your store determines which weekly deals you see.</p>
+        </div>
+        <div class="wlc-instruction">
+          <div class="wlc-num">2</div>
+          <p><strong>Build your list</strong> — go to <strong>My List</strong> and add the items you regularly buy. Partial names work great (e.g. “chicken”, “yogurt”).</p>
+        </div>
+        <div class="wlc-instruction">
+          <div class="wlc-num">3</div>
+          <p><strong>Turn on email alerts</strong> — visit <strong>Notifications</strong> to set your notification email and enable weekly alerts. New deals drop every Wednesday.</p>
+        </div>
+      </div>
+      <!-- Step 3: Ready -->
+      <div class="wlc-step" id="wlc-step-2">
+        <div class="wlc-step-title">You’re all set!</div>
+        <div class="wlc-step-sub">First up: find your Publix store. Once it’s set, your personalized deals will load automatically.</div>
+        <div class="wlc-feature" style="background:var(--green-bg);border-radius:12px;padding:16px;margin-bottom:0">
+          <div class="wlc-icon">🏪</div>
+          <div><h4>Find your store</h4><p>Click “Let’s go” and we’ll take you straight to the Store Finder to get started.</p></div>
+        </div>
+      </div>
+    </div>
+    <div class="wlc-footer">
+      <button class="wlc-skip" data-action="wlc-dismiss">Skip intro</button>
+      <button class="wlc-next" id="wlc-next-btn" data-action="wlc-next">Next →</button>
+    </div>
+  </div>
+</div>
+
+<!-- DEAL DETAIL MODAL -->
+<div class="deal-modal-overlay" id="deal-modal-overlay" data-action="deal-modal-backdrop">
+  <div class="deal-modal" id="deal-modal">
+    <div class="deal-modal-close"><button data-action="close-deal-modal" aria-label="Close">✕</button></div>
+    <div id="deal-modal-content"></div>
+  </div>
+</div>
+
+<!-- DIALOGS -->
+<div class="overlay" id="del-overlay">
+  <div class="dialog"><h3>Delete account?</h3>
+    <p>This permanently removes your account, shopping list, and all settings.</p>
+    <div class="dlg-btns">
+      <button class="btn-cancel" data-action="close-overlay" data-ov="del-overlay">Cancel</button>
+      <button class="btn-danger" data-action="delete-account">Yes, delete</button>
+    </div>
+  </div>
+</div>
+<div class="overlay" id="admin-pin-ov">
+  <div class="dialog"><h3>Reset PIN</h3>
+    <p>Set new PIN for <strong id="apoe"></strong></p>
+    <div class="row"><label>New PIN</label><div class="pin-wrap">
+      <input class="pin-d ap-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+      <input class="pin-d ap-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+      <input class="pin-d ap-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+      <input class="pin-d ap-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+    </div></div>
+    <div class="msg" id="ap-msg" style="margin-top:8px"></div>
+    <div class="dlg-btns" style="margin-top:16px">
+      <button class="btn-cancel" data-action="close-overlay" data-ov="admin-pin-ov">Cancel</button>
+      <button class="btn-save" data-action="admin-do-reset-pin">Reset PIN</button>
+    </div>
+  </div>
+</div>
+<div class="overlay" id="admin-email-ov">
+  <div class="dialog"><h3>Reset Email</h3>
+    <p>Change account email for <strong id="aeoe"></strong></p>
+    <div class="row"><label>New Email</label><input type="email" id="ae-new-inp" placeholder="new@example.com" data-action="sanitize-email"></div>
+    <div class="msg" id="ae-msg" style="margin-top:8px"></div>
+    <div class="dlg-btns" style="margin-top:16px">
+      <button class="btn-cancel" data-action="close-overlay" data-ov="admin-email-ov">Cancel</button>
+      <button class="btn-save" data-action="admin-do-reset-email">Update Email</button>
+    </div>
+  </div>
+</div>
+<div class="overlay" id="admin-items-ov">
+  <div class="dialog" style="max-width:520px"><h3>Shopping List — <span id="ai-email"></span></h3>
+    <div id="ai-list" style="max-height:300px;overflow-y:auto;margin:12px 0;font-size:13px"></div>
+    <div class="msg" id="ai-msg" style="margin-bottom:8px"></div>
+    <div class="dlg-btns">
+      <button class="btn-cancel" data-action="close-overlay" data-ov="admin-items-ov">Close</button>
+      <button class="btn-danger" data-action="admin-clear-items">Clear All Items</button>
+    </div>
+  </div>
+</div>
+<div class="overlay" id="admin-create-ov">
+  <div class="dialog"><h3>Create New User</h3>
+    <div class="row"><label>Email</label><input type="email" id="ac-email" placeholder="user@example.com" data-action="sanitize-email"></div>
+    <div class="row"><label>4-digit PIN</label><div class="pin-wrap">
+      <input class="pin-d ac-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+      <input class="pin-d ac-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+      <input class="pin-d ac-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+      <input class="pin-d ac-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·">
+    </div></div>
+    <div class="msg" id="ac-msg" style="margin-top:8px"></div>
+    <div class="dlg-btns" style="margin-top:16px">
+      <button class="btn-cancel" data-action="close-overlay" data-ov="admin-create-ov">Cancel</button>
+      <button class="btn-save" data-action="admin-do-create">Create User</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<div id="save-toast">✓ Saved</div>
+</body>
+</html>
