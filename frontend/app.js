@@ -73,31 +73,33 @@ function parseSavingsAmount(str) {
   return m ? parseFloat(m[1]) : null;
 }
 
-// Parse "SAVE UP TO $7.39 ON 3" -> per-item equivalent $2.46.
-// Used as a JS-side fallback when savings_per_item is absent from the API response.
-function parseSavingsPerItem(str) {
+// Parse "N for $X" or "N/$X". Returns {qty, total, perUnit} or null.
+function parseMultiBuy(str) {
   if (!str) return null;
-  const m = str.match(/\$(\d+(?:\.\d+)?)\s+on\s+(\d+)/i);
+  const m = str.match(/(\d+)\s*(?:for|\/)\s*\$(\d+(?:\.\d+)?)/i);
   if (!m) return null;
-  const total = parseFloat(m[1]);
-  const qty   = parseInt(m[2], 10);
-  return qty > 0 ? total / qty : total;
+  const qty = parseInt(m[1], 10);
+  const total = parseFloat(m[2]);
+  return qty > 0 ? { qty, total, perUnit: Math.round((total / qty) * 100) / 100 } : null;
 }
 
-// For sorting: items with NO parseable dollar value sort LAST (-Infinity sentinel).
-// Priority: backend savings_per_item (pre-computed by deal_parser.py) > JS fallbacks > -Infinity.
-// Multi-buy parsing (e.g. "2 for $25.99") is handled server-side — run a scrape after deploy.
+// Extract "SAVE $X" amount from save_line. Returns numeric dollar amount or null.
+function parseSaveAmount(str) {
+  if (!str) return null;
+  const m = str.match(/save\s+(?:up\s+to\s+)?\$(\d+(?:\.\d+)?)/i);
+  return m ? parseFloat(m[1]) : null;
+}
+
+// ── Sort by actual savings amount, NOT by price ─────────────────────────────
+// Uses savingsDisplay() output so BOGO, multi-buy, and standard deals all
+// sort by their computed save amount. Deals without savings sort last.
 function dealSortSavings(d) {
-  // Prefer the pre-computed backend value (deal_parser.py handles all patterns)
-  if (d.savings_per_item != null) return d.savings_per_item;
-  // JS fallback for data scraped before the multi-buy parser was added
-  const perItem = parseSavingsPerItem(d.save_line);
-  if (perItem !== null) return perItem;
-  const fromSaveLine = parseSavingsAmount(d.save_line);
-  if (fromSaveLine !== null) return fromSaveLine;
-  const fromSavings = parseSavingsAmount(d.savings);
-  if (fromSavings !== null) return fromSavings;
-  return -Infinity; // no value — sort last
+  const sv = savingsDisplay(d);
+  if (sv.save) {
+    const m = sv.save.match(/\$(\d+(?:\.\d+)?)/);
+    if (m) return parseFloat(m[1]);
+  }
+  return -Infinity;
 }
 
 function computeBadge(deal, history) {
@@ -174,15 +176,39 @@ function computeFreqHint(itemName, history) {
 
 // ── Badge pre-computation ─────────────────────────────────────────────────────
 // computeBadge() is expensive: O(deals × snapshots × deals_per_snapshot).
-// We run it ONCE after deals + history are both loaded and cache the result.
-// All card renderers read from _badgeCache instead of calling computeBadge().
+// ~2,276 deals × 3 snapshots × 2,300 deals/snap ≈ 15M fuzzyScore() calls.
+// Running this synchronously blocks the main thread for 7-8s, preventing
+// image loading and all user interaction.
+//
+// Solution: process in chunks of 50 deals via setTimeout(0), yielding the
+// main thread between chunks so the browser can paint images and handle input.
+// Cards render immediately without badges; badges appear progressively.
+let _badgeComputeTimer = null;
+
 function precomputeBadges() {
   _badgeCache = new Map();
+  if (_badgeComputeTimer) { clearTimeout(_badgeComputeTimer); _badgeComputeTimer = null; }
   if (!_allDeals.length || !_dealHistory) return;
-  for (const d of _allDeals) {
-    const b = computeBadge(d, _dealHistory);
-    if (b) _badgeCache.set(d.id, b);
+
+  const CHUNK = 50;
+  let i = 0;
+
+  function processChunk() {
+    const end = Math.min(i + CHUNK, _allDeals.length);
+    for (; i < end; i++) {
+      const b = computeBadge(_allDeals[i], _dealHistory);
+      if (b) _badgeCache.set(_allDeals[i].id, b);
+    }
+    if (i < _allDeals.length) {
+      _badgeComputeTimer = setTimeout(processChunk, 0);
+    } else {
+      _badgeComputeTimer = null;
+      // All badges computed — re-render to show them
+      renderDeals();
+    }
   }
+
+  processChunk();
 }
 
 function buildQualityBanner(matches, history) {
@@ -557,28 +583,21 @@ function loadPrefs() {
   const emailEnabled = prefs.email_enabled !== false; // default true
   document.getElementById('email-enabled').checked = emailEnabled;
   document.getElementById('email-settings-wrap').style.display = emailEnabled ? '' : 'none';
-  document.getElementById('notify-email').value = prefs.notify_email || userEmail || '';
+  document.getElementById('notify-email-display').textContent = prefs.notify_email || userEmail || '';
   renderItems();
   const t=((prefs.matching||{}).threshold)||75;
   document.getElementById('threshold').value=t;
   document.getElementById('threshold-val').textContent=t;
-  const s=prefs.schedule||{};
-  document.getElementById('sched-day').value  = s.days?.[0]??3;
-  document.getElementById('sched-hour').value = s.hour??8;
-  document.getElementById('sched-ampm').value = s.ampm??'AM';
 }
 function collectPrefs(){
   return {
     store_id:      prefs?.store_id||'',
     store_name:    prefs?.store_name||'',
     store_address: prefs?.store_address||'',
-    notify_email:  document.getElementById('notify-email').value.trim()||userEmail,
+    notify_email:  userEmail,
     email_enabled: document.getElementById('email-enabled').checked,
     items:         prefs?.items||[],
     matching:      {threshold:parseInt(document.getElementById('threshold').value)||75},
-    schedule:      {days:[parseInt(document.getElementById('sched-day').value)],
-                    hour:parseInt(document.getElementById('sched-hour').value),
-                    minute:0, ampm:document.getElementById('sched-ampm').value},
   };
 }
 let _saveToastTimer=null;
@@ -593,16 +612,6 @@ async function savePrefs(ctx){
   if(ctx === 'list' || ctx === 'matching') _matchesDirty = true;
   const p=collectPrefs();
   if(prefs) p.items=prefs.items||[];
-  if(ctx==='account' && p.notify_email){
-    const ne=p.notify_email;
-    if(!/^[\x00-\x7F]+$/.test(ne) || !/^[a-zA-Z0-9!#$%&'*+/=?^_`{|}~.\-]+@[a-zA-Z0-9][a-zA-Z0-9\-]*(\.[a-zA-Z0-9][a-zA-Z0-9\-]*)*\.[a-zA-Z]{2,}$/.test(ne)){
-      const el=document.getElementById('notify-email');
-      if(el) el.style.borderColor='var(--red)';
-      return;
-    }
-    const el=document.getElementById('notify-email');
-    if(el) el.style.borderColor='';
-  }
   try{
     const res=await fetch(API+'/user/prefs',{method:'PUT',credentials:'include',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({prefs:p})});
     const data=await res.json();
@@ -1393,26 +1402,50 @@ function matchCardHtml(d){
   const sv=savingsDisplay(d);
   const cbId=`mcb-${d.id}`;
   const img=d.image_url
-    ?`<img class="deal-card-img" src="${escH(d.image_url)}" alt="${escH(title)}" loading="lazy"
+    ?`<img class="deal-card-img" src="${escH(d.image_url)}" alt="${escH(title)}"
         data-img-fallback>
        <div class="deal-card-img-ph" style="display:none">${emoji}</div>`
     :`<div class="deal-card-img-ph">${emoji}</div>`;
+  // Badges over image
+  const badges=[];
+  if(d.is_publix_brand) badges.push(`<span class="badge badge-publix">Publix</span>`);
+  if(d.has_coupon)      badges.push(`<span class="badge badge-coupon">Coupon</span>`);
+  const histBadge = _badgeCache.get(d.id) || null;
+  if(histBadge) badges.push(`<span class="badge badge-${histBadge.type}">${histBadge.label}</span>`);
+  const badgesHtml = badges.length ? `<div class="deal-card-badges">${badges.join('')}</div>` : '';
+  // Price row
+  let priceHtml = '';
+  if(sv.text) {
+    priceHtml = `<span class="deal-card-price${sv.isDiscount?' is-discount':''}">${escH(sv.text)}</span>`;
+    if(sv.pctx) priceHtml += ` <span class="deal-card-pctx">${escH(sv.pctx)}</span>`;
+  }
+  // Save row
+  let saveHtml;
+  if(sv.isClip) {
+    saveHtml = `<span class="deal-card-save is-clip">✂️ Clip Coupon</span>`;
+  } else if(sv.save) {
+    saveHtml = `<span class="deal-card-save">${escH(sv.save)}</span>`;
+  } else {
+    saveHtml = `<span class="deal-card-save-hidden">&nbsp;</span>`;
+  }
   return `<div class="deal-card is-match" data-action="open-deal-modal" data-deal-id="${escH(d.id)}">
     <div class="deal-add-wrap">
       <input type="checkbox" class="deal-add-cb" id="${cbId}" data-title="${escH(title)}" data-id="${escH(d.id)}">
       <label class="deal-add-lbl" for="${cbId}" title="Add to My List"></label>
     </div>
+    ${badgesHtml}
     ${img}
     <div class="deal-card-body">
-      ${dealTypeTag(d)}
-      <div class="deal-card-title">${escH(title)}</div>
-      ${desc?`<div class="deal-card-desc">${escH(desc)}</div>`:''}
-      ${sv.text?`<div class="deal-card-price${sv.isDiscount?' is-discount':''}">${escH(sv.text)}</div>`:''}
-      ${sv.sub?`<div class="deal-card-save is-discount">${escH(sv.sub)}</div>`:''}
-      ${(()=>{const hb=_badgeCache.get(d.id)||null;return hb?`<span class="badge badge-${hb.type}">${hb.label}</span>`:'';})()}
-      <div class="match-reason">matched: ${escH(d.my_item)}</div>
-      <div class="match-score">${d.match_score}% match</div>
-      ${d.has_coupon?`<a class="btn-clip" href="https://www.publix.com/savings/digital-coupons${d.coupon_id?'?cid='+d.coupon_id:''}" target="_blank" rel="noopener">✂️ Clip Coupon</a>`:''}
+      <div class="deal-card-row-tag">${dealTypeTag(d)}</div>
+      <div class="deal-card-row-dept"><span class="deal-card-dept">${escH(decodeEntities(d.department||''))}</span></div>
+      <div class="deal-card-row-title"><span class="deal-card-title">${escH(title)}</span></div>
+      <div class="deal-card-row-desc"><span class="deal-card-desc">${escH(desc)}</span></div>
+      <div class="deal-card-row-price">${priceHtml}</div>
+      <div class="deal-card-row-save">${saveHtml}</div>
+      <div class="deal-card-row-valid">
+        <span class="match-reason">matched: ${escH(d.my_item)}</span>
+        <span class="match-score">${d.match_score}%</span>
+      </div>
     </div></div>`;
 }
 
@@ -1424,68 +1457,101 @@ function dealTypeTag(d) {
   if (d.saving_type === 'StackedDeals') return `<span class="deal-type-tag stacked">Stacked</span>`;
   if (d.saving_type === 'ExtraSavings') return `<span class="deal-type-tag extra">Extra Savings</span>`;
   if (isCoupon(d))            return `<span class="deal-type-tag coupon">Coupon</span>`;
+  if ((d.saving_type || '').toLowerCase() === 'tpr') return `<span class="deal-type-tag tpr">TPR</span>`;
   if (d.saving_type === 'WeeklyAd')     return `<span class="deal-type-tag weekly">Weekly Ad</span>`;
   return '';
 }
 
-// For ExtraSavings and StackedDeals the `savings` field is a discount amount
-// (e.g. "$0.99 off"), not a sale price. Prefix those with "Save" so the user
-// isn't confused into thinking a $15 bottle of wine costs $0.99.
+// ── savingsDisplay: consistent card output for all deal types ────────────────
+// Returns {text, pctx, save, isDiscount, isClip}
+//   text       = main price line (green) or deal text (amber)
+//   pctx       = gray price context on same line (e.g. "2 for $25.99")
+//   save       = red save line (e.g. "Save $3.00") or null
+//   isDiscount = true → text is amber, false → text is green
+//   isClip     = true → save row shows "Clip coupon" instead
 function savingsDisplay(d) {
   const sv  = decodeEntities(d.savings  || '');
-  const ai  = decodeEntities(d.save_line || '');  // additionalDealInfo from API
+  const ai  = decodeEntities(d.save_line || '');
   const fp  = d.final_price || 0;
+  const saveAmt = parseSaveAmount(ai);
 
-  // BOGO — savings string contains buy/get language; no single price to show
+  // BOGO — show per-unit effective price if we can determine the item price
   if (d.is_bogo || /buy\s*\d|get\s*\d\s*free/i.test(sv)) {
-    return {
-      text: sv || 'Buy 1 Get 1 Free',
-      isDiscount: true,
-      sub: ai && !/surprisingly low/i.test(ai) ? ai : null,
-    };
+    const bogoLabel = sv || 'Buy 1 Get 1 Free';
+    // Try to determine the item's regular price from available data
+    const itemPrice = fp > 0 ? fp : parseSavingsAmount(ai);
+    if (itemPrice && itemPrice > 0) {
+      // B1G1 → 2 items for the price of 1; B2G1 → 3 items for the price of 2
+      const isB2G1 = /buy\s*2|b2g1/i.test(sv);
+      const units  = isB2G1 ? 3 : 2;
+      const payFor = isB2G1 ? 2 : 1;
+      const perUnit = Math.round((itemPrice * payFor / units) * 100) / 100;
+      return {
+        text: `$${perUnit.toFixed(2)} ea`,
+        pctx: bogoLabel,
+        save: `Save $${(itemPrice * (units - payFor) / units).toFixed(2)} ea`,
+        isDiscount: false,
+        isClip: false,
+      };
+    }
+    // No price available — show deal text in amber
+    return { text: bogoLabel, pctx: null, save: null, isDiscount: true, isClip: false };
   }
 
-  // Price + save amount (e.g. "$13.99 / Save $4.00")
-  // additionalDealInfo has "SAVE UP TO $X" or "SAVE $X ON N"
-  const saveMatch = ai.match(/save\s+(?:up\s+to\s+)?(\$[\d.]+)/i);
-  if (fp > 0 && saveMatch) {
+  // Multi-buy: "2 for $25.99" → per-unit price + context + save
+  const mb = parseMultiBuy(sv);
+  if (mb) {
+    // Validate save amount: must be less than the multi-buy total to be real savings.
+    // If save >= total, it's the price being misread from save_line — suppress it.
+    const validSave = (saveAmt && saveAmt < mb.total) ? saveAmt : null;
     return {
-      text: sv || `$${fp.toFixed(2)}`,
+      text: `$${mb.perUnit.toFixed(2)} ea`,
+      pctx: `${mb.qty} for $${mb.total.toFixed(2)}`,
+      save: validSave ? `Save $${validSave.toFixed(2)}` : null,
       isDiscount: false,
-      sub: `Save ${saveMatch[1]}`,
+      isClip: false,
     };
   }
 
-  // Stale cache: final_price missing but savings looks like a dollar price and
-  // ai has a save amount — show savings as price, save amount as sub
-  if (!fp && sv && /^\$[\d.]+/.test(sv) && saveMatch) {
-    return { text: sv, isDiscount: false, sub: `Save ${saveMatch[1]}` };
-  }
-
-  // TPR — has final_price (sale price) + savings (discount amount)
-  if (d.saving_type?.toLowerCase() === 'tpr') {
+  // TPR — sale price in green + save from savings field
+  if ((d.saving_type || '').toLowerCase() === 'tpr') {
     if (fp > 0 && sv && /^\$[\d.]+$/.test(sv.trim())) {
-      return { text: `$${fp.toFixed(2)}`, isDiscount: false, sub: `Save ${sv}` };
+      return { text: `$${fp.toFixed(2)}`, pctx: null, save: `Save ${sv}`, isDiscount: false, isClip: false };
     }
-    if (sv) return { text: 'Save ' + sv, isDiscount: true, sub: null };
+    if (sv) return { text: 'Save ' + sv, pctx: null, save: null, isDiscount: true, isClip: false };
   }
 
-  // Price only or multi-buy (e.g. "$7.99", "2 for $5.00")
+  // Extra/Stacked — savings field is a discount amount, not a price
+  const isDiscountType = d.is_extra || d.saving_type === 'ExtraSavings' || d.saving_type === 'StackedDeals';
+  if (isDiscountType && sv) {
+    const prefix = /^save/i.test(sv) ? '' : 'Save ';
+    return { text: prefix + sv, pctx: null, save: null, isDiscount: true, isClip: false };
+  }
+
+  // Coupon — save amount in amber + clip link
+  if (isCoupon(d)) {
+    const amt = saveAmt || parseSavingsAmount(sv);
+    const label = amt ? `Save $${amt.toFixed(2)}` : (sv || ai || 'Coupon');
+    return { text: label, pctx: null, save: null, isDiscount: true, isClip: d.has_coupon };
+  }
+
+  // Standard deal with a price — show price + save from save_line
   if (sv) {
-    const isDiscount = d.is_extra || d.saving_type === 'ExtraSavings' || d.saving_type === 'StackedDeals';
-    if (isDiscount && !/^save/i.test(sv)) {
-      return { text: 'Save ' + sv, isDiscount: true, sub: null };
-    }
-    return { text: sv, isDiscount: false, sub: null };
+    return {
+      text: sv,
+      pctx: null,
+      save: saveAmt ? `Save $${saveAmt.toFixed(2)}` : null,
+      isDiscount: false,
+      isClip: false,
+    };
   }
 
-  // Text-only deals (e.g. "20% Off", "Buy 2 Get $3.00 Off")
-  // Never show raw "SAVE UP TO $X" as the main price — that's a save amount, not a price
+  // Text-only deals — show save_line as main text
   if (ai && !/surprisingly low/i.test(ai) && !/^save\s+up\s+to/i.test(ai)) {
-    return { text: ai, isDiscount: true, sub: null };
+    return { text: ai, pctx: null, save: null, isDiscount: true, isClip: false };
   }
 
-  return { text: '', isDiscount: false, sub: null };
+  return { text: '', pctx: null, save: null, isDiscount: false, isClip: false };
 }
 
 // Generate deal card HTML (checkbox overlay)
@@ -1738,14 +1804,16 @@ function dealCardHtml(d){
   const emoji=deptEmoji(d.department);
   const title=decodeEntities(d.title);
   const desc=decodeEntities(d.description);
-  const finePrint=decodeEntities(d.fine_print);
-  const saveLine=decodeEntities(d.save_line);
   const sv=savingsDisplay(d);
+  // All 50 cards per page load images eagerly — they're small (15-30KB)
+  // and cached by Publix CDN (max-age=86400). Lazy loading caused a 20s+
+  // gap where cards 9-37 showed placeholder emojis until scrolled.
   const img=d.image_url
-    ?`<img class="deal-card-img" src="${escH(d.image_url)}" alt="${escH(title)}" loading="lazy"
+    ?`<img class="deal-card-img" src="${escH(d.image_url)}" alt="${escH(title)}"
         data-img-fallback>
        <div class="deal-card-img-ph" style="display:none">${emoji}</div>`
     :`<div class="deal-card-img-ph">${emoji}</div>`;
+  // Badges — positioned absolute over top-left of image
   const badges=[];
   if(d.is_publix_brand) badges.push(`<span class="badge badge-publix">Publix</span>`);
   if(d.has_coupon)      badges.push(`<span class="badge badge-coupon">Coupon</span>`);
@@ -1753,24 +1821,38 @@ function dealCardHtml(d){
   if(d.is_stacked)      badges.push(`<span class="badge badge-stacked">Stacked</span>`);
   const histBadge = _badgeCache.get(d.id) || null;
   if(histBadge) badges.push(`<span class="badge badge-${histBadge.type}">${histBadge.label}</span>`);
+  const badgesHtml = badges.length ? `<div class="deal-card-badges">${badges.join('')}</div>` : '';
+  // Price row: main price + optional context (multi-buy)
+  let priceHtml = '';
+  if(sv.text) {
+    priceHtml = `<span class="deal-card-price${sv.isDiscount?' is-discount':''}">${escH(sv.text)}</span>`;
+    if(sv.pctx) priceHtml += ` <span class="deal-card-pctx">${escH(sv.pctx)}</span>`;
+  }
+  // Save row: red save amount, clip coupon, or invisible placeholder
+  let saveHtml;
+  if(sv.isClip) {
+    saveHtml = `<span class="deal-card-save is-clip">✂️ Clip Coupon</span>`;
+  } else if(sv.save) {
+    saveHtml = `<span class="deal-card-save">${escH(sv.save)}</span>`;
+  } else {
+    saveHtml = `<span class="deal-card-save-hidden">&nbsp;</span>`;
+  }
   const cbId=`dcb-${d.id}`;
   return `<div class="deal-card" data-action="open-deal-modal" data-deal-id="${escH(d.id)}">
     <div class="deal-add-wrap">
       <input type="checkbox" class="deal-add-cb" id="${cbId}" data-title="${escH(title)}" data-id="${escH(d.id)}">
       <label class="deal-add-lbl" for="${cbId}" title="Add to My List"></label>
     </div>
+    ${badgesHtml}
     ${img}
     <div class="deal-card-body">
-      ${dealTypeTag(d)}
-      ${d.department?`<div class="deal-card-dept">${escH(decodeEntities(d.department))}</div>`:''}
-      <div class="deal-card-title">${escH(title)}</div>
-      ${desc?`<div class="deal-card-desc">${escH(desc)}</div>`:''}
-      ${sv.text?`<div class="deal-card-price${sv.isDiscount?' is-discount':''}">${escH(sv.text)}</div>`:''}
-      ${sv.sub?`<div class="deal-card-save is-discount">${escH(sv.sub)}</div>`:''}
-      ${hasValidDates(d)?`<div class="deal-card-valid">📅 Valid ${escH(decodeEntities(d.valid_from))}–${escH(decodeEntities(d.valid_thru))}</div>`:''}
-      ${finePrint?`<div class="deal-card-fine">${escH(finePrint)}</div>`:''}
-      ${badges.length?`<div class="deal-card-badges">${badges.join('')}</div>`:''}
-      ${d.has_coupon?`<a class="btn-clip" href="https://www.publix.com/savings/digital-coupons${d.coupon_id?'?cid='+d.coupon_id:''}" target="_blank" rel="noopener">✂️ Clip Coupon</a>`:''}
+      <div class="deal-card-row-tag">${dealTypeTag(d)}</div>
+      <div class="deal-card-row-dept"><span class="deal-card-dept">${escH(decodeEntities(d.department||''))}</span></div>
+      <div class="deal-card-row-title"><span class="deal-card-title">${escH(title)}</span></div>
+      <div class="deal-card-row-desc"><span class="deal-card-desc">${escH(desc)}</span></div>
+      <div class="deal-card-row-price">${priceHtml}</div>
+      <div class="deal-card-row-save">${saveHtml}</div>
+      <div class="deal-card-row-valid">${hasValidDates(d)?`<span class="deal-card-valid">Valid ${escH(decodeEntities(d.valid_from))}–${escH(decodeEntities(d.valid_thru))}</span>`:''}</div>
     </div></div>`;
 }
 
@@ -2247,10 +2329,15 @@ async function adminLoadLogs(){
       const dt=new Date(last.started_at);
       const est=dt.toLocaleString('en-US',{timeZone:'America/New_York',month:'numeric',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true});
       bar.className='scrape-bar';
-      bar.innerHTML=`<span>Last import: <span class="scrape-stat">${est} ET</span></span>
-        <span><span class="scrape-stat">${last.stores_examined||0}</span> stores examined &nbsp;·&nbsp;
-              <span class="scrape-stat">${last.total_deals||0}</span> deals imported &nbsp;·&nbsp;
-              <span class="scrape-stat">${last.emails_sent||0}</span> emails sent</span>`;
+      const isFanOut = last.mode === 'fan-out';
+      bar.innerHTML=isFanOut
+        ? `<span>Last run: <span class="scrape-stat">${est} ET</span></span>
+           <span><span class="scrape-stat">${last.stores_examined||0}</span> stores dispatched &nbsp;·&nbsp;
+                 <span class="scrape-stat">${last.total_users||0}</span> users</span>`
+        : `<span>Last import: <span class="scrape-stat">${est} ET</span></span>
+           <span><span class="scrape-stat">${last.stores_examined||0}</span> stores examined &nbsp;·&nbsp;
+                 <span class="scrape-stat">${last.total_deals||0}</span> deals imported &nbsp;·&nbsp;
+                 <span class="scrape-stat">${last.emails_sent||0}</span> emails sent</span>`;
     } else {
       bar.className='scrape-bar loading';
       bar.innerHTML='<span>No scrape jobs recorded yet.</span>';
@@ -2261,11 +2348,15 @@ async function adminLoadLogs(){
       const est=dt.toLocaleString('en-US',{timeZone:'America/New_York',month:'numeric',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true});
       const dur=log.finished_at?Math.round((new Date(log.finished_at)-dt)/1000)+'s':'–';
       const errs=log.errors||[];
+      const isFanOut = log.mode === 'fan-out';
+      const summary = isFanOut
+        ? `${log.stores_examined||0} stores dispatched · ${log.total_users||0} users`
+        : `${log.stores_examined||0} stores · ${log.total_deals||0} deals · ${log.emails_sent||0} emails`;
       return `<div class="log-row">
         <div class="log-icon">${errs.length?'⚠️':'✅'}</div>
         <div class="log-detail">
-          <div class="log-summary">${log.stores_examined||0} stores · ${log.total_deals||0} deals · ${log.emails_sent||0} emails</div>
-          <div class="log-meta">${est} ET · ${dur}</div>
+          <div class="log-summary">${summary}</div>
+          <div class="log-meta">${est} ET · ${dur}${isFanOut?' · fan-out':''}</div>
           ${errs.length?`<div class="log-errors">${errs.slice(0,3).map(escH).join(' | ')}</div>`:''}
         </div></div>`;
     }).join('');
@@ -2311,10 +2402,19 @@ const ADMIN_PAGE_SIZE=25;
 
 async function adminLoadUsers(){
   try{
-    const res=await fetch(API+'/admin/users',{credentials:'include',headers:adminHdrs()});
-    const data=await res.json();
-    if(!res.ok) throw new Error(data.error||'Failed');
-    _allAdminUsers=data.users||[];
+    let allUsers=[];
+    let cursor='';
+    // Fetch all pages (50 users each) — admin needs full list for search
+    while(true){
+      const url=API+'/admin/users'+(cursor?'?cursor='+encodeURIComponent(cursor):'');
+      const res=await fetch(url,{credentials:'include',headers:adminHdrs()});
+      const data=await res.json();
+      if(!res.ok) throw new Error(data.error||'Failed');
+      allUsers=allUsers.concat(data.users||[]);
+      if(!data.next_cursor) break;
+      cursor=data.next_cursor;
+    }
+    _allAdminUsers=allUsers;
     _adminUserPage=0;
     document.getElementById('admin-user-ct').textContent=`(${_allAdminUsers.length})`;
     document.getElementById('admin-user-search').value='';
@@ -2344,19 +2444,25 @@ function adminRenderUsers(){
   const page=filtered.slice(start, start+ADMIN_PAGE_SIZE);
 
   document.getElementById('admin-tbody').innerHTML=page.length
-    ? page.map(u=>`
+    ? page.map(u=>{
+      const verified = u.email_verified !== false;
+      const vBadge = verified
+        ? '<span style="color:var(--green);font-size:11px" title="Email verified">✓ verified</span>'
+        : '<span style="color:var(--red);font-size:11px" title="Email not verified">✗ unverified</span>';
+      return `
       <tr>
         <td><strong>${escH(u.email)}</strong><br><span style="font-size:11px;color:var(--ink-soft)">${escH(u.created_at?.slice(0,10)||'')}</span></td>
-        <td><span style="font-size:12px">${escH(u.notify_email||u.email)}</span></td>
+        <td><span style="font-size:12px">${escH(u.notify_email||u.email)}</span><br>${vBadge}</td>
         <td>${u.store_id?`<span style="font-family:var(--mono);font-size:12px">#${escH(u.store_id)}</span><br><span style="font-size:11px;color:var(--ink-soft)">${escH(u.store_name||'')}</span>`:'<span style="color:var(--ink-soft);font-size:12px">—</span>'}</td>
         <td><button class="abn a" data-email="${escH(u.email)}" data-items="${escH(JSON.stringify(u.items))}" data-action="admin-show-items">${u.item_count} item${u.item_count!==1?'s':''}</button></td>
         <td style="font-size:11px;color:var(--ink-soft)">${escH(u.created_at?.slice(0,10)||'—')}</td>
         <td><div style="display:flex;gap:5px;flex-wrap:wrap">
           <button class="abn g" data-email="${escH(u.email)}" data-action="admin-show-pin">Reset PIN</button>
           <button class="abn a" data-email="${escH(u.email)}" data-action="admin-show-email">Reset Email</button>
+          ${!verified?`<button class="abn a" data-email="${escH(u.email)}" data-action="admin-resend-verify">Resend Verify</button>`:''}
           <button class="abn r" data-email="${escH(u.email)}" data-action="admin-del-user">Delete</button>
         </div></td>
-      </tr>`).join('')
+      </tr>`}).join('')
     : `<tr><td colspan="6" style="color:var(--ink-soft);font-size:13px;padding:16px">${q?'No users match your search.':'No users found.'}</td></tr>`;
 
   // Pagination controls
@@ -2400,6 +2506,15 @@ async function adminDelUser(em){
     _allAdminUsers=_allAdminUsers.filter(u=>u.email!==em);
     document.getElementById('admin-user-ct').textContent=`(${_allAdminUsers.length})`;
     adminRenderUsers();
+  }catch(e){alert('Error: '+e.message);}
+}
+async function adminResendVerify(em){
+  if(!confirm(`Resend verification email to ${em}?`)) return;
+  try{
+    const res=await fetch(API+'/admin/users/'+encodeURIComponent(em)+'/resend-verification',{method:'POST',credentials:'include',headers:adminHdrs()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    alert(data.message||'Verification email sent.');
   }catch(e){alert('Error: '+e.message);}
 }
 let _apEmail='';
@@ -2900,6 +3015,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (action === 'admin-show-pin')    return adminShowPin(el.dataset.email);
     if (action === 'admin-show-email')  return adminShowEmail(el.dataset.email);
     if (action === 'admin-del-user')    return adminDelUser(el.dataset.email);
+    if (action === 'admin-resend-verify') return adminResendVerify(el.dataset.email);
     if (action === 'admin-do-reset-pin') return adminDoResetPin();
     if (action === 'admin-do-reset-email') return adminDoResetEmail();
     if (action === 'admin-clear-items') return adminClearItems();
@@ -2929,7 +3045,6 @@ document.addEventListener('DOMContentLoaded', () => {
       savePrefs('account');
       return;
     }
-    if (action === 'save-schedule')     return savePrefs('schedule');
     if (action === 'dept-filter') {
       const fn = el.dataset.renderFn;
       if (fn === 'renderDeals')       renderDeals();
@@ -2954,7 +3069,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (action === 'deals-search-input') return debouncedRenderDeals();
     if (action === 'ac-input')          return acInput();
-    if (action === 'notify-email-input') return sanitizeEmailInput(el);
     if (action === 'admin-filter-users') return adminFilterUsers();
   });
 
@@ -2966,7 +3080,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (action === 'store-search-key' && e.key === 'Enter')  return doStoreSearch();
     if (action === 'ac-input')           return acKeydown(e);
-    if (action === 'notify-email-input' && e.key === 'Enter') return savePrefs('account');
     if (action === 'admin-secret-key' && e.key === 'Enter')  return adminLogin();
   });
 
@@ -2977,6 +3090,5 @@ document.addEventListener('DOMContentLoaded', () => {
     const action = el.dataset.action;
 
     if (action === 'ac-input')           return setTimeout(acHide, 150);
-    if (action === 'notify-email-input') return savePrefs('account');
   }, true); // blur doesn't bubble — use capture
 });

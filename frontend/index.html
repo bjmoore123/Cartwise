@@ -12,6 +12,8 @@
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <meta http-equiv="Permissions-Policy" content="camera=(), microphone=(), geolocation=()">
 <title>Cartwise</title>
+<link rel="preconnect" href="https://akimages.shoplocal.com" crossorigin>
+<link rel="preconnect" href="https://images.publixcdn.com" crossorigin>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='52' font-size='56'>🛒</text></svg>">
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
 <style>
@@ -213,27 +215,37 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
 
 /* DEAL CARD */
 .deals-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:14px}
-.deal-card{background:var(--white);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh-sm);transition:box-shadow var(--t),transform var(--t);display:flex;flex-direction:column;position:relative}
+.deal-card{background:var(--white);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--sh-sm);transition:box-shadow var(--t),transform var(--t);position:relative}
 .deal-card:hover{box-shadow:var(--sh-md);transform:translateY(-2px)}
 .deal-card-img{width:100%;aspect-ratio:1/1;object-fit:contain;background:#f7f7f5;padding:12px;display:block}
 .deal-card-img-ph{width:100%;aspect-ratio:1/1;background:#f7f7f5;display:flex;align-items:center;justify-content:center;font-size:38px}
-.deal-card-body{padding:11px 12px;flex:1;display:flex;flex-direction:column;gap:3px}
-.deal-card-dept{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft)}
-.deal-card-title{font-size:13px;font-weight:700;color:var(--ink);line-height:1.3}
-.deal-card-desc{font-size:11px;color:var(--ink-mid);line-height:1.4}
-.deal-card-price{font-family:var(--mono);font-size:17px;font-weight:700;color:var(--green);margin-top:auto;padding-top:6px}
+.deal-card-badges{position:absolute;top:8px;left:8px;display:flex;flex-wrap:wrap;gap:4px;z-index:1;max-width:calc(100% - 48px)}
+.deal-card-body{padding:12px 14px}
+.deal-card-row-tag{height:22px;margin-bottom:2px}
+.deal-card-row-dept{height:18px;margin-bottom:3px}
+.deal-card-row-title{height:44px;margin-bottom:3px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.deal-card-row-desc{height:46px;margin-bottom:5px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.deal-card-row-price{height:46px;margin-bottom:2px}
+.deal-card-row-save{height:20px;margin-bottom:2px}
+.deal-card-row-valid{height:18px}
+.deal-card-dept{font-size:10.5px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-soft)}
+.deal-card-title{font-size:14px;font-weight:700;color:var(--ink);line-height:1.35}
+.deal-card-desc{font-size:12px;color:var(--ink-mid);line-height:1.35}
+.deal-card-price{font-family:var(--mono);font-size:18px;font-weight:700;color:var(--green)}
 .deal-card-price.is-discount{color:var(--amber)}
-.deal-card-save{font-size:11px;color:var(--ink-soft)}
-.deal-card-save.is-discount{font-size:11px;color:var(--amber);font-weight:700}
-.deal-type-tag{display:inline-block;font-size:9px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;border-radius:4px;padding:1px 5px;margin-bottom:4px}
+.deal-card-pctx{font-size:11px;color:var(--ink-soft);display:block;margin-top:1px}
+.deal-card-save{font-size:12px;font-weight:700;color:var(--red)}
+.deal-card-save.is-clip{color:var(--purple);font-weight:700;font-size:11px}
+.deal-card-save-hidden{visibility:hidden;font-size:12px}
+.deal-type-tag{display:inline-block;font-size:9px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;border-radius:4px;padding:2px 6px;margin-bottom:2px}
 .deal-type-tag.weekly{background:#e8f5e9;color:#2e7d32}
 .deal-type-tag.bogo{background:#fff3e0;color:#e65100}
 .deal-type-tag.coupon{background:#e3f2fd;color:#1565c0}
 .deal-type-tag.extra{background:#fce4ec;color:#880e4f}
 .deal-type-tag.stacked{background:#ede7f6;color:#4527a0}
-.deal-card-valid{font-size:10px;color:var(--ink-soft);margin-top:1px}
+.deal-type-tag.tpr{background:#fff8e1;color:#f57f17}
+.deal-card-valid{font-size:11px;color:var(--ink-soft)}
 .deal-card-fine{font-size:10px;color:var(--ink-soft);font-style:italic}
-.deal-card-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
 .badge{display:inline-block;padding:2px 6px;border-radius:4px;font-size:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}
 .badge-publix{background:var(--green-dim);color:var(--green)}
 .badge-coupon{background:var(--purple-bg);color:var(--purple)}
@@ -804,7 +816,7 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
 <!-- ══ SCHEDULE ═══════════════════════════════════════════════════════════ -->
 <div class="panel" id="panel-schedule">
   <div class="panel-title">Notifications</div>
-  <div class="panel-sub">Control how and when you receive deal alerts.</div>
+  <div class="panel-sub">Control how you receive deal alerts.</div>
   <div class="card">
     <div class="card-title">Email Alerts</div>
     <div class="toggle-row">
@@ -819,36 +831,21 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
     </div>
     <div id="email-settings-wrap">
       <div class="row">
-        <label>Send deal alerts to</label>
-        <input type="email" id="notify-email" placeholder="you@example.com" data-action="notify-email-input">
-        <div class="hint">Defaults to your account email. Change to send alerts to a different address.</div>
+        <label>Deal alerts sent to</label>
+        <div id="notify-email-display" style="font-size:14px;font-weight:700;color:var(--ink);padding:8px 0"></div>
+        <div class="hint">Alerts are sent to your account email address.</div>
       </div>
-      <div style="display:flex;align-items:center;gap:12px;margin-top:4px;flex-wrap:wrap">
+      <div class="row" style="margin-top:4px">
+        <label>Schedule</label>
+        <div style="font-size:13px;color:var(--ink-mid);padding:4px 0">Every Wednesday at 8:00 AM ET</div>
+        <div class="hint">Deals refresh every Wednesday when Publix updates their weekly ad.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:8px;flex-wrap:wrap">
         <button class="btn-test" id="btn-test-email" data-action="send-test-email">📧 Send Test Email</button>
         <button class="btn-test" id="btn-resend-weekly" data-action="resend-weekly" style="background:var(--green-bg,#f0fdf4);color:var(--green,#16a34a);border-color:#bbf7d0">🛒 Resend This Week's Deals</button>
         <span id="test-email-msg" style="font-size:13px;width:100%"></span>
       </div>
     </div>
-  </div>
-  <div class="card">
-    <div class="card-title">Alert Schedule</div>
-    <div class="row"><label>Day of week</label>
-      <select id="sched-day" data-action="save-schedule">
-        <option value="1">Monday</option><option value="2">Tuesday</option>
-        <option value="3" selected>Wednesday (recommended)</option>
-        <option value="4">Thursday</option><option value="5">Friday</option>
-        <option value="6">Saturday</option><option value="0">Sunday</option>
-      </select></div>
-    <div class="row" style="display:flex;gap:12px">
-      <div style="flex:1"><label>Hour</label>
-        <select id="sched-hour" data-action="save-schedule">
-          <option value="6">6</option><option value="7">7</option><option value="8" selected>8</option>
-          <option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option>
-        </select></div>
-      <div style="width:80px"><label>AM/PM</label>
-        <select id="sched-ampm" data-action="save-schedule"><option value="AM" selected>AM</option><option value="PM">PM</option></select></div>
-    </div>
-    <div class="hint">The scraper runs via AWS EventBridge cron every Wednesday at 12:00 UTC (8 AM ET).</div>
   </div>
 
 </div>

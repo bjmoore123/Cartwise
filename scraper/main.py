@@ -173,7 +173,8 @@ def _slim_deal(d: dict) -> dict:
 def history_deals(store_id: str, deals: list[dict], week_start: str):
     """
     Write a weekly snapshot of deals to the deal-history table.
-    Key pattern: store_id#YYYY-MM-DD (index row) + store_id#YYYY-MM-DD#0, #1... (chunks)
+    Composite key: PK=store_id (just store number), SK=week or week#chunk_index.
+    Key examples: PK="1546" SK="2026-03-16" (index), SK="2026-03-16#0" (chunk).
     TTL: 52 weeks from now.
     """
     if not HISTORY_TABLE:
@@ -183,14 +184,26 @@ def history_deals(store_id: str, deals: list[dict], week_start: str):
     slim_deals  = [_slim_deal(d) for d in deals]
     fetched_at  = datetime.now(timezone.utc).isoformat()
     ttl_epoch   = int((datetime.now(timezone.utc) + timedelta(weeks=52)).timestamp())
-    base_key    = f"{store_id}#{week_start}"
 
     chunks     = [slim_deals[i:i+CHUNK_SIZE] for i in range(0, max(len(slim_deals), 1), CHUNK_SIZE)]
     num_chunks = len(chunks)
 
+    # Delete old chunks for this store+week before writing (prevents stale accumulation)
+    try:
+        from boto3.dynamodb.conditions import Key as DKey
+        old = history_tbl.query(
+            KeyConditionExpression=DKey("store_id").eq(store_id) & DKey("sk").begins_with(f"{week_start}"),
+            ProjectionExpression="store_id, sk",
+        )
+        for item in old.get("Items", []):
+            history_tbl.delete_item(Key={"store_id": item["store_id"], "sk": item["sk"]})
+    except Exception:
+        pass  # table may be empty or old schema — safe to ignore
+
     for i, chunk in enumerate(chunks):
         history_tbl.put_item(Item={
-            "store_id":    f"{base_key}#{i}",
+            "store_id":    store_id,
+            "sk":          f"{week_start}#{i}",
             "fetched_at":  fetched_at,
             "deals":       json.dumps(chunk),
             "count":       len(chunk),
@@ -201,7 +214,8 @@ def history_deals(store_id: str, deals: list[dict], week_start: str):
 
     # Index row — no deals, just metadata
     history_tbl.put_item(Item={
-        "store_id":   base_key,
+        "store_id":   store_id,
+        "sk":         week_start,
         "week":       week_start,
         "fetched_at": fetched_at,
         "count":      len(slim_deals),
@@ -209,7 +223,7 @@ def history_deals(store_id: str, deals: list[dict], week_start: str):
         "expires_at": ttl_epoch,
     })
 
-    print(f"  History snapshot written: {base_key} ({len(slim_deals)} deals, {num_chunks} chunk(s))")
+    print(f"  History snapshot written: {store_id}/{week_start} ({len(slim_deals)} deals, {num_chunks} chunk(s))")
 
 
 def update_corpus(deals: list[dict]):
@@ -448,16 +462,14 @@ def purge_inactive_users() -> None:
 
 
 def handler(event, context):
-    """Lambda entry point -- called by EventBridge or manually.
+    """Lambda entry point -- called by EventBridge, admin, or self-invoked as store worker.
 
     Invocation modes:
-      1. EventBridge weekly rule     -> scrape + email all users
-      2. Admin manual trigger        -> scrape + cache only (no email)
-      3. User resend (source=manual-resend, target_email=<email>)
-                                     -> scrape + email that one user only
-      4. EventBridge monthly rule (source=monthly-cleanup)
-                                     -> delete inactive accounts (no store or
-                                        empty list, created > 30 days ago)
+      1. EventBridge weekly rule     -> ORCHESTRATOR: scan users, fan-out per-store workers
+      2. Admin manual trigger        -> ORCHESTRATOR: same fan-out, but send_emails=False
+      3. source=store-worker         -> WORKER: process one store (fetch, match, email)
+      4. source=manual-resend        -> scrape + email one user only
+      5. source=monthly-cleanup      -> delete inactive accounts
     """
     source       = event.get("source", "")
     detail_type  = event.get("detail-type", "")
@@ -468,18 +480,103 @@ def handler(event, context):
         purge_inactive_users()
         return {"statusCode": 200, "body": "Cleanup done."}
 
-    # Explicit resend for a single user
+    # Per-store worker — invoked by orchestrator
+    if source == "store-worker":
+        _store_worker(event)
+        return {"statusCode": 200, "body": "Store worker done."}
+
+    # Explicit resend for a single user (no fan-out, runs inline)
     if source == "manual-resend" and target_email:
-        main(send_emails=True, target_email=target_email)
+        users = get_all_users()
+        user = next((u for u in users if u.get("email", "").lower() == target_email), None)
+        if user:
+            sid = (user.get("prefs") or {}).get("store_id", "")
+            if sid:
+                _store_worker({
+                    "source": "store-worker",
+                    "store_id": sid,
+                    "store_name": (user.get("prefs") or {}).get("store_name", ""),
+                    "users": [user],
+                    "send_emails": True,
+                })
         return {"statusCode": 200, "body": "Done (single-user resend)."}
 
-    # Scheduled EventBridge trigger -> send to everyone
+    # Scheduled EventBridge trigger or admin manual -> orchestrator fan-out
     send_emails = (source == "aws.events") or (detail_type == "Scheduled Event")
-    main(send_emails=send_emails)
-    return {"statusCode": 200, "body": "Done."}
-def main(send_emails: bool = False, target_email: str = ""):
+    _orchestrator(send_emails=send_emails)
+    return {"statusCode": 200, "body": "Done (orchestrator)."}
+
+
+def _store_worker(event):
+    """Process a single store: fetch deals, cache, write history, match users, send emails."""
+    store_id    = event["store_id"]
+    store_name  = event.get("store_name", "")
+    store_users = event.get("users", [])
+    send_emails = event.get("send_emails", False)
+    job_id      = event.get("job_id", "")
+
+    print(f"▶ Worker: {store_name or f'Store #{store_id}'} — {len(store_users)} user(s)")
+
+    try:
+        deals = get_deals(store_id)
+        print(f"  {len(deals)} deals fetched")
+    except Exception as e:
+        print(f"  ERROR fetching deals: {e}")
+        return
+
+    try:
+        cache_deals(store_id, deals)
+    except Exception as e:
+        print(f"  WARNING: cache failed: {e}")
+
+    try:
+        week_start = _week_start(deals)
+        history_deals(store_id, deals, week_start)
+    except Exception as e:
+        print(f"  WARNING: history write failed: {e}")
+
+    try:
+        update_corpus(deals)
+    except Exception as e:
+        print(f"  WARNING: corpus update failed: {e}")
+
+    emails_sent = 0
+    for user in store_users:
+        account_email  = user["email"]
+        prefs          = user.get("prefs") or {}
+        notify_email   = (prefs.get("notify_email") or account_email).strip()
+        email_enabled  = prefs.get("email_enabled", True)
+        email_verified = user.get("email_verified", True)
+        items          = prefs.get("items") or []
+        matching       = prefs.get("matching") or {}
+
+        if not items:
+            continue
+
+        matches = match_deals_for_user(deals, items, matching)
+        if not matches:
+            continue
+
+        if not send_emails:
+            print(f"    {len(matches)} match(es) for {account_email} — skipping (manual run)")
+        elif not email_verified:
+            print(f"    {len(matches)} match(es) for {account_email} — skipping (not verified)")
+        elif not email_enabled:
+            print(f"    {len(matches)} match(es) for {account_email} — skipping (opted out)")
+        else:
+            try:
+                send_alert(notify_email, matches, store_id, store_name, account_email=account_email)
+                emails_sent += 1
+            except Exception as e:
+                print(f"    ERROR sending email to {notify_email}: {e}")
+
+    print(f"  Worker done: {emails_sent} email(s) sent")
+
+
+def _orchestrator(send_emails: bool = False):
+    """Fan-out: scan all users, group by store, invoke one worker Lambda per store."""
     started_at = datetime.now(timezone.utc)
-    print(f"\nCartwise — {date.today()}")
+    print(f"\nCartwise Orchestrator — {date.today()}")
     print("=" * 50)
 
     job = {
@@ -489,23 +586,19 @@ def main(send_emails: bool = False, target_email: str = ""):
         "stores_examined": 0,
         "total_deals":     0,
         "emails_sent":     0,
+        "total_users":     0,
         "errors":          [],
         "store_details":   [],
+        "mode":            "fan-out",
     }
 
     users = get_all_users()
-    if target_email:
-        users = [u for u in users if u.get("email", "").lower() == target_email]
-        print(f"Single-user resend for: {target_email} ({len(users)} found)")
-    else:
-        print(f"Loaded {len(users)} registered user(s)")
+    print(f"Loaded {len(users)} registered user(s)")
     if not users:
-        print("No users — nothing to do.")
         job["finished_at"] = datetime.now(timezone.utc).isoformat()
         write_scrape_log(job)
         return
 
-    # Group users by store so we only fetch each store's deals once
     by_store: dict[str, list[dict]] = {}
     for u in users:
         sid = (u.get("prefs") or {}).get("store_id", "")
@@ -518,87 +611,52 @@ def main(send_emails: bool = False, target_email: str = ""):
         write_scrape_log(job)
         return
 
-    print(f"Stores to check: {list(by_store.keys())}\n")
     job["stores_examined"] = len(by_store)
+    job["total_users"]     = sum(len(v) for v in by_store.values())
+    print(f"Fanning out to {len(by_store)} store worker(s) for {job['total_users']} user(s)...\n")
+
+    scraper_fn = os.environ.get("SCRAPER_FUNCTION", "cartwise-scraper")
+    lambda_cli = boto3.client("lambda", region_name=AWS_REGION)
 
     for store_id, store_users in by_store.items():
         prefs0     = store_users[0].get("prefs") or {}
         store_name = prefs0.get("store_name") or ""
-        store_info = {"store_id": store_id, "store_name": store_name, "deals": 0, "emails": 0}
-        print(f"▶ {store_name or f'Store #{store_id}'}")
+
+        # Build lightweight user list for the worker (only fields it needs)
+        slim_users = []
+        for u in store_users:
+            slim_users.append({
+                "email":          u["email"],
+                "email_verified": u.get("email_verified", True),
+                "prefs":          u.get("prefs") or {},
+            })
+
+        payload = {
+            "source":      "store-worker",
+            "store_id":    store_id,
+            "store_name":  store_name,
+            "users":       slim_users,
+            "send_emails": send_emails,
+            "job_id":      job["job_id"],
+        }
 
         try:
-            deals = get_deals(store_id)
-            print(f"  {len(deals)} deals fetched")
-            store_info["deals"] = len(deals)
-            job["total_deals"] += len(deals)
+            lambda_cli.invoke(
+                FunctionName=scraper_fn,
+                InvocationType="Event",   # async — don't wait for response
+                Payload=json.dumps(payload),
+            )
+            print(f"  ▶ {store_name or store_id}: dispatched ({len(slim_users)} user(s))")
+            job["store_details"].append({
+                "store_id": store_id, "store_name": store_name,
+                "users": len(slim_users), "status": "dispatched",
+            })
         except Exception as e:
-            msg = f"ERROR fetching deals for store {store_id}: {e}"
+            msg = f"ERROR dispatching worker for {store_id}: {e}"
             print(f"  {msg}")
             job["errors"].append(msg)
-            continue
-
-        try:
-            cache_deals(store_id, deals)
-            print(f"  Deals cached to DynamoDB")
-        except Exception as e:
-            job["errors"].append(f"WARNING: cache failed for {store_id}: {e}")
-
-        # ── v6: write history snapshot and update corpus ──────────────────────
-        try:
-            week_start = _week_start(deals)
-            history_deals(store_id, deals, week_start)
-        except Exception as e:
-            print(f"  WARNING: history write failed for {store_id}: {e}")
-            job["errors"].append(f"WARNING: history write failed for {store_id}: {e}")
-
-        try:
-            update_corpus(deals)
-        except Exception as e:
-            print(f"  WARNING: corpus update failed: {e}")
-        # ─────────────────────────────────────────────────────────────────────
-
-        for user in store_users:
-            account_email = user["email"]
-            prefs         = user.get("prefs") or {}
-            notify_email  = (prefs.get("notify_email") or account_email).strip()
-            email_enabled  = prefs.get("email_enabled", True)  # default True for existing users
-            email_verified = user.get("email_verified", True)   # default True for pre-verification accounts
-            items         = prefs.get("items") or []
-            matching      = prefs.get("matching") or {}
-
-            print(f"  Matching for {account_email} ({len(items)} items)…")
-
-            if not items:
-                print(f"    No items on list — skipping email")
-                continue
-
-            matches = match_deals_for_user(deals, items, matching)
-
-            if not matches:
-                print(f"    No matches this week")
-                continue
-
-            if not send_emails:
-                print(f"    {len(matches)} match(es) found — skipping email (manual run)")
-            elif not email_verified:
-                print(f"    {len(matches)} match(es) found — skipping email (email not verified)")
-            elif not email_enabled:
-                print(f"    {len(matches)} match(es) found — skipping email (user opted out)")
-            else:
-                print(f"    {len(matches)} match(es) — sending to {notify_email}")
-                try:
-                    send_alert(notify_email, matches, store_id, store_name, account_email=account_email)
-                    job["emails_sent"] += 1
-                    store_info["emails"] += 1
-                except Exception as e:
-                    msg = f"ERROR sending email to {notify_email}: {e}"
-                    print(f"    {msg}")
-                    job["errors"].append(msg)
-
-        job["store_details"].append(store_info)
 
     job["finished_at"] = datetime.now(timezone.utc).isoformat()
     write_scrape_log(job)
-    mode = "scheduled (emails sent)" if send_emails else "manual (no emails)"
-    print(f"\nDone. Mode: {mode}. Emails sent: {job['emails_sent']}. Errors: {len(job['errors'])}")
+    mode = "scheduled (emails enabled)" if send_emails else "manual (no emails)"
+    print(f"\nOrchestrator done. Mode: {mode}. {len(by_store)} workers dispatched.")

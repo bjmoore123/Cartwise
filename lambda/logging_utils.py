@@ -21,14 +21,15 @@ _VALID_LOG_LEVELS = {"error", "warn", "info"}
 
 def _log_auth_event(event: dict, email: str, success: bool, reason: str = ""):
     """Write a login attempt record to auth_logs.
-    Geo-IP from CloudFront-Viewer-Country/City edge headers (zero latency, no
-    external call). Fields present only when CloudFront is in front (Phase 3+);
-    gracefully absent otherwise."""
+    Geo-IP from CloudFront-Viewer-Country/Country-Region/City edge headers
+    (zero latency, no external call). Fields present only when CloudFront is
+    in front (Phase 3+); gracefully absent otherwise."""
     try:
         ip      = _get_client_ip(event)
         headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
         ua      = headers.get("user-agent", "")[:200]
         country = headers.get("cloudfront-viewer-country", "")[:4]   # ISO 3166-1 alpha-2
+        region  = headers.get("cloudfront-viewer-country-region", "")[:10]  # e.g. "TN", "FL"
         city    = headers.get("cloudfront-viewer-city", "")[:100]
         now     = datetime.now(timezone.utc)
         ttl     = int((now + timedelta(days=90)).timestamp())   # PDC-20: 90-day TTL
@@ -43,6 +44,7 @@ def _log_auth_event(event: dict, email: str, success: bool, reason: str = ""):
             "expires_at": ttl,
         }
         if country: item["country"] = country
+        if region:  item["region"]  = region
         if city:    item["city"]    = city
         auth_logs_tbl.put_item(Item=item)
     except Exception as e:

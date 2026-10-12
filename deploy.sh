@@ -25,7 +25,7 @@ win_path() { cygpath -w "$1" 2>/dev/null || echo "$1"; }
 AWS_REGION="us-east-1"
 APP_NAME="cartwise"
 RESEND_FROM_NAME="Cartwise Alerts"
-RESEND_FROM_ADDR="onboarding@resend.dev"
+RESEND_FROM_ADDR="alerts@cartwise.shopping"
 
 # ── CloudFront / custom domain (optional — Phase 3+) ──────────────────────────
 # Leave these unset to deploy without CloudFront (S3 HTTP only).
@@ -136,8 +136,35 @@ create_table "${APP_NAME}-deals"          "store_id"
 create_table "${APP_NAME}-scrape-logs"    "job_id"
 create_table "${APP_NAME}-auth-logs"      "log_id"
 create_table "${APP_NAME}-app-logs"       "log_id"
-create_table "${APP_NAME}-deal-history"   "store_id"
 create_table "${APP_NAME}-deal-corpus"    "corpus_id"
+
+# deal-history uses a composite key (PK=store_id, SK=sk) so we can Query by store
+# instead of scanning the entire table. If the table exists with only a hash key,
+# it must be recreated — history data rebuilds over the next 3 weekly scraper runs.
+HISTORY_TABLE="${APP_NAME}-deal-history"
+if exists aws dynamodb describe-table --table-name "${HISTORY_TABLE}" --region "${AWS_REGION}"; then
+  HISTORY_HAS_SK=$(aws dynamodb describe-table --table-name "${HISTORY_TABLE}" --region "${AWS_REGION}" \
+    --query "Table.KeySchema[?KeyType=='RANGE'].AttributeName" --output text 2>/dev/null)
+  if [ -n "${HISTORY_HAS_SK}" ] && [ "${HISTORY_HAS_SK}" != "None" ]; then
+    skip "DynamoDB table: ${HISTORY_TABLE} (composite key)"
+  else
+    info "Migrating ${HISTORY_TABLE} to composite key (PK + SK)..."
+    info "History data will rebuild over the next 3 weekly scraper runs."
+    aws dynamodb delete-table --table-name "${HISTORY_TABLE}" --region "${AWS_REGION}" > /dev/null 2>&1
+    aws dynamodb wait table-not-exists --table-name "${HISTORY_TABLE}" --region "${AWS_REGION}" 2>/dev/null
+    aws dynamodb create-table --table-name "${HISTORY_TABLE}" \
+      --attribute-definitions AttributeName=store_id,AttributeType=S AttributeName=sk,AttributeType=S \
+      --key-schema AttributeName=store_id,KeyType=HASH AttributeName=sk,KeyType=RANGE \
+      --billing-mode PAY_PER_REQUEST --region "${AWS_REGION}" > /dev/null
+    ok "DynamoDB table: ${HISTORY_TABLE} (recreated with composite key)"
+  fi
+else
+  aws dynamodb create-table --table-name "${HISTORY_TABLE}" \
+    --attribute-definitions AttributeName=store_id,AttributeType=S AttributeName=sk,AttributeType=S \
+    --key-schema AttributeName=store_id,KeyType=HASH AttributeName=sk,KeyType=RANGE \
+    --billing-mode PAY_PER_REQUEST --region "${AWS_REGION}" > /dev/null
+  ok "DynamoDB table: ${HISTORY_TABLE} (composite key)"
+fi
 
 # Enable TTL on deal-history (expires_at attribute)
 # Wait for table to reach ACTIVE status before attempting TTL update
@@ -516,6 +543,7 @@ cfg = {
     'AllowMethods':     ['GET','POST','PUT','DELETE','OPTIONS'],
     'AllowHeaders':     ['Content-Type','Authorization','Cookie'],
     'AllowCredentials': True,
+    'MaxAge':           86400,
   }
 }
 print(json.dumps(cfg))
@@ -580,7 +608,7 @@ aws apigatewayv2 update-api \
 aws apigatewayv2 update-stage \
   --api-id "${API_ID}" \
   --stage-name '$default' \
-  --default-route-settings '{"ThrottlingBurstLimit":50,"ThrottlingRateLimit":20}' \
+  --default-route-settings '{"ThrottlingBurstLimit":200,"ThrottlingRateLimit":100}' \
   --region "${AWS_REGION}" > /dev/null 2>&1 \
   && ok "API Gateway throttling set (20 rps, burst 50)" \
   || echo "   ⚠️  Could not set API Gateway throttling — set manually if needed"
@@ -1131,28 +1159,38 @@ print('Config written to ${CF_TMP}')
       --query "OriginRequestPolicyList.Items[?OriginRequestPolicy.OriginRequestPolicyConfig.Name=='${GEO_ORP_NAME}'].OriginRequestPolicy.Id" \
       --output text 2>/dev/null)
 
+    GEO_ORP_CONFIG="{
+      \"Name\": \"${GEO_ORP_NAME}\",
+      \"Comment\": \"AllViewer plus CloudFront geo headers for ${APP_NAME}\",
+      \"HeadersConfig\": {
+        \"HeaderBehavior\": \"allViewerAndWhitelistCloudFront\",
+        \"Headers\": {
+          \"Quantity\": 3,
+          \"Items\": [
+            \"CloudFront-Viewer-Country\",
+            \"CloudFront-Viewer-Country-Region\",
+            \"CloudFront-Viewer-City\"
+          ]
+        }
+      },
+      \"CookiesConfig\": {\"CookieBehavior\": \"all\"},
+      \"QueryStringsConfig\": {\"QueryStringBehavior\": \"all\"}
+    }"
+
     if [ -z "${GEO_ORP_ID}" ] || [ "${GEO_ORP_ID}" = "None" ]; then
       GEO_ORP_ID=$(aws cloudfront create-origin-request-policy \
-        --origin-request-policy-config "{
-          \"Name\": \"${GEO_ORP_NAME}\",
-          \"Comment\": \"AllViewer plus CloudFront geo headers for ${APP_NAME}\",
-          \"HeadersConfig\": {
-            \"HeaderBehavior\": \"allViewerAndWhitelistCloudFront\",
-            \"Headers\": {
-              \"Quantity\": 2,
-              \"Items\": [
-                \"CloudFront-Viewer-Country\",
-                \"CloudFront-Viewer-City\"
-              ]
-            }
-          },
-          \"CookiesConfig\": {\"CookieBehavior\": \"all\"},
-          \"QueryStringsConfig\": {\"QueryStringBehavior\": \"all\"}
-        }" \
+        --origin-request-policy-config "${GEO_ORP_CONFIG}" \
         --query 'OriginRequestPolicy.Id' --output text)
       ok "Origin request policy (geo headers): ${GEO_ORP_ID}"
     else
-      skip "Origin request policy (geo headers): ${GEO_ORP_ID}"
+      # Update existing policy to ensure Country-Region header is included
+      GEO_ORP_ETAG=$(aws cloudfront get-origin-request-policy \
+        --id "${GEO_ORP_ID}" --query 'ETag' --output text 2>/dev/null)
+      aws cloudfront update-origin-request-policy \
+        --id "${GEO_ORP_ID}" --if-match "${GEO_ORP_ETAG}" \
+        --origin-request-policy-config "${GEO_ORP_CONFIG}" > /dev/null 2>&1 \
+        && ok "Origin request policy updated (added Country-Region): ${GEO_ORP_ID}" \
+        || skip "Origin request policy (geo headers): ${GEO_ORP_ID}"
     fi
 
     # ── 13b: API CloudFront distribution ──────────────────────────────────────

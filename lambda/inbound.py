@@ -240,22 +240,9 @@ def inbound_email_list(event):
         _log_app_event("api", "error", action="inbound-user-lookup-error",
                        sender=sender_email, message=str(e)[:200])
 
-    if not user:
-        try:
-            from boto3.dynamodb.conditions import Attr
-            resp = users_table.scan(FilterExpression=Attr("prefs.notify_email").eq(sender_email))
-            if resp.get("Items"):
-                user = resp["Items"][0]
-                _log_app_event("api", "info", action="inbound-user-matched",
-                               sender=sender_email, match_type="notify_email",
-                               matched_user=user["email"])
-            else:
-                _log_app_event("api", "warn", action="inbound-no-user",
-                               sender=sender_email,
-                               message="No user found — forward from registered address")
-        except Exception as e:
-            _log_app_event("api", "error", action="inbound-notify-scan-error",
-                           sender=sender_email, message=str(e)[:200])
+    # No fallback scan needed: PDC-21 locked notify_email to match login email,
+    # so get_item by sender_email is always sufficient. The old scan on
+    # prefs.notify_email was dead code that would never match.
 
     if not user:
         return ok({"skipped": True})

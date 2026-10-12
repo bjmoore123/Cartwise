@@ -119,7 +119,7 @@ def search_stores(event):
             raw      = _store_fetch(url)
             features = raw.get("features", [])
             stores   = [_parse_store_feature(f) for f in features if f.get("properties", {}).get("storeNumber")]
-            return ok({"stores": stores[:1]})
+            return ok({"stores": stores[:1]}, _headers={"Cache-Control": "max-age=300"})
         except Exception as e:
             print(f"[CW] search_stores lookup: {e}")
             return err("Store lookup failed.", 502)
@@ -132,7 +132,7 @@ def search_stores(event):
             raw      = _store_fetch(url)
             features = raw.get("features", [])
             stores   = [_parse_store_feature(f) for f in features if f.get("properties", {}).get("storeNumber")]
-            return ok({"stores": stores[:10]})
+            return ok({"stores": stores[:10]}, _headers={"Cache-Control": "max-age=300"})
         except Exception as e:
             print(f"[CW] search_stores search: {e}")
             return err("Store search failed.", 502)
@@ -156,8 +156,9 @@ def get_deals(event):
     types    = (params.get("types") or "").strip().lower()  # "core", "tpr", or "" (all)
     if not store_id: return err("Missing store_id parameter.")
 
-    deals_table_obj = dynamodb.Table(os.environ["DEALS_TABLE"])
-    cached          = deals_table_obj.get_item(Key={"store_id": store_id}).get("Item")
+    deals_table_name = os.environ["DEALS_TABLE"]
+    deals_table_obj  = dynamodb.Table(deals_table_name)
+    cached           = deals_table_obj.get_item(Key={"store_id": store_id}).get("Item")
 
     if cached:
         num_chunks = int(cached.get("num_chunks", 0))
@@ -247,11 +248,15 @@ def get_deals(event):
         "counts":       counts,
         "dept_counts":  dept_counts,
         "saving_types": saving_types,
-    })
+    }, _headers={"Cache-Control": "max-age=300"})
 
 
 def get_deal_history(event):
-    """GET /deals/history?store_id=X — weekly snapshots for price history."""
+    """GET /deals/history?store_id=X — weekly snapshots for price history.
+
+    Uses Query on composite key (PK=store_id, SK=week or week#chunk) instead of
+    a full table Scan. ~10x faster and scales to any number of stores.
+    """
     sess = get_session(event)
     if not sess: return err("Not authenticated.", 401)
     params   = event.get("queryStringParameters") or {}
@@ -260,15 +265,15 @@ def get_deal_history(event):
 
     try:
         from boto3.dynamodb.conditions import Key as DKey
-        resp = history_tbl.scan(
-            FilterExpression="begins_with(store_id, :prefix)",
-            ExpressionAttributeValues={":prefix": f"{store_id}#"},
+        # Query all rows for this store — returns index rows + chunk rows
+        rows = []
+        resp = history_tbl.query(
+            KeyConditionExpression=DKey("store_id").eq(store_id),
         )
-        rows = resp.get("Items", [])
+        rows.extend(resp.get("Items", []))
         while "LastEvaluatedKey" in resp:
-            resp = history_tbl.scan(
-                FilterExpression="begins_with(store_id, :prefix)",
-                ExpressionAttributeValues={":prefix": f"{store_id}#"},
+            resp = history_tbl.query(
+                KeyConditionExpression=DKey("store_id").eq(store_id),
                 ExclusiveStartKey=resp["LastEvaluatedKey"],
             )
             rows.extend(resp.get("Items", []))
@@ -278,37 +283,35 @@ def get_deal_history(event):
         chunk_map  = {}
 
         for row in rows:
-            key   = row.get("store_id", "")
-            parts = key.split("#")
-            if len(parts) >= 3:
+            sk = row.get("sk", "")
+            if "#" in sk:
+                # Chunk row: sk = "2026-03-16#0"
+                parts = sk.rsplit("#", 1)
                 try:
                     chunk_idx = int(parts[-1])
                 except ValueError:
                     index_rows.append(row)
                     continue
-                base_key = "#".join(parts[:-1])
-                chunk_map.setdefault(base_key, {})[chunk_idx] = json.loads(row.get("deals", "[]"))
+                week_key = parts[0]
+                chunk_map.setdefault(week_key, {})[chunk_idx] = json.loads(row.get("deals", "[]"))
             else:
+                # Index row: sk = "2026-03-16"
                 index_rows.append(row)
 
         snapshots = []
         for idx_row in index_rows:
-            key        = idx_row.get("store_id", "")
-            week       = idx_row.get("week", key.split("#")[-1] if "#" in key else "")
+            week       = idx_row.get("week", idx_row.get("sk", ""))
             num_chunks = int(idx_row.get("num_chunks", 0))
-            chunks     = chunk_map.get(key, {})
+            chunks     = chunk_map.get(week, {})
             deals      = []
             for i in range(num_chunks):
                 deals.extend(chunks.get(i, []))
-            # Trim each deal to only fields the frontend needs for badges.
-            # computeBadge() uses: title, savings
-            # computeFreqHint() uses: title
-            # Sending all 7+ fields per deal wastes ~60% of history payload.
             trimmed = [{"title": d.get("title", ""), "savings": d.get("savings", "")} for d in deals]
             snapshots.append({"week": week, "count": len(trimmed), "deals": trimmed})
 
         snapshots.sort(key=lambda s: s["week"], reverse=True)
-        return ok({"store_id": store_id, "num_weeks": len(snapshots), "snapshots": snapshots})
+        return ok({"store_id": store_id, "num_weeks": len(snapshots), "snapshots": snapshots},
+                  _headers={"Cache-Control": "max-age=300"})
 
     except Exception as e:
         print(f"[CW] get_deal_history: {e}")
@@ -323,9 +326,8 @@ def get_deal_corpus(event):
         row    = corpus_tbl.get_item(Key={"corpus_id": "global"}).get("Item")
         raw    = row.get("titles") or set() if row else set()
         titles = sorted(raw)
-        resp   = ok({"titles": titles, "count": len(titles)})
-        resp["headers"] = {**resp.get("headers", {}), "Cache-Control": "max-age=86400"}
-        return resp
+        return ok({"titles": titles, "count": len(titles)},
+                  _headers={"Cache-Control": "max-age=86400"})
     except Exception as e:
         print(f"[CW] get_deal_corpus: {e}")
         return err("Could not fetch corpus.", 500)

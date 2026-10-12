@@ -5,8 +5,9 @@ PDC-08: admin_reset_email has duplicate-check guard.
 """
 import re
 import json
+import secrets
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from functools import wraps
 
 from helpers import (
@@ -56,7 +57,7 @@ def admin_login(event, body):
     )
     response = ok({"message": "Admin session started.", "expires_in": ADMIN_SESSION_TTL_HOURS * 3600},
                   _event=event)
-    response["headers"] = {**response["headers"], "Set-Cookie": cookie}
+    response["cookies"] = [cookie]
     return response
 
 
@@ -72,10 +73,7 @@ def admin_logout_session(event):
             print(f"[CW] admin_logout_session: {e}")
     # Clear cookie
     response = ok({"message": "Admin session ended."}, _event=event)
-    response["headers"] = {
-        **response["headers"],
-        "Set-Cookie": "admin_session=; HttpOnly; Secure; SameSite=Lax; Domain=cartwise.shopping; Path=/; Max-Age=0",
-    }
+    response["cookies"] = ["admin_session=; HttpOnly; Secure; SameSite=Lax; Domain=cartwise.shopping; Path=/; Max-Age=0"]
     return response
 
 
@@ -118,28 +116,47 @@ def require_admin(f):
 
 @require_admin
 def admin_list_users(event):
+    """GET /admin/users?cursor=...&limit=50 — paginated user list."""
     try:
-        items, resp = [], users_table.scan()
-        items.extend(resp.get("Items", []))
-        while "LastEvaluatedKey" in resp:
-            resp = users_table.scan(ExclusiveStartKey=resp["LastEvaluatedKey"])
-            items.extend(resp.get("Items", []))
+        qs = event.get("queryStringParameters") or {}
+        limit = min(int(qs.get("limit", 50)), 200)
+        cursor = qs.get("cursor", "")
+
+        scan_kwargs = {"Limit": limit + 1}  # fetch one extra to detect next page
+        if cursor:
+            scan_kwargs["ExclusiveStartKey"] = {"email": cursor}
+
+        resp = users_table.scan(**scan_kwargs)
+        items = _to_py(resp.get("Items", []))
+
         users = []
-        for u in _to_py(items):
+        for u in items:
             if u.get("email") == "__meta__": continue
             p = u.get("prefs") or {}
             users.append({
-                "email":        u["email"],
-                "created_at":   u.get("created_at", ""),
-                "store_id":     p.get("store_id", ""),
-                "store_name":   p.get("store_name", ""),
-                "notify_email": p.get("notify_email") or u["email"],
-                "item_count":   len(p.get("items") or []),
-                "items":        p.get("items") or [],
-                "sensitivity":  (p.get("matching") or {}).get("sensitivity", "normal"),
+                "email":          u["email"],
+                "created_at":     u.get("created_at", ""),
+                "store_id":       p.get("store_id", ""),
+                "store_name":     p.get("store_name", ""),
+                "notify_email":   p.get("notify_email") or u["email"],
+                "item_count":     len(p.get("items") or []),
+                "items":          p.get("items") or [],
+                "sensitivity":    (p.get("matching") or {}).get("sensitivity", "normal"),
+                "email_verified": u.get("email_verified", True),
             })
-        users.sort(key=lambda x: x["email"])
-        return ok({"users": users, "total": len(users)})
+
+        # Determine next cursor
+        next_cursor = None
+        if len(users) > limit:
+            users = users[:limit]
+            next_cursor = users[-1]["email"]
+        elif "LastEvaluatedKey" in resp:
+            next_cursor = resp["LastEvaluatedKey"].get("email", "")
+
+        result = {"users": users, "total": len(users)}
+        if next_cursor:
+            result["next_cursor"] = next_cursor
+        return ok(result)
     except Exception as e:
         print(f"[CW] admin_list_users: {e}")
         return err("Failed to list users.", 500)
@@ -238,6 +255,28 @@ def admin_clear_items(event, email: str):
         ExpressionAttributeValues={":p": prefs},
     )
     return ok({"message": f"Items cleared for {email}."})
+
+
+@require_admin
+def admin_resend_verification(event, email: str):
+    """POST /admin/users/{email}/resend-verification — resend verification email (no rate limit)."""
+    from auth import _send_verification_email, VERIFY_TOKEN_TTL_HOURS
+    user = users_table.get_item(Key={"email": email}).get("Item")
+    if not user: return err("User not found.", 404)
+    user = _to_py(user)
+    if user.get("email_verified"):
+        return ok({"message": f"{email} is already verified."})
+    verify_token = secrets.token_urlsafe(32)
+    verify_token_exp = (
+        datetime.now(timezone.utc) + timedelta(hours=VERIFY_TOKEN_TTL_HOURS)
+    ).isoformat()
+    users_table.update_item(
+        Key={"email": email},
+        UpdateExpression="SET verify_token = :t, verify_token_exp = :e",
+        ExpressionAttributeValues={":t": verify_token, ":e": verify_token_exp},
+    )
+    _send_verification_email(email, verify_token)
+    return ok({"message": f"Verification email resent to {email}."})
 
 
 @require_admin

@@ -129,8 +129,10 @@ def check_rate_limit(scope: str, key: str, max_per_hour: int) -> bool:
 CORS = cors_headers(None)
 
 
-def ok(body, status=200, _event=None):
+def ok(body, status=200, _event=None, _headers=None):
     hdrs = cors_headers(_event) if _event else CORS
+    if _headers:
+        hdrs = {**hdrs, **_headers}
     return {"statusCode": status, "headers": hdrs, "body": json.dumps(body, cls=_Enc)}
 
 def err(msg, status=400, _extra=None, _event=None):

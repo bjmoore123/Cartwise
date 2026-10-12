@@ -7,7 +7,7 @@ Architecture #1: module split complete.
 Architecture #7: login() receives explicit event (no __event__ mutation).
 """
 import urllib.parse
-from helpers import ok, err, get_body, CORS, cors_headers
+from helpers import ok, err, get_body, cors_headers
 
 from auth     import register, login, logout, change_pin, verify_email, resend_verification
 from prefs    import get_prefs, save_prefs, delete_account, unsubscribe, send_test_email, resend_weekly_email
@@ -18,6 +18,7 @@ from admin    import (
     admin_login, admin_logout_session,
     admin_list_users, admin_create_user, admin_get_user, admin_delete_user,
     admin_reset_pin, admin_reset_email, admin_patch_prefs, admin_clear_items,
+    admin_resend_verification,
     admin_stats, admin_inbound_logs,
     get_scrape_logs, invoke_scraper, get_log_tail,
     get_auth_logs, get_app_logs,
@@ -31,9 +32,13 @@ def handler(event, context):
     body     = get_body(event)
     qs       = event.get("queryStringParameters") or {}
 
+    # OPTIONS/preflight: API Gateway's CorsConfiguration adds CORS headers
+    # (including MaxAge: 86400 from deploy.sh), but when CloudFront sits in
+    # front the $default route still forwards OPTIONS to Lambda. We must
+    # return 200 here — a 404 preflight kills the subsequent request.
     if method == "OPTIONS":
         hdrs = cors_headers(event)
-        hdrs["Access-Control-Max-Age"] = "86400"  # browser caches preflight for 24h
+        hdrs["Access-Control-Max-Age"] = "86400"
         return {"statusCode": 200, "headers": hdrs, "body": ""}
 
     # ── User / auth routes ────────────────────────────────────────────────────
@@ -89,5 +94,6 @@ def handler(event, context):
         if action == "reset-email" and method == "POST": return admin_reset_email(event, body, uemail)
         if action == "prefs"       and method == "PUT":  return admin_patch_prefs(event, body, uemail)
         if action == "items"       and method == "DELETE": return admin_clear_items(event, uemail)
+        if action == "resend-verification" and method == "POST": return admin_resend_verification(event, uemail)
 
     return err("Not found.", 404)

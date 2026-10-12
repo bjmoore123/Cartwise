@@ -314,7 +314,7 @@ def login(event, body):
     email_verified = user.get("email_verified", True)
     response = ok({"token": token, "email": email, "prefs": prefs,
                    "email_verified": email_verified}, _event=event)
-    response["headers"] = {**response["headers"], "Set-Cookie": cookie}
+    response["cookies"] = [cookie]
     return response
 
 
@@ -332,10 +332,7 @@ def logout(event):
         except Exception as e:
             print(f"[CW] logout valid_after update failed: {e}")
     response = ok({"message": "Logged out."}, _event=event)  # PDC-05: clear cookie
-    response["headers"] = {
-        **response["headers"],
-        "Set-Cookie": "session=; HttpOnly; Secure; SameSite=Lax; Domain=cartwise.shopping; Path=/; Max-Age=0",
-    }
+    response["cookies"] = ["session=; HttpOnly; Secure; SameSite=Lax; Domain=cartwise.shopping; Path=/; Max-Age=0"]
     return response
 
 
