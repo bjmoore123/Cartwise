@@ -92,6 +92,35 @@ class TestTitlePoints:
         assert H.title_points(H.build_index(snaps), "nope") == []
 
 
+class TestFastFrequencyAndPersistence:
+    def test_fast_matches_reference(self):
+        import random
+        random.seed(7)
+        words = ["milk", "whole", "publix", "greek", "yogurt", "chicken", "breast", "chips", "a", "&", "100%", "siggi's"]
+        snaps = [_snap(w, [" ".join(random.sample(words, random.randint(1, 5))).title() for _ in range(40)])
+                 for w in WEEKS[:6]]
+        idx = H.build_index(snaps)
+        items = [" ".join(random.sample(words, random.randint(1, 4))) for _ in range(60)] + ["a", "milk", "nothing here"]
+
+        def ref(it):
+            it = it.strip().lower()
+            w = set()
+            for t, wk in idx["lower_titles"].items():
+                if H.fuzzy_score(it, t) >= 70:
+                    w |= wk
+            w.discard(0)
+            return len(w)
+        fast = H.item_frequency(idx, items)
+        assert all(fast[i.strip().lower()] == ref(i) for i in items)
+
+    def test_serialize_roundtrip_identical(self):
+        snaps = [_snap(WEEKS[0], ["Chips", "CHIPS!", "Milk"]), _snap(WEEKS[1], ["Chips"])]
+        idx = H.build_index(snaps)
+        back = H.deserialize_index(H.serialize_index(idx))
+        assert back["weeks"] == idx["weeks"] and back["titles"] == idx["titles"]
+        assert back["lower_titles"] == idx["lower_titles"]
+
+
 class TestScale:
     def test_30_weeks_2000_deals_is_fast(self):
         snaps = [_snap(f"2026-W{w:02d}", [f"Product {(w * 7 + i) % 3000} Brand {i % 50}" for i in range(2000)])
@@ -150,15 +179,52 @@ class TestHistoryEndpoint:
         body = json.loads(api_env.get_deal_history(_event({"store_id": "1546", "title": "Milk"}))["body"])
         assert [p["week"] for p in body["points"]] == [WEEKS[2], WEEKS[0]]
 
-    def test_cache_invalidates_on_new_snapshot(self, api_env, dynamodb_tables):
+    def test_new_snapshot_after_scraper_invalidation(self, api_env, dynamodb_tables):
         api_env.get_deal_history(_event({"store_id": "1546"}))
         hist = dynamodb_tables.Table("test-deal-history")
         hist.put_item(Item={"store_id": "1546", "sk": "2026-10-12#0", "fetched_at": "t2",
                             "deals": json.dumps([{"title": "Milk", "savings": "$1"}])})
         hist.put_item(Item={"store_id": "1546", "sk": "2026-10-12", "week": "2026-10-12",
                             "fetched_at": "t2", "num_chunks": 1})
+        # what scraper/main.py history_deals() now does after writing a snapshot
+        hist.delete_item(Key={"store_id": "1546", "sk": "_summary"})
         body = json.loads(api_env.get_deal_history(_event({"store_id": "1546"}))["body"])
         assert body["num_weeks"] == 4 and body["newest_week"] == "2026-10-12"
+
+    def test_summary_persisted_and_used_by_cold_instance(self, api_env, dynamodb_tables, monkeypatch):
+        first = json.loads(api_env.get_deal_history(_event({"store_id": "1546"}))["body"])
+        hist = dynamodb_tables.Table("test-deal-history")
+        meta = hist.get_item(Key={"store_id": "1546", "sk": "_summary"})["Item"]
+        assert int(meta["num_chunks"]) >= 1 and meta["newest_week"] == WEEKS[0]
+        api_env._HISTORY_CACHE.clear()          # simulate a cold Lambda instance
+
+        def boom(_):
+            raise AssertionError("full history read should not happen")
+        monkeypatch.setattr(api_env, "_load_history_snapshots", boom)
+        second = json.loads(api_env.get_deal_history(_event({"store_id": "1546"}))["body"])
+        assert second["badges"] == first["badges"] and second["freq"] == first["freq"]
+
+    def test_summary_chunking(self, api_env, dynamodb_tables, monkeypatch):
+        monkeypatch.setattr(api_env, "SUMMARY_CHUNK_BYTES", 50)
+        api_env.get_deal_history(_event({"store_id": "1546"}))
+        hist = dynamodb_tables.Table("test-deal-history")
+        meta = hist.get_item(Key={"store_id": "1546", "sk": "_summary"})["Item"]
+        assert int(meta["num_chunks"]) > 1
+        api_env._HISTORY_CACHE.clear()
+        body = json.loads(api_env.get_deal_history(_event({"store_id": "1546"}))["body"])
+        assert body["badges"]["repeat"] == ["chips"]
+
+    def test_stale_summary_rebuilt(self, api_env, dynamodb_tables):
+        api_env.get_deal_history(_event({"store_id": "1546"}))
+        hist = dynamodb_tables.Table("test-deal-history")
+        hist.update_item(Key={"store_id": "1546", "sk": "_summary"},
+                         UpdateExpression="SET built_at = :b",
+                         ExpressionAttributeValues={":b": "2020-01-01T00:00:00+00:00"})
+        api_env._HISTORY_CACHE.clear()
+        body = json.loads(api_env.get_deal_history(_event({"store_id": "1546"}))["body"])
+        assert body["num_weeks"] == 3
+        meta = hist.get_item(Key={"store_id": "1546", "sk": "_summary"})["Item"]
+        assert not meta["built_at"].startswith("2020")
 
     def test_requires_auth(self, api_env):
         assert api_env.get_deal_history(_event({"store_id": "1546"}, cookie="x=y"))["statusCode"] == 401

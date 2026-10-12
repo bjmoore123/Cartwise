@@ -223,6 +223,13 @@ def history_deals(store_id: str, deals: list[dict], week_start: str):
         "expires_at": ttl_epoch,
     })
 
+    # v9.2.1: invalidate the API's persisted history summary so the next
+    # /deals/history request rebuilds it with this week's snapshot.
+    try:
+        history_tbl.delete_item(Key={"store_id": store_id, "sk": "_summary"})
+    except Exception as e:
+        print(f"  WARNING: could not invalidate history summary for {store_id}: {e}")
+
     print(f"  History snapshot written: {store_id}/{week_start} ({len(slim_deals)} deals, {num_chunks} chunk(s))")
 
 

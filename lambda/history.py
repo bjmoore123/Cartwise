@@ -62,7 +62,6 @@ def build_index(snapshots: list[dict]) -> dict:
     snaps = sorted(snapshots, key=lambda s: s.get("week", ""), reverse=True)
     weeks = [s.get("week", "") for s in snaps]
     titles: dict[str, dict[int, tuple]] = {}
-    lower_titles: dict[str, set] = {}
     for idx, snap in enumerate(snaps):
         for d in snap.get("deals") or []:
             title = d.get("title") or ""
@@ -70,6 +69,11 @@ def build_index(snapshots: list[dict]) -> dict:
             if not key:
                 continue
             titles.setdefault(key, {}).setdefault(idx, (title, d.get("savings", "")))
+    # Derived from `titles` (not the raw rows) so a freshly built index and one
+    # restored by deserialize_index() are identical.
+    lower_titles: dict[str, set] = {}
+    for per in titles.values():
+        for idx, (title, _sv) in per.items():
             lower_titles.setdefault(title.lower(), set()).add(idx)
     return {"weeks": weeks, "titles": titles, "lower_titles": lower_titles}
 
@@ -98,26 +102,100 @@ def compute_badges(index: dict) -> dict:
     return out
 
 
+def _search_struct(index: dict):
+    """Lazily build a joined-text search structure over all distinct lowercase titles.
+
+    One str.find() scan over a ~600 KB string per token replaces a Python loop
+    over ~16,000 titles per item (the old loop cost ~3-4 s on Lambda for a
+    24-item list).
+    """
+    st = index.get("_search")
+    if st is None:
+        titles = list(index["lower_titles"].keys())
+        starts, pos = [], 0
+        for t in titles:
+            starts.append(pos)
+            pos += len(t) + 1          # "\n" separator; tokens never contain it
+        st = {
+            "joined": "\n".join(titles),
+            "starts": starts,
+            "weeks":  [index["lower_titles"][t] for t in titles],
+        }
+        index["_search"] = st
+    return st
+
+
+def _titles_containing(st: dict, needle: str) -> set:
+    """Indices of titles that contain `needle` as a substring."""
+    from bisect import bisect_right
+    joined, starts = st["joined"], st["starts"]
+    out, i = set(), joined.find(needle)
+    while i != -1:
+        out.add(bisect_right(starts, i) - 1)
+        i = joined.find(needle, i + 1)
+    return out
+
+
 def item_frequency(index: dict, items: list[str]) -> dict:
     """For each list item, the number of PAST weeks (excluding the newest) with a matching deal.
 
-    Matching is the same fuzzy rule the old client used (score >= 70). Each
-    distinct title is scored once per item, not once per weekly appearance.
+    Same rule as fuzzy_score() >= 70 (the old client-side hint): a title matches
+    when it contains the whole item, or when enough item tokens are substrings
+    of it. Computed with substring search over all titles at once.
     """
+    st = _search_struct(index)
     out = {}
-    lower_titles = index["lower_titles"]
     for raw in items or []:
         name = (raw if isinstance(raw, str) else (raw or {}).get("name", "")) or ""
         item = name.strip().lower()
         if not item or item in out:
             continue
+        matched = set(_titles_containing(st, item))
+        toks = item.split()
+        if toks:
+            hits = {t: _titles_containing(st, t) for t in set(toks)}
+            counts: dict = {}
+            for t in toks:                      # duplicates count twice, as in fuzzy_score
+                for ti in hits[t]:
+                    counts[ti] = counts.get(ti, 0) + 1
+            n = len(toks)
+            matched |= {ti for ti, m in counts.items() if round(m / n * 100) >= FREQ_MATCH_SCORE}
         weeks = set()
-        for title, weeks_on in lower_titles.items():
-            if fuzzy_score(item, title) >= FREQ_MATCH_SCORE:
-                weeks |= weeks_on
+        for ti in matched:
+            weeks |= st["weeks"][ti]
         weeks.discard(0)
         out[item] = len(weeks)
     return out
+
+
+# ── Persistence (v9.2.1) ──────────────────────────────────────────────────────
+# The finished index is stored in the history table (sk "_summary" + chunks) so
+# a request costs a few small reads instead of re-reading 30+ weeks of rows.
+
+def serialize_index(index: dict) -> bytes:
+    """gzip JSON: {weeks, titles: {norm: [base_title, [[week_idx, savings(, title_if_different)], ...]]}}"""
+    import gzip, json
+    titles = {}
+    for k, v in index["titles"].items():
+        entries = sorted(v.items())
+        base = entries[0][1][0]
+        titles[k] = [base, [[i, sv] if t == base else [i, sv, t] for i, (t, sv) in entries]]
+    data = {"weeks": index["weeks"], "titles": titles}
+    return gzip.compress(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"), 6)
+
+
+def deserialize_index(blob: bytes) -> dict:
+    import gzip, json
+    data = json.loads(gzip.decompress(blob).decode("utf-8"))
+    titles, lower_titles = {}, {}
+    for key, (base, entries) in data["titles"].items():
+        per = {}
+        for e in entries:
+            t = e[2] if len(e) > 2 else base
+            per[e[0]] = (t, e[1])
+            lower_titles.setdefault(t.lower(), set()).add(e[0])
+        titles[key] = per
+    return {"weeks": data["weeks"], "titles": titles, "lower_titles": lower_titles}
 
 
 def title_points(index: dict, title: str) -> list[dict]:

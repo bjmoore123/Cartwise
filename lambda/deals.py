@@ -17,7 +17,8 @@ from helpers import (
 from logging_utils import _log_app_event
 from shared.deal_parser import parse_deal
 from shared.matcher import match_deals_for_user
-from history import build_index, compute_badges, item_frequency, title_points
+from history import (build_index, compute_badges, item_frequency, title_points,
+                     serialize_index, deserialize_index)
 
 # ── Publix API URLs ───────────────────────────────────────────────────────────
 
@@ -252,26 +253,16 @@ def get_deals(event):
     }, _headers={"Cache-Control": "max-age=300"})
 
 
-# Warm-Lambda cache of the per-store history index: {store_id: (signature, index)}.
-# The signature is the set of (sk, fetched_at) keys, so a new weekly snapshot
-# (or a re-scrape) invalidates it automatically.
+# History index cache (v9.2.1).
+#   1. Warm Lambda memory:  _HISTORY_CACHE[store_id] = (version, index)
+#   2. DynamoDB summary:    sk "_summary" (meta) + "_summary#N" (gzip chunks), written on first build
+#   3. Full rebuild:        read every weekly snapshot (~4.7 MB at 30 weeks), then persist (2)
+# The scraper deletes "_summary" whenever it writes a new weekly snapshot, so the next
+# request rebuilds. As a safety net, a summary older than SUMMARY_MAX_AGE_DAYS is rebuilt.
 _HISTORY_CACHE: dict = {}
-
-
-def _history_signature(store_id: str) -> tuple:
-    """Cheap keys-only query used to detect whether the cached index is still current."""
-    from boto3.dynamodb.conditions import Key as DKey
-    keys, kwargs = [], {
-        "KeyConditionExpression": DKey("store_id").eq(store_id),
-        "ProjectionExpression": "sk, fetched_at",
-    }
-    while True:
-        resp = history_tbl.query(**kwargs)
-        keys.extend((str(i.get("sk", "")), str(i.get("fetched_at", ""))) for i in resp.get("Items", []))
-        if "LastEvaluatedKey" not in resp:
-            break
-        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
-    return tuple(sorted(keys))
+SUMMARY_SK            = "_summary"
+SUMMARY_CHUNK_BYTES   = 350_000      # DynamoDB item limit is 400 KB
+SUMMARY_MAX_AGE_DAYS  = 8
 
 
 def _load_history_snapshots(store_id: str) -> list:
@@ -285,10 +276,11 @@ def _load_history_snapshots(store_id: str) -> list:
             break
         kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
 
-    rows = _to_py(rows)
     index_rows, chunk_map = [], {}
     for row in rows:
-        sk = row.get("sk", "")
+        sk = str(row.get("sk", ""))
+        if sk.startswith("_"):              # summary rows, not snapshots
+            continue
         if "#" in sk:
             week_key, _, idx = sk.rpartition("#")
             try:
@@ -296,7 +288,7 @@ def _load_history_snapshots(store_id: str) -> list:
                 continue
             except ValueError:
                 pass
-        index_rows.append(row)
+        index_rows.append(_to_py(row))
 
     snapshots = []
     for idx_row in index_rows:
@@ -309,13 +301,62 @@ def _load_history_snapshots(store_id: str) -> list:
     return snapshots
 
 
+def _summary_is_fresh(meta: dict) -> bool:
+    from datetime import datetime, timezone, timedelta
+    try:
+        built = datetime.fromisoformat(str(meta.get("built_at", "")))
+        return datetime.now(timezone.utc) - built < timedelta(days=SUMMARY_MAX_AGE_DAYS)
+    except ValueError:
+        return False
+
+
+def _read_persisted_index(store_id: str, meta: dict):
+    blob = b""
+    for i in range(int(meta.get("num_chunks", 0))):
+        row = history_tbl.get_item(Key={"store_id": store_id, "sk": f"{SUMMARY_SK}#{i}"}).get("Item")
+        if not row:
+            return None                     # partially written or expired: rebuild
+        data = row.get("blob")
+        blob += data.value if hasattr(data, "value") else bytes(data)
+    return deserialize_index(blob)
+
+
+def _persist_index(store_id: str, index: dict) -> str:
+    from datetime import datetime, timezone, timedelta
+    now     = datetime.now(timezone.utc)
+    version = now.isoformat()
+    blob    = serialize_index(index)
+    parts   = [blob[i:i + SUMMARY_CHUNK_BYTES] for i in range(0, len(blob), SUMMARY_CHUNK_BYTES)] or [b""]
+    expires = int((now + timedelta(days=SUMMARY_MAX_AGE_DAYS + 2)).timestamp())
+    for i, part in enumerate(parts):        # chunks first, meta last: readers never see a half-written set
+        history_tbl.put_item(Item={"store_id": store_id, "sk": f"{SUMMARY_SK}#{i}",
+                                   "blob": part, "version": version, "expires_at": expires})
+    history_tbl.put_item(Item={"store_id": store_id, "sk": SUMMARY_SK, "version": version,
+                               "num_chunks": len(parts), "built_at": version,
+                               "newest_week": index["weeks"][0] if index["weeks"] else "",
+                               "bytes": len(blob), "expires_at": expires})
+    return version
+
+
 def _history_index(store_id: str) -> dict:
-    sig = _history_signature(store_id)
-    cached = _HISTORY_CACHE.get(store_id)
-    if cached and cached[0] == sig:
-        return cached[1]
+    meta = history_tbl.get_item(Key={"store_id": store_id, "sk": SUMMARY_SK}).get("Item")
+    if meta and _summary_is_fresh(meta):
+        version = str(meta.get("version", ""))
+        cached = _HISTORY_CACHE.get(store_id)
+        if cached and cached[0] == version:
+            return cached[1]
+        index = _read_persisted_index(store_id, meta)
+        if index is not None:
+            _HISTORY_CACHE[store_id] = (version, index)
+            return index
+
     index = build_index(_load_history_snapshots(store_id))
-    _HISTORY_CACHE[store_id] = (sig, index)
+    try:
+        version = _persist_index(store_id, index)
+    except Exception as e:                  # persisting is an optimisation; never fail the request
+        print(f"[CW] history summary persist failed: {e}")
+        version = "unpersisted"
+    _HISTORY_CACHE[store_id] = (version, index)
     return index
 
 
