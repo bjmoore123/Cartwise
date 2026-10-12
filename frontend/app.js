@@ -27,12 +27,19 @@ let _deptCounts    = {};       // dept counts
 let _dealsUpdated  = '';       // WeeklyAdLatestUpdatedDateTime from last fetch
 let _dealsStoreId  = '';       // which store these deals are for
 let _allMatches    = [];       // computed matches
-let _dealHistory   = null;    // { num_weeks, snapshots } for current store
+let _dealHistory   = null;    // history summary { num_weeks, badges, freq, ... } for current store
 let _corpusTitles  = [];      // global autocomplete corpus
 let _matchDeptCts  = {};
 let _savingTypes   = [];       // dynamic saving_type values from API
 let _tprLoaded     = false;    // whether TPR deals have been fetched and merged
-let _tprLoading    = false;    // guard against concurrent TPR fetches
+let _tprLoading    = false;    // true while a TPR fetch is in flight (informational)
+// Load generations (v9.2 fix for bug #4): core and TPR deals are fetched in
+// parallel and can arrive in either order. Each loadDeals() bumps _dealsGen;
+// a TPR response for the current generation that beats the core response is
+// parked in _pendingTpr and merged as soon as core deals are applied.
+let _dealsGen      = 0;        // incremented on every deal (re)load, store change and logout
+let _coreGen       = 0;        // generation whose core deals are currently in _allDeals
+let _pendingTpr    = null;     // {gen, data} TPR response waiting for its core deals
 let _totalAllDeals = 0;        // total deal count across all types (from API total_all)
 
 // ── Item shape helpers ────────────────────────────────────────────────────────
@@ -102,71 +109,37 @@ function dealSortSavings(d) {
   return -Infinity;
 }
 
-function computeBadge(deal, history) {
-  if (!history || !history.snapshots || !history.snapshots.length) return null;
-  const numWeeks   = history.num_weeks || 0;
-  const snapshots  = history.snapshots;
-  const dealTitle  = (deal.title || '').toLowerCase();
-  const currentAmt = parseSavingsAmount(deal.savings);
+// ── History lookups (v9.2) ───────────────────────────────────────────────────
+// The server (lambda/history.py) now does the history work and returns a small
+// summary: badges keyed by normalized title, and past-week counts for list items.
+// The old version shipped 4.7 MB of past deals and fuzzy-matched every current
+// deal against all of them in the browser (~190 s of CPU after each login).
 
-  const pastAppearances = [];
-  snapshots.forEach((snap, snapIdx) => {
-    snap.deals.forEach(pastDeal => {
-      const pastTitle = (pastDeal.title || '').toLowerCase();
-      if (dealTitle && pastTitle && fuzzyScore(dealTitle, pastTitle) >= 75) {
-        pastAppearances.push({ snap, snapIdx, pastDeal });
-      }
-    });
-  });
-
-  if (numWeeks >= HIST_MIN.repeat && snapshots.length >= 2) {
-    const prevWeek = snapshots[1];
-    if (prevWeek && prevWeek.deals.some(pd =>
-      fuzzyScore((pd.title || '').toLowerCase(), dealTitle) >= 80
-    )) {
-      return { type: 'repeat', label: '🔁 Repeat deal' };
-    }
-  }
-
-  if (numWeeks >= HIST_MIN.rareOnSale) {
-    const pastCount = pastAppearances.filter(a => a.snapIdx > 0).length;
-    if (pastCount < 3) return { type: 'rare', label: '📅 Rarely on sale' };
-  }
-
-  if (currentAmt !== null) {
-    const historicalAmts = pastAppearances
-      .filter(a => a.snapIdx > 0)
-      .map(a => parseSavingsAmount(a.pastDeal.savings))
-      .filter(v => v !== null);
-
-    if (historicalAmts.length > 0) {
-      const maxHistorical = Math.max(...historicalAmts);
-      if (numWeeks >= HIST_MIN.bestYear && currentAmt >= maxHistorical)
-        return { type: 'best', label: '🔥 Best price this year' };
-      if (numWeeks >= HIST_MIN.best6weeks) {
-        const sixWeekAmts = pastAppearances
-          .filter(a => a.snapIdx > 0 && a.snapIdx <= 6)
-          .map(a => parseSavingsAmount(a.pastDeal.savings))
-          .filter(v => v !== null);
-        if (sixWeekAmts.length > 0 && currentAmt >= Math.max(...sixWeekAmts))
-          return { type: 'recent', label: '✨ Best price in 6 weeks' };
-      }
-    }
-  }
-  return null;
+// KEEP IN SYNC with norm_title() in lambda/history.py
+function cwHistKey(title) {
+  return (title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-function computeFreqHint(itemName, history) {
-  if (!history || (history.num_weeks || 0) < HIST_MIN.freqHint) return '';
-  const name = itemName.toLowerCase();
-  const snapshots = history.snapshots || [];
-  let count = 0;
-  snapshots.forEach((snap, idx) => {
-    if (idx === 0) return;
-    if (snap.deals.some(d => fuzzyScore(name, (d.title || '').toLowerCase()) >= 70)) count++;
-  });
-  const weeksOfHistory = Math.max(snapshots.length - 1, 1);
-  const annualRate = Math.round((count / weeksOfHistory) * 52);
+const HIST_BADGE_LABEL = { repeat: '🔁 Repeat deal', rare: '📅 Rarely on sale' };
+let _badgeIndex = null;   // Map: cwHistKey(title) → badge, built once per history load
+
+function buildBadgeIndex(history) {
+  const m = new Map();
+  const b = (history && history.badges) || {};
+  for (const type of Object.keys(HIST_BADGE_LABEL)) {
+    for (const key of (b[type] || [])) m.set(key, { type, label: HIST_BADGE_LABEL[type] });
+  }
+  return m;
+}
+
+function computeBadge(deal, history) {
+  if (!history || !history.badges) return null;
+  if (!_badgeIndex) _badgeIndex = buildBadgeIndex(history);
+  return _badgeIndex.get(cwHistKey(deal.title)) || null;
+}
+
+function freqLabel(count, weeksOfHistory) {
+  const annualRate = Math.round((count / Math.max(weeksOfHistory || 1, 1)) * 52);
   if (annualRate === 0)  return 'rarely on sale';
   if (annualRate <= 2)   return `on sale ~${annualRate}x/year`;
   if (annualRate <= 8)   return 'on sale a few times a year';
@@ -174,41 +147,24 @@ function computeFreqHint(itemName, history) {
   return 'on sale most weeks';
 }
 
+function computeFreqHint(itemName, history) {
+  if (!history || (history.num_weeks || 0) < HIST_MIN.freqHint || !history.freq) return '';
+  const count = history.freq[(itemName || '').trim().toLowerCase()];
+  if (count === undefined) return '';   // item added since the summary loaded; refreshes shortly
+  return freqLabel(count, history.weeks_of_history);
+}
+
 // ── Badge pre-computation ─────────────────────────────────────────────────────
-// computeBadge() is expensive: O(deals × snapshots × deals_per_snapshot).
-// ~2,276 deals × 3 snapshots × 2,300 deals/snap ≈ 15M fuzzyScore() calls.
-// Running this synchronously blocks the main thread for 7-8s, preventing
-// image loading and all user interaction.
-//
-// Solution: process in chunks of 50 deals via setTimeout(0), yielding the
-// main thread between chunks so the browser can paint images and handle input.
-// Cards render immediately without badges; badges appear progressively.
-let _badgeComputeTimer = null;
+// Now a dictionary lookup per deal (microseconds), so it runs in one pass.
+let _badgeComputeTimer = null;  // retained so older call sites that clear it stay harmless
 
 function precomputeBadges() {
   _badgeCache = new Map();
-  if (_badgeComputeTimer) { clearTimeout(_badgeComputeTimer); _badgeComputeTimer = null; }
   if (!_allDeals.length || !_dealHistory) return;
-
-  const CHUNK = 50;
-  let i = 0;
-
-  function processChunk() {
-    const end = Math.min(i + CHUNK, _allDeals.length);
-    for (; i < end; i++) {
-      const b = computeBadge(_allDeals[i], _dealHistory);
-      if (b) _badgeCache.set(_allDeals[i].id, b);
-    }
-    if (i < _allDeals.length) {
-      _badgeComputeTimer = setTimeout(processChunk, 0);
-    } else {
-      _badgeComputeTimer = null;
-      // All badges computed — re-render to show them
-      renderDeals();
-    }
+  for (const d of _allDeals) {
+    const b = computeBadge(d, _dealHistory);
+    if (b) _badgeCache.set(d.id, b);
   }
-
-  processChunk();
 }
 
 function buildQualityBanner(matches, history) {
@@ -238,7 +194,8 @@ async function loadDealHistory() {
     const res = await fetch(API + `/deals/history?store_id=${encodeURIComponent(storeId)}`, {credentials:'include',headers:authHeaders()});
     if (!res.ok) return;
     _dealHistory = await res.json();
-    precomputeBadges();  // recompute badges with fresh history
+    _badgeIndex = null;  // rebuilt lazily from the new summary
+    precomputeBadges();  // dictionary lookups — fast
     renderDeals();
     renderFreqHints();
     // Show badge legends if enough history
@@ -247,6 +204,14 @@ async function loadDealHistory() {
     });
   } catch (e) { console.warn('History load failed:', e); }
   finally { _historyLoading = false; }
+}
+
+// Re-fetch the history summary shortly after list edits so frequency hints
+// cover newly added items (the summary is computed per user on the server).
+let _historyRefreshTimer = null;
+function scheduleHistoryRefresh() {
+  clearTimeout(_historyRefreshTimer);
+  _historyRefreshTimer = setTimeout(loadDealHistory, 1500);
 }
 
 async function loadCorpus() {
@@ -514,7 +479,7 @@ function enterApp(opts) {
 async function doLogout(){
   // PDC-05: browser sends HttpOnly cookie automatically with credentials:'include'
   try{await fetch(API+'/auth/logout',{method:'POST',credentials:'include',headers:authHeaders()});}catch(_){}
-  userEmail=null;prefs=null;_allDeals=[];_allMatches=[];_dealsStoreId='';_storeData=null;_badgeCache=new Map();_tprLoaded=false;_totalAllDeals=0;
+  userEmail=null;prefs=null;_allDeals=[];_allMatches=[];_dealsStoreId='';_storeData=null;_badgeCache=new Map();_tprLoaded=false;_totalAllDeals=0;_dealHistory=null;_badgeIndex=null;_dealsGen++;_coreGen=0;_pendingTpr=null;
   localStorage.removeItem('cw_email');
   // Reset store UI so it doesn't bleed into the next session
   document.getElementById('store-card-wrap').style.display='none';
@@ -618,6 +583,7 @@ async function savePrefs(ctx){
     if(!res.ok) throw new Error(data.error||'Save failed');
     prefs=data.prefs;
     showSaveToast();
+    if(ctx === 'list') scheduleHistoryRefresh();
   }catch(e){console.error('Save failed:',e.message);}
 }
 
@@ -716,7 +682,7 @@ function clearStore(){
   document.getElementById('store-results').innerHTML = '';
   if(prefs){prefs.store_id='';prefs.store_name='';prefs.store_address='';}
   _storeData = null;
-  _dealsStoreId='';_allDeals=[];_allMatches=[];_dealTokenCache=new Map();_badgeCache=new Map();_tprLoaded=false;_totalAllDeals=0;
+  _dealsStoreId='';_allDeals=[];_allMatches=[];_dealTokenCache=new Map();_badgeCache=new Map();_tprLoaded=false;_totalAllDeals=0;_dealsGen++;_coreGen=0;_pendingTpr=null;
   document.getElementById('deals-browser').style.display='none';
   const _ms=document.getElementById('matches-section');if(_ms)_ms.style.display='none';
 }
@@ -980,9 +946,11 @@ async function loadDeals(forceRefresh=false){
 
   try{
     _tprLoaded = false;  // new deal set — TPR needs re-fetching
+    _pendingTpr = null;
+    const gen = ++_dealsGen;
     // Fire TPR fetch in parallel — don't await it, let it resolve in background
-    // while core deals load, render, and paint. This eliminates the 5-second gap.
-    const tprPromise = loadTprDeals(sid);
+    // while core deals load, render, and paint. Either response may arrive first.
+    loadTprDeals(sid, gen);
 
     const res=await fetch(API+'/deals?store_id='+encodeURIComponent(sid)+'&types=core', {credentials:'include',headers:authHeaders()});
     const data=await res.json();
@@ -1043,8 +1011,15 @@ async function loadDeals(forceRefresh=false){
       _dealTokenCache.set(d.id, [...cwTokenize(d.title||''), ...cwTokenize(d.brand||'')]);
     }
     precomputeBadges();   // recompute badges with fresh deals (history may already be loaded)
-    _matchesDirty = true;  // deals just refreshed — recompute matches
-    loadMatches();          // computes matches then calls renderDeals()
+    _coreGen = gen;
+    if (_pendingTpr && _pendingTpr.gen === gen) {
+      // TPR beat the core response: merge it now (mergeTprDeals re-runs matches + render)
+      const parked = _pendingTpr; _pendingTpr = null;
+      mergeTprDeals(parked.data);
+    } else {
+      _matchesDirty = true;  // deals just refreshed — recompute matches
+      loadMatches();          // computes matches then calls renderDeals()
+    }
 
   }catch(e){
     document.getElementById('deals-loading').style.display='none';
@@ -1571,23 +1546,12 @@ const SAVING_TYPE_LABEL = {
 // History dots are plotted as a scatter with a connecting polyline.
 // Current week (newest) dot is highlighted green with a glow ring.
 // A dashed amber line marks the best (lowest) price point.
-function buildDealChart(svgEl, deal, history) {
-  if (!history || !history.snapshots) return;
-
-  const dealTitle = (deal.title || '').toLowerCase();
+function buildDealChart(svgEl, points) {
+  // points: [{week, savings}] oldest first, from GET /deals/history?title=…
   const pts = [];
-
-  // Collect historical appearances, oldest-first for left-to-right plotting
-  const snaps = [...history.snapshots].reverse(); // API returns newest-first; reverse to chronological
-  snaps.forEach(snap => {
-    snap.deals.forEach(pastDeal => {
-      if (fuzzyScore(dealTitle, (pastDeal.title || '').toLowerCase()) >= 75) {
-        const amt = parseSavingsAmount(pastDeal.savings);
-        if (amt !== null) {
-          pts.push({ week: snap.week, amt, savings: pastDeal.savings });
-        }
-      }
-    });
+  (points || []).forEach(p => {
+    const amt = parseSavingsAmount(p.savings);
+    if (amt !== null) pts.push({ week: p.week, amt, savings: p.savings });
   });
 
   // Deduplicate by week (keep first match per week)
@@ -1719,10 +1683,9 @@ function openDealModal(dealId) {
   if (fine)
     rows.push(dr('Fine print', escH(fine), 'fine'));
 
-  // Frequency hint — only if we have enough history
-  const freqHint = computeFreqHint(title, _dealHistory);
-  if (freqHint)
-    rows.push(dr('On sale', escH(freqHint), 'freq'));
+  // Frequency hint — filled in from the per-title history fetch below
+  if (_dealHistory && (_dealHistory.num_weeks || 0) >= HIST_MIN.freqHint)
+    rows.push(`<div class="dm-data-row" id="dm-freq-row" style="display:none"><span class="dm-data-lbl">On sale</span><span class="dm-data-val freq" id="dm-freq-val"></span></div>`);
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const actions = [];
@@ -1741,7 +1704,7 @@ function openDealModal(dealId) {
 
   const timelineHtml = _dealHistory
     ? `<div class="dm-timeline">
-        <div class="dm-timeline-hd">Price History — past 12 months</div>
+        <div class="dm-timeline-hd">Price History — past ${escH(String(_dealHistory.num_weeks || 0))} weeks</div>
         <svg id="dm-chart-svg" class="dm-chart"></svg>
         ${validCaption ? `<div class="dm-timeline-caption">${validCaption}</div>` : ''}
       </div>`
@@ -1765,12 +1728,26 @@ function openDealModal(dealId) {
   document.getElementById('deal-modal-overlay').classList.add('vis');
   document.body.style.overflow = 'hidden';
 
-  // Draw chart after layout paint so SVG has real dimensions
-  if (_dealHistory) {
-    requestAnimationFrame(() => {
-      const svgEl = document.getElementById('dm-chart-svg');
-      if (svgEl) buildDealChart(svgEl, d, _dealHistory);
-    });
+  // Fetch this deal's history on demand, then draw after layout so the SVG has real dimensions
+  if (_dealHistory && prefs?.store_id) {
+    const dealId = d.id;
+    fetch(API + `/deals/history?store_id=${encodeURIComponent(prefs.store_id)}&title=${encodeURIComponent(d.title || '')}`,
+          {credentials:'include', headers:authHeaders()})
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data || !_modalDeal || _modalDeal.id !== dealId) return;  // modal closed or changed
+        const pastWeeks = (data.points || []).filter(p => p.week !== _dealHistory.newest_week).length;
+        const fv = document.getElementById('dm-freq-val');
+        if (fv && (data.num_weeks || 0) >= HIST_MIN.freqHint) {
+          fv.textContent = freqLabel(pastWeeks, data.weeks_of_history);
+          document.getElementById('dm-freq-row').style.display = '';
+        }
+        requestAnimationFrame(() => {
+          const svgEl = document.getElementById('dm-chart-svg');
+          if (svgEl) buildDealChart(svgEl, data.points);
+        });
+      })
+      .catch(() => {});
   }
 }
 
@@ -1938,57 +1915,18 @@ function loadMoreDeals(){
 // TPR deals (63% of all deals) are fetched in parallel with core deals.
 // The fetch fires alongside the core request; by the time the TPR response
 // arrives (~900ms), core has already rendered (~650ms). Matches update silently.
-async function loadTprDeals(sid){
-  if(_tprLoaded || _tprLoading) return;
+async function loadTprDeals(sid, gen){
   if(!sid) sid = prefs?.store_id;
   if(!sid) return;
+  if(gen === undefined) gen = _dealsGen;
   _tprLoading=true;
   try{
     const res=await fetch(API+'/deals?store_id='+encodeURIComponent(sid)+'&types=tpr', {credentials:'include',headers:authHeaders()});
     const data=await res.json();
     if(!res.ok) throw new Error(data.error||'Failed to load TPR deals');
-    // Discard if store changed while fetching
-    if(sid !== _dealsStoreId) return;
-
-    const tprDeals=(data.deals||[]).map(d=>({
-      ...d,
-      title:       decodeEntities(d.title       || ''),
-      description: decodeEntities(d.description || ''),
-      save_line:   decodeEntities(d.save_line   || ''),
-      savings:     decodeEntities(d.savings     || ''),
-      fine_print:  decodeEntities(d.fine_print  || ''),
-      department:  decodeEntities(d.department  || ''),
-      brand:       decodeEntities(d.brand       || ''),
-    }));
-
-    // Merge into _allDeals (skip duplicates)
-    const existingIds=new Set(_allDeals.map(d=>d.id));
-    const newDeals=tprDeals.filter(d=>!existingIds.has(d.id));
-    _allDeals=_allDeals.concat(newDeals);
-
-    // Extend token cache for new deals
-    for(const d of newDeals){
-      _dealTokenCache.set(d.id, [...cwTokenize(d.title||''), ...cwTokenize(d.brand||'')]);
-    }
-
-    // Extend badge cache for new deals
-    if(_dealHistory){
-      for(const d of newDeals){
-        const b=computeBadge(d,_dealHistory);
-        if(b) _badgeCache.set(d.id, b);
-      }
-    }
-
-    // Merge dept counts (TPR deals mostly have no department but handle gracefully)
-    const tprDeptCounts=data.dept_counts||{};
-    for(const [dept,cnt] of Object.entries(tprDeptCounts)){
-      _deptCounts[dept]=(_deptCounts[dept]||0)+cnt;
-    }
-    buildDeptFilters('dept-deals', _deptCounts, 'renderDeals');
-
-    _tprLoaded=true;
-    _matchesDirty=true;
-    loadMatches();  // re-runs matcher with expanded deal set → renderDeals()
+    if(gen !== _dealsGen) return;                     // a newer load, store change or logout superseded this
+    if(_coreGen !== gen){ _pendingTpr = {gen, data}; return; }  // core not applied yet — merge when it is
+    mergeTprDeals(data);
   }catch(e){
     console.warn('TPR deal load failed:', e);
   }finally{
@@ -1996,25 +1934,53 @@ async function loadTprDeals(sid){
   }
 }
 
+function mergeTprDeals(data){
+  const tprDeals=(data.deals||[]).map(d=>({
+    ...d,
+    title:       decodeEntities(d.title       || ''),
+    description: decodeEntities(d.description || ''),
+    save_line:   decodeEntities(d.save_line   || ''),
+    savings:     decodeEntities(d.savings     || ''),
+    fine_print:  decodeEntities(d.fine_print  || ''),
+    department:  decodeEntities(d.department  || ''),
+    brand:       decodeEntities(d.brand       || ''),
+  }));
+
+  // Merge into _allDeals (skip duplicates)
+  const existingIds=new Set(_allDeals.map(d=>d.id));
+  const newDeals=tprDeals.filter(d=>!existingIds.has(d.id));
+  _allDeals=_allDeals.concat(newDeals);
+
+  // Extend token cache for new deals
+  for(const d of newDeals){
+    _dealTokenCache.set(d.id, [...cwTokenize(d.title||''), ...cwTokenize(d.brand||'')]);
+  }
+
+  // Extend badge cache for new deals (dictionary lookups — cheap)
+  if(_dealHistory){
+    for(const d of newDeals){
+      const b=computeBadge(d,_dealHistory);
+      if(b) _badgeCache.set(d.id, b);
+    }
+  }
+
+  // Merge dept counts (TPR deals mostly have no department but handle gracefully)
+  const tprDeptCounts=data.dept_counts||{};
+  for(const [dept,cnt] of Object.entries(tprDeptCounts)){
+    _deptCounts[dept]=(_deptCounts[dept]||0)+cnt;
+  }
+  buildDeptFilters('dept-deals', _deptCounts, 'renderDeals');
+
+  _tprLoaded=true;
+  _matchesDirty=true;
+  loadMatches();  // re-runs matcher with expanded deal set → renderDeals()
+}
+
 function onMatchesToggle(){
   const on = document.getElementById('matches-toggle').checked;
   const lbl = document.getElementById('toggle-bar-label');
   if(lbl){ lbl.textContent = on ? 'My Matches first' : 'Browse all deals'; lbl.className='toggle-bar-label'+(on?'':' off'); }
   renderDeals();
-}
-
-// ── fuzzyScore: title-to-title comparison for history badges ─────────────────
-// This is precision-only (all item words found in title) and is intentionally
-// different from the backend matcher — used only for deal quality indicators.
-function fuzzyScore(item, title) {
-  if (!item || !title) return 0;
-  if (title.includes(item)) return 100;
-  const iT = item.split(/\s+/).filter(Boolean);
-  const tT = title.split(/\s+/).filter(Boolean);
-  if (!iT.length) return 0;
-  let m = 0;
-  for (const t of iT) { if (tT.some(tt => tt.includes(t))) m++; }
-  return Math.round((m / iT.length) * 100);
 }
 
 // ═══════════════════════════════════════════════════════════════════

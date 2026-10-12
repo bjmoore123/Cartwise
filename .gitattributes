@@ -1,0 +1,9 @@
+# Normalize line endings: LF in the repo and working tree (deploy.sh / teardown.sh
+# run in Git Bash and Lambda runs on Linux; CRLF breaks shell scripts).
+* text=auto eol=lf
+
+# Binary assets
+*.png binary
+*.ico binary
+*.jpg binary
+*.zip binary

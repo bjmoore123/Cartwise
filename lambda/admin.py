@@ -19,6 +19,7 @@ from helpers import (
     ADMIN_SECRET, ADMIN_SESSION_TTL_HOURS,
     EMAIL_RE, PIN_DENYLIST, ALLOWED_PREF_KEYS,
     cors_headers,
+    ADMIN_COOKIE_NAME, make_cookie, read_cookie,
 )
 from auth import register
 
@@ -51,10 +52,7 @@ def admin_login(event, body):
         "expires_at": expires_at,
     })
     # PDC-21: set HttpOnly cookie — XSS can no longer steal admin token
-    cookie = (
-        f"admin_session={token}; HttpOnly; Secure; SameSite=Lax; "
-        f"Domain=cartwise.shopping; Path=/; Max-Age={ADMIN_SESSION_TTL_HOURS * 3600}"
-    )
+    cookie = make_cookie(ADMIN_COOKIE_NAME, token, ADMIN_SESSION_TTL_HOURS * 3600)
     response = ok({"message": "Admin session started.", "expires_in": ADMIN_SESSION_TTL_HOURS * 3600},
                   _event=event)
     response["cookies"] = [cookie]
@@ -73,26 +71,16 @@ def admin_logout_session(event):
             print(f"[CW] admin_logout_session: {e}")
     # Clear cookie
     response = ok({"message": "Admin session ended."}, _event=event)
-    response["cookies"] = ["admin_session=; HttpOnly; Secure; SameSite=Lax; Domain=cartwise.shopping; Path=/; Max-Age=0"]
+    response["cookies"] = [make_cookie(ADMIN_COOKIE_NAME, "", 0)]
     return response
 
 
 def _get_admin_token_from_event(event) -> str:
     """Extract admin session token from HttpOnly cookie or Authorization header."""
-    # PDC-21: prefer cookie
-    cookies = event.get("cookies") or []
-    for part in cookies:
-        part = part.strip()
-        if part.startswith("admin_session="):
-            return part[len("admin_session="):].strip()
-    # Fallback: Cookie header (payload format 1.0)
+    token = read_cookie(event, ADMIN_COOKIE_NAME)
+    if token:
+        return token
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
-    cookie_header = headers.get("cookie", "")
-    if cookie_header:
-        for part in cookie_header.split(";"):
-            part = part.strip()
-            if part.startswith("admin_session="):
-                return part[len("admin_session="):].strip()
     # Legacy fallback: Authorization header (transition period)
     auth = headers.get("authorization", "").strip()
     if auth.lower().startswith("admintoken "):

@@ -6,17 +6,32 @@
 #  By default, DynamoDB tables (and all user data) are PRESERVED.
 #
 #  Usage:
-#    bash teardown.sh                  # keeps DynamoDB data
-#    bash teardown.sh --delete-data    # deletes DynamoDB data too
+#    bash teardown.sh                  # production — keeps DynamoDB data
+#    bash teardown.sh --delete-data    # production — deletes DynamoDB data too
 #    bash teardown.sh --dry-run        # preview what would be deleted
-#    bash teardown.sh --delete-data --dry-run
+#    ENV=staging bash teardown.sh      # staging only
+#    ENV=staging bash teardown.sh --delete-data
 # =============================================================================
 export MSYS_NO_PATHCONV=1
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 AWS_REGION="us-east-1"
-APP_NAME="cartwise"
+
+# ── Environment: production (default) or staging ──────────────────────────────
+ENV="${ENV:-}"
+if [ "${ENV}" = "staging" ]; then
+  APP_NAME="cartwise-staging"
+  APP_DOMAIN="${APP_DOMAIN:-cartwise.shopping}"
+  SITE_DOMAIN="staging.${APP_DOMAIN}"
+  API_SUBDOMAIN="api-staging.${APP_DOMAIN}"
+else
+  APP_NAME="cartwise"
+  APP_DOMAIN="${APP_DOMAIN:-cartwise.shopping}"
+  SITE_DOMAIN="${APP_DOMAIN}"
+  API_SUBDOMAIN="api.${APP_DOMAIN}"
+fi
+
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
 if [ -z "${AWS_ACCOUNT_ID}" ]; then
   echo "❌ Could not get AWS account ID. Check your AWS CLI credentials."
@@ -25,8 +40,6 @@ fi
 
 S3_FRONTEND="${APP_NAME}-frontend-${AWS_ACCOUNT_ID}"
 CF_LOG_BUCKET="${APP_NAME}-cf-logs"
-APP_DOMAIN="${APP_DOMAIN:-cartwise.shopping}"
-API_SUBDOMAIN="api.${APP_DOMAIN}"
 CF_COMMENT="${APP_NAME}"
 
 # ── Parse arguments ──────────────────────────────────────────────────────────
@@ -77,7 +90,8 @@ fi
 echo "║                                                                 ║"
 echo "║   Account:  ${AWS_ACCOUNT_ID}                                 ║"
 echo "║   Region:   ${AWS_REGION}                                         ║"
-echo "║   Domain:   ${APP_DOMAIN}                                  ║"
+echo "║   Env:      ${ENV:-production}                                           ║"
+echo "║   Site:     ${SITE_DOMAIN}                                  ║"
 echo "╚══════════════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -260,7 +274,14 @@ HOSTED_ZONE_ID=$(aws route53 list-hosted-zones-by-name \
   --output text 2>/dev/null | sed 's|/hostedzone/||')
 
 if [ -n "${HOSTED_ZONE_ID}" ] && [ "${HOSTED_ZONE_ID}" != "None" ]; then
-  for RECORD_NAME in "${APP_DOMAIN}" "www.${APP_DOMAIN}" "${API_SUBDOMAIN}"; do
+  # Build record list: all SITE_ALIASES + API_SUBDOMAIN
+  R53_RECORDS="${API_SUBDOMAIN}"
+  if [ "${ENV}" = "staging" ]; then
+    R53_RECORDS="${SITE_DOMAIN} ${R53_RECORDS}"
+  else
+    R53_RECORDS="${APP_DOMAIN} www.${APP_DOMAIN} ${R53_RECORDS}"
+  fi
+  for RECORD_NAME in ${R53_RECORDS}; do
     RECORD_JSON=$(aws route53 list-resource-record-sets \
       --hosted-zone-id "${HOSTED_ZONE_ID}" \
       --query "ResourceRecordSets[?Name=='${RECORD_NAME}.' && Type=='A'] | [0]" \

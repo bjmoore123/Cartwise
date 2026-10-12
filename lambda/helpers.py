@@ -91,6 +91,34 @@ INBOUND_EMAIL_ADDR    = (os.environ.get("INBOUND_EMAIL_ADDR", "") or "").strip()
 RESEND_WEBHOOK_SECRET = (os.environ.get("RESEND_WEBHOOK_SECRET", "") or "").strip()
 
 SESSION_TTL_HOURS       = 72
+
+# Cookie settings are per environment (set by deploy.sh). Staging uses different
+# cookie names so logging into staging never overwrites the production session:
+# both environments share the cartwise.shopping parent domain.
+SESSION_COOKIE_NAME = (os.environ.get("SESSION_COOKIE_NAME") or "session").strip()
+ADMIN_COOKIE_NAME   = (os.environ.get("ADMIN_COOKIE_NAME") or "admin_session").strip()
+COOKIE_DOMAIN       = os.environ.get("COOKIE_DOMAIN", "cartwise.shopping").strip()
+
+
+def make_cookie(name: str, value: str, max_age: int) -> str:
+    """Build a Set-Cookie value. HttpOnly + Secure + SameSite=Lax; Domain only when configured."""
+    domain = f"Domain={COOKIE_DOMAIN}; " if COOKIE_DOMAIN else ""
+    return f"{name}={value}; HttpOnly; Secure; SameSite=Lax; {domain}Path=/; Max-Age={max_age}"
+
+
+def read_cookie(event, name: str) -> str:
+    """Return a cookie value from an API Gateway event (payload 2.0 list, or 1.0 Cookie header)."""
+    prefix = name + "="
+    for part in (event.get("cookies") or []):
+        part = part.strip()
+        if part.startswith(prefix):
+            return part[len(prefix):].strip()
+    headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
+    for part in headers.get("cookie", "").split(";"):
+        part = part.strip()
+        if part.startswith(prefix):
+            return part[len(prefix):].strip()
+    return ""
 ADMIN_SESSION_TTL_HOURS = 12   # PDC-04: admin sessions expire after 12 hours
 LOGIN_MAX_ATTEMPTS      = 5
 LOGIN_LOCKOUT_MINUTES   = 60
@@ -249,25 +277,8 @@ def get_session(event):
     """
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
 
-    # PDC-05: prefer cookie over Authorization header.
-    # Payload format 2.0: cookies are in event["cookies"] = ["name=value", ...]
-    # Payload format 1.0 fallback: cookies are in the Cookie header.
-    token = ""
-    cookies = event.get("cookies") or []
-    if cookies:
-        for part in cookies:
-            part = part.strip()
-            if part.startswith("session="):
-                token = part[len("session="):].strip()
-                break
-    if not token:
-        cookie_header = headers.get("cookie", "")
-        if cookie_header:
-            for part in cookie_header.split(";"):
-                part = part.strip()
-                if part.startswith("session="):
-                    token = part[len("session="):].strip()
-                    break
+    # PDC-05: prefer the HttpOnly cookie (name is per environment) over the Authorization header.
+    token = read_cookie(event, SESSION_COOKIE_NAME)
 
     # Fallback: Bearer token in Authorization header
     if not token:
@@ -295,28 +306,13 @@ def get_session(event):
 
 def get_admin_auth(event) -> bool:
     """Return True if the request carries a valid admin session token (PDC-04).
-    PDC-21: reads HttpOnly cookie (admin_session) first, AdminToken header as fallback.
+    PDC-21: reads HttpOnly cookie (ADMIN_COOKIE_NAME) first, AdminToken header as fallback.
     PDC-21: raw AdminSecret fallback removed — use POST /admin/login to get a token.
     """
     if not ADMIN_SECRET: return False
 
-    # PDC-21: prefer HttpOnly cookie
-    token = ""
-    cookies = event.get("cookies") or []
-    for part in cookies:
-        part = part.strip()
-        if part.startswith("admin_session="):
-            token = part[len("admin_session="):].strip()
-            break
-    if not token:
-        headers_raw = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
-        cookie_header = headers_raw.get("cookie", "")
-        if cookie_header:
-            for part in cookie_header.split(";"):
-                part = part.strip()
-                if part.startswith("admin_session="):
-                    token = part[len("admin_session="):].strip()
-                    break
+    # PDC-21: prefer the HttpOnly cookie (name is per environment)
+    token = read_cookie(event, ADMIN_COOKIE_NAME)
 
     # Fallback: AdminToken header (transition period)
     if not token:

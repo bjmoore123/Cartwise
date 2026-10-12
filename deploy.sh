@@ -3,14 +3,13 @@
 #  deploy.sh — Cartwise v9 (Fully Serverless)
 #  Idempotent: safe to re-run. Everything existing is skipped or updated.
 #
-#  Basic usage (no custom domain):
+#  Production (default):
 #    RESEND_API_KEY="re_xxx" ADMIN_SECRET="yourpassword" bash deploy.sh
 #
-#  With CloudFront + custom domain (Phase 3+):
-#    Set ACM_CERT_ARN and APP_DOMAIN before running. Phases 1 & 2 of the
-#    domain/SSL plan must be complete (domain registered, cert ISSUED) before
-#    these variables are available.
+#  Staging:
+#    ENV=staging RESEND_API_KEY="re_xxx" bash deploy.sh
 #
+#  With CloudFront + custom domain (Phase 3+):
 #    ACM_CERT_ARN="arn:aws:acm:us-east-1:ACCOUNT:certificate/YOUR-CERT-ID" \
 #    APP_DOMAIN="cartwise.shopping" \
 #    RESEND_API_KEY="re_xxx" ADMIN_SECRET="yourpassword" bash deploy.sh
@@ -23,24 +22,84 @@ TMPDIR_PY="$(cygpath -w "$(mktemp -d)" 2>/dev/null || mktemp -d)"
 win_path() { cygpath -w "$1" 2>/dev/null || echo "$1"; }
 
 AWS_REGION="us-east-1"
-APP_NAME="cartwise"
-RESEND_FROM_NAME="Cartwise Alerts"
-RESEND_FROM_ADDR="alerts@cartwise.shopping"
 
-# ── CloudFront / custom domain (optional — Phase 3+) ──────────────────────────
-# Leave these unset to deploy without CloudFront (S3 HTTP only).
-# Set both to activate Phases 9-15 of this script.
-#   ACM_CERT_ARN  — ARN of an ISSUED ACM certificate in us-east-1
-#   APP_DOMAIN    — apex domain, e.g. cartwise.shopping
-ACM_CERT_ARN="${ACM_CERT_ARN:-}"
-APP_DOMAIN="${APP_DOMAIN:-}"
-CF_LOG_BUCKET="${APP_NAME}-cf-logs"
-CF_LOG_PREFIX="cf/"
-CF_COMMENT="${APP_NAME}"   # used to find existing distribution by Comment field
+# ── Environment: production (default) or staging ──────────────────────────────
+ENV="${ENV:-}"
+if [ "${ENV}" = "staging" ]; then
+  APP_NAME="cartwise-staging"
+  RESEND_FROM_NAME="[STAGING] Cartwise Alerts"
+  RESEND_FROM_ADDR="alerts@cartwise.shopping"
+  # Staging domains: staging.cartwise.shopping + api-staging.cartwise.shopping
+  # Both are single-level subdomains covered by *.cartwise.shopping wildcard cert
+  APP_DOMAIN="${APP_DOMAIN:-cartwise.shopping}"
+  ACM_CERT_ARN="${ACM_CERT_ARN:-}"
+  SITE_DOMAIN="staging.${APP_DOMAIN}"
+  SITE_ALIASES="${SITE_DOMAIN}"   # no www alias for staging
+  API_SUBDOMAIN="api-staging.${APP_DOMAIN}"
+  # Distinct cookie names so a staging login never overwrites the production
+  # session cookie (both environments share the cartwise.shopping parent domain).
+  SESSION_COOKIE_NAME="session_stg"
+  ADMIN_COOKIE_NAME="admin_session_stg"
+  CF_LOG_BUCKET="${APP_NAME}-cf-logs"
+  CF_LOG_PREFIX="cf/"
+  CF_COMMENT="${APP_NAME}"
+  echo ""
+  echo "   ╔══════════════════════════════════════════╗"
+  echo "   ║   🧪  STAGING ENVIRONMENT                ║"
+  echo "   ║   Site: ${SITE_DOMAIN}          ║"
+  echo "   ║   API:  ${API_SUBDOMAIN}     ║"
+  echo "   ╚══════════════════════════════════════════╝"
+  echo ""
+else
+  APP_NAME="cartwise"
+  RESEND_FROM_NAME="Cartwise Alerts"
+  RESEND_FROM_ADDR="alerts@cartwise.shopping"
+  APP_DOMAIN="${APP_DOMAIN:-}"
+  ACM_CERT_ARN="${ACM_CERT_ARN:-}"
+  if [ -n "${APP_DOMAIN}" ]; then
+    SITE_DOMAIN="${APP_DOMAIN}"
+    SITE_ALIASES="${APP_DOMAIN},www.${APP_DOMAIN}"
+    API_SUBDOMAIN="api.${APP_DOMAIN}"
+  else
+    SITE_DOMAIN=""
+    SITE_ALIASES=""
+    API_SUBDOMAIN=""
+  fi
+  CF_LOG_BUCKET="${APP_NAME}-cf-logs"
+  CF_LOG_PREFIX="cf/"
+  CF_COMMENT="${APP_NAME}"
+  SESSION_COOKIE_NAME="session"
+  ADMIN_COOKIE_NAME="admin_session"
+fi
+# Cookie Domain: the shared parent of the site and API hosts (empty = host-only cookie)
+COOKIE_DOMAIN="${APP_DOMAIN}"
+# API Lambda memory (MB). 1024 gives ~4x the CPU of the old 256 MB setting —
+# faster cold starts and faster JSON handling of the ~600 KB /deals payloads.
+API_MEMORY_MB="${API_MEMORY_MB:-1024}"
+
+# v9.2: on re-deploys, reuse the secrets already configured on the live API Lambda
+# when they aren't passed in. Previously a missing value was regenerated, which
+# silently changed the admin password, invalidated every unsubscribe link already
+# emailed, and disabled inbound list import (webhook secret reset).
+_existing_env() {
+  local v
+  v=$(aws lambda get-function-configuration --function-name "${APP_NAME}-api" --region "${AWS_REGION}" \
+        --query "Environment.Variables.$1" --output text 2>/dev/null || true)
+  [ "${v}" = "None" ] && v=""
+  echo "${v}"
+}
+[ -z "${ADMIN_SECRET}" ]          && ADMIN_SECRET="$(_existing_env ADMIN_SECRET)"
+[ -z "${UNSUB_SECRET}" ]          && UNSUB_SECRET="$(_existing_env UNSUB_SECRET)"
+[ -z "${RESEND_WEBHOOK_SECRET}" ] && RESEND_WEBHOOK_SECRET="$(_existing_env RESEND_WEBHOOK_SECRET)"
+[ -n "${ADMIN_SECRET}" ] && echo "   ✓ Secrets: reusing values from ${APP_NAME}-api where not provided"
 
 if [ -z "${RESEND_API_KEY}" ]; then
-  echo "ERROR: RESEND_API_KEY is not set."
-  echo "Usage: RESEND_API_KEY=\"re_xxx\" ADMIN_SECRET=\"yourpassword\" bash deploy.sh"
+  RESEND_API_KEY=$(aws ssm get-parameter --name "/publix/resend-api-key" --with-decryption \
+    --query Parameter.Value --output text --region "${AWS_REGION}" 2>/dev/null || true)
+  [ "${RESEND_API_KEY}" = "None" ] && RESEND_API_KEY=""
+fi
+if [ -z "${RESEND_API_KEY}" ]; then
+  echo "ERROR: RESEND_API_KEY is not set and not found in SSM /publix/resend-api-key."
   exit 1
 fi
 
@@ -74,8 +133,8 @@ fi
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 S3_FRONTEND="${APP_NAME}-frontend-${AWS_ACCOUNT_ID}"
 # Use CloudFront custom domain if configured; S3 website URL as pre-CloudFront fallback
-if [ -n "${APP_DOMAIN}" ]; then
-  FRONTEND_URL="https://${APP_DOMAIN}"
+if [ -n "${SITE_DOMAIN}" ]; then
+  FRONTEND_URL="https://${SITE_DOMAIN}"
 else
   FRONTEND_URL="http://${S3_FRONTEND}.s3-website-${AWS_REGION}.amazonaws.com"
 fi
@@ -108,8 +167,8 @@ print(json.dumps({'Variables': variables}))
 
 echo ""
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║   Cartwise v9 — Serverless Deployment     ║"
-echo "║   Account: ${AWS_ACCOUNT_ID}   Region: ${AWS_REGION} ║"
+echo "║   Cartwise v9 — Serverless Deployment               ║"
+echo "║   Env: ${ENV:-production}   Account: ${AWS_ACCOUNT_ID}   Region: ${AWS_REGION} ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
 
@@ -283,7 +342,7 @@ PIP_CMD=$(which pip3 2>/dev/null || which pip 2>/dev/null || echo "python3 -m pi
 API_BUILD_TMP="${TMPDIR_PY}/api_build"
 rm -rf "${API_BUILD_TMP}"; mkdir -p "${API_BUILD_TMP}"
 # Copy all lambda modules (Architecture #1: modular split)
-for f in handler.py helpers.py auth.py prefs.py deals.py admin.py inbound.py logging_utils.py; do
+for f in handler.py helpers.py auth.py prefs.py deals.py history.py admin.py inbound.py logging_utils.py; do
   cp "${SCRIPT_DIR}/lambda/${f}" "${API_BUILD_TMP}/"
 done
 # Include shared libraries (deal_parser + matcher)
@@ -327,7 +386,7 @@ if ! exists aws lambda get-function --function-name "${LAMBDA_API}" --region "${
     --handler handler.handler \
     --zip-file "fileb://$(win_path "${LAMBDA_API_ZIP}")" \
     --timeout 30 \
-    --memory-size 256 \
+    --memory-size "${API_MEMORY_MB}" \
     --region "${AWS_REGION}" > /dev/null
   aws lambda wait function-active --function-name "${LAMBDA_API}" --region "${AWS_REGION}"
   apply_env "${LAMBDA_API}" \
@@ -353,7 +412,10 @@ if ! exists aws lambda get-function --function-name "${LAMBDA_API}" --region "${
     "RESEND_WEBHOOK_SECRET" "${RESEND_WEBHOOK_SECRET}" \
     "ACM_CERT_ARN" "${ACM_CERT_ARN}" \
     "CF_LOG_BUCKET" "${CF_LOG_BUCKET}" \
-    "CF_LOG_PREFIX" "${CF_LOG_PREFIX}"
+    "CF_LOG_PREFIX" "${CF_LOG_PREFIX}" \
+    "SESSION_COOKIE_NAME" "${SESSION_COOKIE_NAME}" \
+    "ADMIN_COOKIE_NAME" "${ADMIN_COOKIE_NAME}" \
+    "COOKIE_DOMAIN" "${COOKIE_DOMAIN}"
   ok "Lambda created: ${LAMBDA_API}"
 else
   aws lambda wait function-active --function-name "${LAMBDA_API}" --region "${AWS_REGION}" 2>/dev/null || true
@@ -365,7 +427,9 @@ else
   aws lambda update-function-configuration \
     --function-name "${LAMBDA_API}" \
     --handler handler.handler \
+    --memory-size "${API_MEMORY_MB}" \
     --region "${AWS_REGION}" > /dev/null
+  aws lambda wait function-updated --function-name "${LAMBDA_API}" --region "${AWS_REGION}" 2>/dev/null || sleep 5
   apply_env "${LAMBDA_API}" \
     "USERS_TABLE" "${APP_NAME}-users" \
     "SESSIONS_TABLE" "${APP_NAME}-sessions" \
@@ -389,7 +453,10 @@ else
     "RESEND_WEBHOOK_SECRET" "${RESEND_WEBHOOK_SECRET}" \
     "ACM_CERT_ARN" "${ACM_CERT_ARN}" \
     "CF_LOG_BUCKET" "${CF_LOG_BUCKET}" \
-    "CF_LOG_PREFIX" "${CF_LOG_PREFIX}"
+    "CF_LOG_PREFIX" "${CF_LOG_PREFIX}" \
+    "SESSION_COOKIE_NAME" "${SESSION_COOKIE_NAME}" \
+    "ADMIN_COOKIE_NAME" "${ADMIN_COOKIE_NAME}" \
+    "COOKIE_DOMAIN" "${COOKIE_DOMAIN}"
   ok "Lambda updated: ${LAMBDA_API}"
 fi
 
@@ -513,14 +580,33 @@ put_ssm "resend-from-addr" "${RESEND_FROM_ADDR}" "String"
 echo "▶  6/15  API Gateway"
 
 # Look up by custom domain mapping first (survives renames), then by name
-if [ -n "${APP_DOMAIN}" ]; then
-  API_ID=$(aws apigatewayv2 get-domain-name --domain-name "api.${APP_DOMAIN}" --region "${AWS_REGION}"     --query "ApiMappings" --output text 2>/dev/null || true)
-  API_ID=$(aws apigatewayv2 get-api-mappings --domain-name "api.${APP_DOMAIN}" --region "${AWS_REGION}"     --query "Items[0].ApiId" --output text 2>/dev/null || true)
+if [ -n "${API_SUBDOMAIN}" ]; then
+  API_ID=$(aws apigatewayv2 get-api-mappings --domain-name "${API_SUBDOMAIN}" --region "${AWS_REGION}"     --query "Items[0].ApiId" --output text 2>/dev/null || true)
+  # Verify the mapped API actually belongs to this environment (prevents cross-env contamination)
+  if [ -n "${API_ID}" ] && [ "${API_ID}" != "None" ]; then
+    MAPPED_API_NAME=$(aws apigatewayv2 get-api --api-id "${API_ID}" --region "${AWS_REGION}" \
+      --query "Name" --output text 2>/dev/null || true)
+    if [ "${MAPPED_API_NAME}" != "${APP_NAME}-api-gw" ]; then
+      info "Domain ${API_SUBDOMAIN} maps to ${MAPPED_API_NAME} (expected ${APP_NAME}-api-gw) — ignoring stale mapping"
+      API_ID=""
+    fi
+  fi
 fi
 if [ -z "${API_ID}" ] || [ "${API_ID}" = "None" ]; then
-  API_ID=$(aws apigatewayv2 get-apis --region "${AWS_REGION}"     --query "Items[?contains(Name,'-api-gw')].ApiId" --output text 2>/dev/null | awk '{print $1}')
+  API_ID=$(aws apigatewayv2 get-apis --region "${AWS_REGION}"     --query "Items[?Name=='${APP_NAME}-api-gw'].ApiId" --output text 2>/dev/null | awk '{print $1}')
 fi
 
+# Safety (v9.2): this ENV-aware script came from staging and has never created
+# production's API. Refuse to create a second production API Gateway if the
+# exact-name lookup misses: that would split traffic and break api.${APP_DOMAIN}.
+if { [ -z "${API_ID}" ] || [ "${API_ID}" = "None" ]; } && [ "${ENV}" != "staging" ] && [ "${ALLOW_NEW_API:-}" != "1" ]; then
+  EXISTING_APIS=$(aws apigatewayv2 get-apis --region "${AWS_REGION}" --query "Items[].Name" --output text 2>/dev/null || true)
+  if [ -n "${EXISTING_APIS}" ]; then
+    echo "ERROR: no API Gateway named '${APP_NAME}-api-gw' found, but these exist: ${EXISTING_APIS}"
+    echo "       Refusing to create a new production API. Rename/check, or re-run with ALLOW_NEW_API=1."
+    exit 1
+  fi
+fi
 if [ -z "${API_ID}" ] || [ "${API_ID}" = "None" ]; then
   API_ID=$(aws apigatewayv2 create-api \
     --name "${APP_NAME}-api-gw" \
@@ -530,12 +616,16 @@ if [ -z "${API_ID}" ] || [ "${API_ID}" = "None" ]; then
   ok "API Gateway created: ${API_ID}"
 fi
 
-# Always set exact CORS origins (supports both apex and www)
+# Always set exact CORS origins
 APIGW_CORS_FILE="${TMPDIR_PY}/apigw_cors.json"
 python3 -c "
 import json, sys
 api_id = sys.argv[1]
-origins = [f'https://{sys.argv[2]}', f'https://www.{sys.argv[2]}']
+aliases = sys.argv[2]
+if aliases:
+    origins = [f'https://{d.strip()}' for d in aliases.split(',') if d.strip()]
+else:
+    origins = ['http://localhost']
 cfg = {
   'ApiId': api_id,
   'CorsConfiguration': {
@@ -547,15 +637,15 @@ cfg = {
   }
 }
 print(json.dumps(cfg))
-" "${API_ID}" "${APP_DOMAIN:-localhost}" > "${APIGW_CORS_FILE}"
+" "${API_ID}" "${SITE_ALIASES}" > "${APIGW_CORS_FILE}"
 MSYS_NO_PATHCONV=1 aws apigatewayv2 update-api \
   --cli-input-json "file://$(cygpath -m "${APIGW_CORS_FILE}" 2>/dev/null || echo "${APIGW_CORS_FILE}")" \
   --region "${AWS_REGION}" > /dev/null
 
 API_URL="https://${API_ID}.execute-api.${AWS_REGION}.amazonaws.com"
 # If custom domain is configured, use it for API_URL so app.js gets the right URL at upload time
-if [ -n "${APP_DOMAIN}" ]; then
-  API_URL="https://api.${APP_DOMAIN}"
+if [ -n "${API_SUBDOMAIN}" ]; then
+  API_URL="https://${API_SUBDOMAIN}"
 fi
 
 INTEG_ID=$(aws apigatewayv2 get-integrations \
@@ -590,7 +680,12 @@ else
     --region "${AWS_REGION}" > /dev/null
   ok "API Gateway integration (already exists)"
 fi
-# Always ensure Lambda invoke permission exists for this API GW (idempotent)
+# Always ensure Lambda invoke permission is correct for THIS API GW
+# Remove first then re-add (add-permission won't update an existing statement)
+aws lambda remove-permission \
+  --function-name "${LAMBDA_API}" \
+  --statement-id "apigateway-invoke" \
+  --region "${AWS_REGION}" > /dev/null 2>&1 || true
 aws lambda add-permission \
   --function-name "${LAMBDA_API}" \
   --statement-id "apigateway-invoke" \
@@ -670,8 +765,8 @@ if not ok:
 "
 rm -f index_deploy_tmp.html app_deploy_tmp.js
 # Use CloudFront URL if domain is configured, otherwise S3 website URL as fallback
-if [ -n "${APP_DOMAIN}" ]; then
-  FRONTEND_URL="https://${APP_DOMAIN}"
+if [ -n "${SITE_DOMAIN}" ]; then
+  FRONTEND_URL="https://${SITE_DOMAIN}"
   ok "Frontend deployed: ${FRONTEND_URL} (via CloudFront)"
 else
   FRONTEND_URL="http://${S3_FRONTEND}.s3-website-${AWS_REGION}.amazonaws.com"
@@ -757,7 +852,10 @@ apply_env "${LAMBDA_API}" \
     "RESEND_WEBHOOK_SECRET" "${RESEND_WEBHOOK_SECRET}" \
     "ACM_CERT_ARN" "${ACM_CERT_ARN}" \
     "CF_LOG_BUCKET" "${CF_LOG_BUCKET}" \
-    "CF_LOG_PREFIX" "${CF_LOG_PREFIX}"
+    "CF_LOG_PREFIX" "${CF_LOG_PREFIX}" \
+    "SESSION_COOKIE_NAME" "${SESSION_COOKIE_NAME}" \
+    "ADMIN_COOKIE_NAME" "${ADMIN_COOKIE_NAME}" \
+    "COOKIE_DOMAIN" "${COOKIE_DOMAIN}"
 aws lambda wait function-updated --function-name "${LAMBDA_API}" --region "${AWS_REGION}" 2>/dev/null || sleep 5
 apply_env "${LAMBDA_SCRAPER}" \
     "FRONTEND_URL" "${FRONTEND_URL}" \
@@ -782,12 +880,11 @@ ok "Lambda env vars updated with final URLs (FRONTEND_URL, API_URL, UNSUB_SECRET
 
 CF_DIST_ID=""   # will be populated in step 12 if CF exists or is created
 
-if [ -z "${ACM_CERT_ARN}" ] || [ -z "${APP_DOMAIN}" ]; then
+if [ -z "${ACM_CERT_ARN}" ] || [ -z "${SITE_DOMAIN}" ]; then
   echo "▶  9-15/15  CloudFront + domain — SKIPPED"
   info "Set ACM_CERT_ARN and APP_DOMAIN to activate CloudFront deployment."
   info "See domain/SSL planning doc Phases 1-2 for prerequisites."
 else
-  API_SUBDOMAIN="api.${APP_DOMAIN}"
 
   # ── STEP 9: S3 log bucket ──────────────────────────────────────────────────
   echo "▶  9/15  S3 CloudFront log bucket"
@@ -888,42 +985,11 @@ else
   echo "▶  12/15  CloudFront distribution"
 
   # Look up by CNAME (resilient to app renames) then fall back to Comment
-  CF_DIST_ID=$(aws cloudfront list-distributions     --query "DistributionList.Items[?Aliases.Items[?@=='${APP_DOMAIN}']].Id"     --output text 2>/dev/null)
+  CF_DIST_ID=$(aws cloudfront list-distributions     --query "DistributionList.Items[?Aliases.Items[?@=='${SITE_DOMAIN}']].Id"     --output text 2>/dev/null)
   if [ -z "${CF_DIST_ID}" ] || [ "${CF_DIST_ID}" = "None" ]; then
     CF_DIST_ID=$(aws cloudfront list-distributions       --query "DistributionList.Items[?Comment=='${CF_COMMENT}'].Id"       --output text 2>/dev/null)
   fi
   if [ -z "${CF_DIST_ID}" ] || [ "${CF_DIST_ID}" = "None" ]; then
-    CF_DIST_ID=$(aws cloudfront list-distributions       --query "DistributionList.Items[?Comment=='publix-deal-checker'].Id"       --output text 2>/dev/null)
-    [ -n "${CF_DIST_ID}" ] && [ "${CF_DIST_ID}" != "None" ] && echo "   → Found existing distribution by old name: ${CF_DIST_ID}"
-  fi
-
-  if [ -z "${CF_DIST_ID}" ] || [ "${CF_DIST_ID}" = "None" ]; then
-    # Update S3 bucket policy to OAC-only BEFORE creating distribution
-    # CloudFront needs the policy in place when it first contacts the origin
-    aws s3api put-bucket-policy --bucket "${S3_FRONTEND}" \
-      --policy "{
-        \"Version\": \"2012-10-17\",
-        \"Statement\": [{
-          \"Sid\": \"AllowCloudFrontOAC\",
-          \"Effect\": \"Allow\",
-          \"Principal\": {\"Service\": \"cloudfront.amazonaws.com\"},
-          \"Action\": \"s3:GetObject\",
-          \"Resource\": \"arn:aws:s3:::${S3_FRONTEND}/*\",
-          \"Condition\": {
-            \"StringEquals\": {
-              \"AWS:SourceArn\": \"arn:aws:cloudfront::${AWS_ACCOUNT_ID}:distribution/${CF_DIST_ID}\"
-            }
-          }
-        }]
-      }" > /dev/null
-    ok "S3 bucket policy updated (OAC-only)"
-
-    # Block direct public access — CloudFront is the only entry point from here on
-    aws s3api put-public-access-block --bucket "${S3_FRONTEND}" \
-      --public-access-block-configuration \
-        "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" > /dev/null
-    ok "S3 public access blocked (CloudFront-only)"
-
     CF_DIST_ID=$(aws cloudfront create-distribution \
       --distribution-config "{
         \"CallerReference\": \"${APP_NAME}-$(date +%s)\",
@@ -932,10 +998,12 @@ else
         \"HttpVersion\": \"http2and3\",
         \"IsIPV6Enabled\": true,
         \"DefaultRootObject\": \"index.html\",
-        \"Aliases\": {
-          \"Quantity\": 2,
-          \"Items\": [\"${APP_DOMAIN}\", \"www.${APP_DOMAIN}\"]
-        },
+        $(python3 -c "
+import sys
+aliases = [a.strip() for a in sys.argv[1].split(',') if a.strip()]
+items = ', '.join(f'\"{a}\"' for a in aliases)
+print(f'\"Aliases\": {{\"Quantity\": {len(aliases)}, \"Items\": [{items}]}}')
+" "${SITE_ALIASES}"),
         \"Origins\": {
           \"Quantity\": 1,
           \"Items\": [{
@@ -989,6 +1057,31 @@ else
       --query 'Distribution.Id' --output text)
     ok "CloudFront distribution created: ${CF_DIST_ID}"
     info "Distribution takes ~15 minutes to deploy globally."
+
+    # Update S3 bucket policy to OAC-only now that we have the distribution ID
+    aws s3api put-bucket-policy --bucket "${S3_FRONTEND}" \
+      --policy "{
+        \"Version\": \"2012-10-17\",
+        \"Statement\": [{
+          \"Sid\": \"AllowCloudFrontOAC\",
+          \"Effect\": \"Allow\",
+          \"Principal\": {\"Service\": \"cloudfront.amazonaws.com\"},
+          \"Action\": \"s3:GetObject\",
+          \"Resource\": \"arn:aws:s3:::${S3_FRONTEND}/*\",
+          \"Condition\": {
+            \"StringEquals\": {
+              \"AWS:SourceArn\": \"arn:aws:cloudfront::${AWS_ACCOUNT_ID}:distribution/${CF_DIST_ID}\"
+            }
+          }
+        }]
+      }" > /dev/null
+    ok "S3 bucket policy updated (OAC-only, dist: ${CF_DIST_ID})"
+
+    # Block direct public access — CloudFront is the only entry point
+    aws s3api put-public-access-block --bucket "${S3_FRONTEND}" \
+      --public-access-block-configuration \
+        "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" > /dev/null
+    ok "S3 public access blocked (CloudFront-only)"
   else
     # Distribution exists — verify origin and logging bucket match current config.
     # This handles bucket renames (e.g. publix-deal-checker → cartwise).
@@ -1074,39 +1167,35 @@ print('Config written to ${CF_TMP}')
   else
     info "Hosted zone: ${HOSTED_ZONE_ID}"
 
-    # Upsert A alias records for apex and www → CloudFront
+    # Upsert A alias records for all site aliases → CloudFront
+    R53_CHANGES=$(python3 -c "
+import json, sys
+aliases = [a.strip() for a in sys.argv[1].split(',') if a.strip()]
+cf_domain = sys.argv[2]
+cf_hz = sys.argv[3]
+changes = []
+for alias in aliases:
+    changes.append({
+        'Action': 'UPSERT',
+        'ResourceRecordSet': {
+            'Name': alias,
+            'Type': 'A',
+            'AliasTarget': {
+                'HostedZoneId': cf_hz,
+                'DNSName': cf_domain,
+                'EvaluateTargetHealth': False
+            }
+        }
+    })
+print(json.dumps({'Changes': changes}))
+" "${SITE_ALIASES}" "${CF_DOMAIN}" "${CF_HOSTED_ZONE}")
+
     aws route53 change-resource-record-sets \
       --hosted-zone-id "${HOSTED_ZONE_ID}" \
-      --change-batch "{
-        \"Changes\": [
-          {
-            \"Action\": \"UPSERT\",
-            \"ResourceRecordSet\": {
-              \"Name\": \"${APP_DOMAIN}\",
-              \"Type\": \"A\",
-              \"AliasTarget\": {
-                \"HostedZoneId\": \"${CF_HOSTED_ZONE}\",
-                \"DNSName\": \"${CF_DOMAIN}\",
-                \"EvaluateTargetHealth\": false
-              }
-            }
-          },
-          {
-            \"Action\": \"UPSERT\",
-            \"ResourceRecordSet\": {
-              \"Name\": \"www.${APP_DOMAIN}\",
-              \"Type\": \"A\",
-              \"AliasTarget\": {
-                \"HostedZoneId\": \"${CF_HOSTED_ZONE}\",
-                \"DNSName\": \"${CF_DOMAIN}\",
-                \"EvaluateTargetHealth\": false
-              }
-            }
-          }
-        ]
-      }" > /dev/null
-    ok "Route 53: ${APP_DOMAIN} → ${CF_DOMAIN}"
-    ok "Route 53: www.${APP_DOMAIN} → ${CF_DOMAIN}"
+      --change-batch "${R53_CHANGES}" > /dev/null
+    for alias in $(echo "${SITE_ALIASES}" | tr ',' ' '); do
+      ok "Route 53: ${alias} → ${CF_DOMAIN}"
+    done
 
     # ── API CloudFront distribution (api.cartwise.shopping → API Gateway) ─────
     # Route API traffic through CloudFront so the Lambda receives
@@ -1138,11 +1227,28 @@ print('Config written to ${CF_TMP}')
       skip "API Gateway custom domain: ${API_SUBDOMAIN}"
     fi
 
-    # Map the API Gateway stage to the custom domain (idempotent)
-    aws apigatewayv2 create-api-mapping \
-      --domain-name "${API_SUBDOMAIN}" \
-      --api-id "${API_ID}" \
-      --stage '$default' > /dev/null 2>&1 || true
+    # Map the API Gateway stage to the custom domain.
+    # Replace the mapping only when it points at a DIFFERENT API (stale/cross-env);
+    # deleting and recreating a correct mapping causes a brief API outage on every deploy.
+    EXISTING_MAPPING=$(aws apigatewayv2 get-api-mappings \
+      --domain-name "${API_SUBDOMAIN}" --region "${AWS_REGION}" \
+      --query "Items[0].[ApiMappingId,ApiId]" --output text 2>/dev/null || true)
+    EXISTING_MAPPING_ID=$(echo "${EXISTING_MAPPING}" | awk '{print $1}')
+    EXISTING_MAPPED_API=$(echo "${EXISTING_MAPPING}" | awk '{print $2}')
+    if [ -n "${EXISTING_MAPPING_ID}" ] && [ "${EXISTING_MAPPING_ID}" != "None" ] && [ "${EXISTING_MAPPED_API}" != "${API_ID}" ]; then
+      aws apigatewayv2 delete-api-mapping \
+        --domain-name "${API_SUBDOMAIN}" \
+        --api-mapping-id "${EXISTING_MAPPING_ID}" \
+        --region "${AWS_REGION}" > /dev/null 2>&1 || true
+      EXISTING_MAPPED_API=""
+    fi
+    if [ "${EXISTING_MAPPED_API}" != "${API_ID}" ]; then
+      aws apigatewayv2 create-api-mapping \
+        --domain-name "${API_SUBDOMAIN}" \
+        --api-id "${API_ID}" \
+        --stage '$default' \
+        --region "${AWS_REGION}" > /dev/null 2>&1 || true
+    fi
 
     # The raw API GW execute-api URL is the CloudFront origin (not the custom domain).
     # CloudFront connects to it over HTTPS using the Host header for routing.
@@ -1286,7 +1392,7 @@ print('Config written to ${CF_TMP}')
     fi
 
     # Update FRONTEND_URL and API_URL to use the custom domain
-    FRONTEND_URL="https://${APP_DOMAIN}"
+    FRONTEND_URL="https://${SITE_DOMAIN}"
     API_URL="https://${API_SUBDOMAIN}"
     info "URLs updated: FRONTEND_URL=${FRONTEND_URL}  API_URL=${API_URL}"
   fi

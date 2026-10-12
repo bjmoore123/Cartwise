@@ -17,6 +17,7 @@ from helpers import (
 from logging_utils import _log_app_event
 from shared.deal_parser import parse_deal
 from shared.matcher import match_deals_for_user
+from history import build_index, compute_badges, item_frequency, title_points
 
 # ── Publix API URLs ───────────────────────────────────────────────────────────
 
@@ -251,67 +252,114 @@ def get_deals(event):
     }, _headers={"Cache-Control": "max-age=300"})
 
 
-def get_deal_history(event):
-    """GET /deals/history?store_id=X — weekly snapshots for price history.
+# Warm-Lambda cache of the per-store history index: {store_id: (signature, index)}.
+# The signature is the set of (sk, fetched_at) keys, so a new weekly snapshot
+# (or a re-scrape) invalidates it automatically.
+_HISTORY_CACHE: dict = {}
 
-    Uses Query on composite key (PK=store_id, SK=week or week#chunk) instead of
-    a full table Scan. ~10x faster and scales to any number of stores.
+
+def _history_signature(store_id: str) -> tuple:
+    """Cheap keys-only query used to detect whether the cached index is still current."""
+    from boto3.dynamodb.conditions import Key as DKey
+    keys, kwargs = [], {
+        "KeyConditionExpression": DKey("store_id").eq(store_id),
+        "ProjectionExpression": "sk, fetched_at",
+    }
+    while True:
+        resp = history_tbl.query(**kwargs)
+        keys.extend((str(i.get("sk", "")), str(i.get("fetched_at", ""))) for i in resp.get("Items", []))
+        if "LastEvaluatedKey" not in resp:
+            break
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    return tuple(sorted(keys))
+
+
+def _load_history_snapshots(store_id: str) -> list:
+    """Read every weekly snapshot (index rows + chunk rows) for a store."""
+    from boto3.dynamodb.conditions import Key as DKey
+    rows, kwargs = [], {"KeyConditionExpression": DKey("store_id").eq(store_id)}
+    while True:
+        resp = history_tbl.query(**kwargs)
+        rows.extend(resp.get("Items", []))
+        if "LastEvaluatedKey" not in resp:
+            break
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+    rows = _to_py(rows)
+    index_rows, chunk_map = [], {}
+    for row in rows:
+        sk = row.get("sk", "")
+        if "#" in sk:
+            week_key, _, idx = sk.rpartition("#")
+            try:
+                chunk_map.setdefault(week_key, {})[int(idx)] = json.loads(row.get("deals", "[]"))
+                continue
+            except ValueError:
+                pass
+        index_rows.append(row)
+
+    snapshots = []
+    for idx_row in index_rows:
+        week   = idx_row.get("week", idx_row.get("sk", ""))
+        chunks = chunk_map.get(week, {})
+        deals  = []
+        for i in range(int(idx_row.get("num_chunks", 0))):
+            deals.extend(chunks.get(i, []))
+        snapshots.append({"week": week, "deals": deals})
+    return snapshots
+
+
+def _history_index(store_id: str) -> dict:
+    sig = _history_signature(store_id)
+    cached = _HISTORY_CACHE.get(store_id)
+    if cached and cached[0] == sig:
+        return cached[1]
+    index = build_index(_load_history_snapshots(store_id))
+    _HISTORY_CACHE[store_id] = (sig, index)
+    return index
+
+
+def get_deal_history(event):
+    """GET /deals/history?store_id=X            → badge + frequency summary (a few KB)
+       GET /deals/history?store_id=X&title=T    → chart points for one deal title
+
+    v9.2: the old response shipped every past deal (4.7 MB / 30 weeks) and the
+    browser fuzzy-matched it against every current deal (~190 s CPU). The
+    summary is now computed here, from a per-store index cached in the warm Lambda.
     """
     sess = get_session(event)
     if not sess: return err("Not authenticated.", 401)
     params   = event.get("queryStringParameters") or {}
     store_id = (params.get("store_id") or "").strip()
+    title    = (params.get("title") or "").strip()
     if not store_id: return err("Missing store_id parameter.")
 
     try:
-        from boto3.dynamodb.conditions import Key as DKey
-        # Query all rows for this store — returns index rows + chunk rows
-        rows = []
-        resp = history_tbl.query(
-            KeyConditionExpression=DKey("store_id").eq(store_id),
-        )
-        rows.extend(resp.get("Items", []))
-        while "LastEvaluatedKey" in resp:
-            resp = history_tbl.query(
-                KeyConditionExpression=DKey("store_id").eq(store_id),
-                ExclusiveStartKey=resp["LastEvaluatedKey"],
-            )
-            rows.extend(resp.get("Items", []))
+        index     = _history_index(store_id)
+        num_weeks = len(index["weeks"])
+        base = {
+            "version":          2,
+            "store_id":         store_id,
+            "num_weeks":        num_weeks,
+            "weeks_of_history": max(num_weeks - 1, 1),
+        }
+        if title:
+            return ok({**base, "title": title, "points": title_points(index, title)},
+                      _headers={"Cache-Control": "private, max-age=300"})
 
-        rows       = _to_py(rows)
-        index_rows = []
-        chunk_map  = {}
+        items = []
+        try:
+            user  = users_table.get_item(Key={"email": sess["email"]}).get("Item") or {}
+            items = (_to_py(user.get("prefs") or {}).get("items")) or []
+        except Exception as e:
+            print(f"[CW] get_deal_history prefs: {e}")
 
-        for row in rows:
-            sk = row.get("sk", "")
-            if "#" in sk:
-                # Chunk row: sk = "2026-03-16#0"
-                parts = sk.rsplit("#", 1)
-                try:
-                    chunk_idx = int(parts[-1])
-                except ValueError:
-                    index_rows.append(row)
-                    continue
-                week_key = parts[0]
-                chunk_map.setdefault(week_key, {})[chunk_idx] = json.loads(row.get("deals", "[]"))
-            else:
-                # Index row: sk = "2026-03-16"
-                index_rows.append(row)
-
-        snapshots = []
-        for idx_row in index_rows:
-            week       = idx_row.get("week", idx_row.get("sk", ""))
-            num_chunks = int(idx_row.get("num_chunks", 0))
-            chunks     = chunk_map.get(week, {})
-            deals      = []
-            for i in range(num_chunks):
-                deals.extend(chunks.get(i, []))
-            trimmed = [{"title": d.get("title", ""), "savings": d.get("savings", "")} for d in deals]
-            snapshots.append({"week": week, "count": len(trimmed), "deals": trimmed})
-
-        snapshots.sort(key=lambda s: s["week"], reverse=True)
-        return ok({"store_id": store_id, "num_weeks": len(snapshots), "snapshots": snapshots},
-                  _headers={"Cache-Control": "max-age=300"})
+        return ok({
+            **base,
+            "newest_week": index["weeks"][0] if index["weeks"] else "",
+            "badges":      compute_badges(index),
+            "freq":        item_frequency(index, items),
+        }, _headers={"Cache-Control": "private, max-age=60"})
 
     except Exception as e:
         print(f"[CW] get_deal_history: {e}")

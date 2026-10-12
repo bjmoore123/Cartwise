@@ -17,6 +17,7 @@ from helpers import (
     DEFAULT_PREFS, SESSION_TTL_HOURS, FRONTEND_URL, API_URL,
     LOGIN_MAX_ATTEMPTS, LOGIN_LOCKOUT_MINUTES, EMAIL_RE,
     PIN_DENYLIST, check_rate_limit, _get_client_ip,
+    SESSION_COOKIE_NAME, make_cookie,
 )
 from logging_utils import _log_auth_event
 
@@ -302,13 +303,9 @@ def login(event, body):
     if not prefs.get("notify_email"):
         prefs["notify_email"] = email
     # PDC-05: set HttpOnly cookie alongside the JSON token.
-    # PDC-21: SameSite=Lax (was None). Frontend and API share parent domain
-    # cartwise.shopping, so Lax works and provides stronger CSRF protection.
-    # Domain=cartwise.shopping scopes cookie to apex + all subdomains.
-    cookie = (
-        f"session={token}; HttpOnly; Secure; SameSite=Lax; "
-        f"Domain=cartwise.shopping; Path=/; Max-Age={SESSION_TTL_HOURS * 3600}"
-    )
+    # PDC-21: SameSite=Lax. Site and API share the parent domain (COOKIE_DOMAIN),
+    # so Lax works and gives stronger CSRF protection. Name is per environment.
+    cookie = make_cookie(SESSION_COOKIE_NAME, token, SESSION_TTL_HOURS * 3600)
     # Include email_verified in login response so frontend can show banner for unverified accounts.
     # Default True for pre-existing accounts that predate the verification system.
     email_verified = user.get("email_verified", True)
@@ -332,7 +329,7 @@ def logout(event):
         except Exception as e:
             print(f"[CW] logout valid_after update failed: {e}")
     response = ok({"message": "Logged out."}, _event=event)  # PDC-05: clear cookie
-    response["cookies"] = ["session=; HttpOnly; Secure; SameSite=Lax; Domain=cartwise.shopping; Path=/; Max-Age=0"]
+    response["cookies"] = [make_cookie(SESSION_COOKIE_NAME, "", 0)]
     return response
 
 
