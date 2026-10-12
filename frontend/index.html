@@ -650,8 +650,7 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
         <input type="text" id="store-id-input" class="store-search-input"
           placeholder="City, ZIP code, or store #…"
           autocomplete="off"
-          data-action="store-input-type"
-          data-action="store-search-key">
+          data-action="store-search">
         <span class="store-search-icon">🔍</span>
       </div>
       <div style="margin-top:8px;text-align:right">
@@ -707,6 +706,9 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
           <label class="filter-opt"><input type="checkbox" id="f-weekly" checked data-action="savings-filter" data-filter="weekly">
             <div><div class="filter-opt-label">Weekly ad</div></div>
             <span class="filter-opt-cnt" id="fcnt-weekly"></span></label>
+          <label class="filter-opt"><input type="checkbox" id="f-tpr" checked data-action="savings-filter" data-filter="tpr">
+            <div><div class="filter-opt-label">Price drops</div></div>
+            <span class="filter-opt-cnt" id="fcnt-tpr"></span></label>
           <label class="filter-opt"><input type="checkbox" id="f-bogo" checked data-action="savings-filter" data-filter="bogo">
             <div><div class="filter-opt-label">BOGOs</div></div>
             <span class="filter-opt-cnt" id="fcnt-bogo"></span></label>
@@ -1019,6 +1021,7 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
                   <option value="api">API errors</option>
                   <option value="email">Email delivery</option>
                   <option value="cache">Cache</option>
+                  <option value="scraper">Weekly scrape</option>
                 </select>
                 <button class="abn g" data-action="admin-load-app-logs">↻ Refresh</button>
               </div>

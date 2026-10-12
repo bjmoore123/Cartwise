@@ -150,6 +150,36 @@ def _parse_deals_raw(raw: dict) -> list:
     return deals
 
 
+def _chunk_key(store_id: str, gen: str, i: int) -> str:
+    """Chunk row key. v9.2.2 (#6): chunks carry the cache generation so a new
+    scrape never overwrites the rows a reader is using; legacy rows have no gen."""
+    return f"{store_id}#{gen}#{i}" if gen else f"{store_id}#{i}"
+
+
+def _read_cached_deals(table, store_id: str, idx_row: dict, _retry: bool = True) -> list:
+    """Raw deal dicts for a cached store, from the index row's chunks (or inline `deals`).
+
+    If a chunk is missing (a scrape swapped generations between our two reads),
+    re-read the index once and try again with the new generation.
+    """
+    num_chunks = int(idx_row.get("num_chunks", 0))
+    if num_chunks <= 0:
+        return json.loads(idx_row.get("deals", "[]"))
+    gen = str(idx_row.get("gen", "") or "")
+    raw_deals = []
+    for i in range(num_chunks):
+        chunk_row = table.get_item(Key={"store_id": _chunk_key(store_id, gen, i)}).get("Item")
+        if not chunk_row:
+            if _retry:
+                fresh = table.get_item(Key={"store_id": store_id}).get("Item") or {}
+                if str(fresh.get("gen", "") or "") != gen:
+                    return _read_cached_deals(table, store_id, fresh, _retry=False)
+            print(f"[CW] missing deal chunk {i} for store {store_id} (gen={gen or 'legacy'})")
+            continue
+        raw_deals.extend(json.loads(chunk_row.get("deals", "[]")))
+    return raw_deals
+
+
 def get_deals(event):
     sess = get_session(event)
     if not sess: return err("Not authenticated.", 401)
@@ -163,16 +193,8 @@ def get_deals(event):
     cached           = deals_table_obj.get_item(Key={"store_id": store_id}).get("Item")
 
     if cached:
-        num_chunks = int(cached.get("num_chunks", 0))
         updated_at = str(cached.get("fetched_at", ""))
-        if num_chunks > 0:
-            raw_deals = []
-            for i in range(num_chunks):
-                chunk_row = deals_table_obj.get_item(Key={"store_id": f"{store_id}#{i}"}).get("Item")
-                if chunk_row:
-                    raw_deals.extend(json.loads(chunk_row.get("deals", "[]")))
-        else:
-            raw_deals = json.loads(cached.get("deals", "[]"))
+        raw_deals  = _read_cached_deals(deals_table_obj, store_id, cached)
         total_all = len(raw_deals)
         # Pre-filter BEFORE parse_deal() to skip CPU work on excluded deals
         if types == "core":
@@ -413,7 +435,10 @@ def get_deal_corpus(event):
     if not sess: return err("Not authenticated.", 401)
     try:
         row    = corpus_tbl.get_item(Key={"corpus_id": "global"}).get("Item")
-        raw    = row.get("titles") or set() if row else set()
+        # v9.2.2 (#5): the scraper writes the `terms` string set; `titles` is the
+        # legacy attribute name. Read both so autocomplete gets the real corpus.
+        row    = row or {}
+        raw    = set(row.get("terms") or set()) | set(row.get("titles") or set())
         titles = sorted(raw)
         return ok({"titles": titles, "count": len(titles)},
                   _headers={"Cache-Control": "max-age=86400"})
@@ -453,15 +478,7 @@ def get_matches(event):
     if not cached:
         return ok({"matches": [], "total": 0, "message": "No deals cached for this store."})
 
-    num_chunks = int(cached.get("num_chunks", 0))
-    if num_chunks > 0:
-        raw_deals = []
-        for i in range(num_chunks):
-            chunk_row = deals_table_obj.get_item(Key={"store_id": f"{store_id}#{i}"}).get("Item")
-            if chunk_row:
-                raw_deals.extend(json.loads(chunk_row.get("deals", "[]")))
-    else:
-        raw_deals = json.loads(cached.get("deals", "[]"))
+    raw_deals = _read_cached_deals(deals_table_obj, store_id, cached)
 
     # Re-enrich via shared parser
     deals = [parse_deal(d) for d in raw_deals]

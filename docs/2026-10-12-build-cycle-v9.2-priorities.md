@@ -170,7 +170,7 @@ Target: history payload under 100 KB, no main-thread task over 50 ms after login
 
 ## 4. Release batches
 
-Each batch is meant to be built, deployed to **staging**, verified, and then promoted. Batch 1 is the exception: it may go straight to production because it fixes the slowness users are feeling now. Estimates are working days. Progress: **Batch 0 done, Batch 1 code done (deploy pending).**
+Each batch is meant to be built, deployed to **staging**, verified, and then promoted. Batch 1 is the exception: it may go straight to production because it fixes the slowness users are feeling now. Estimates are working days. Progress: **Batches 0–1 done and in production (v9.2.1). Batch 2 and #6 built as v9.2.2, staging next.**
 
 | Batch | Theme | Items | Est. | Risk | Path |
 |---|---|---|---|---|---|
@@ -203,20 +203,21 @@ Each batch is meant to be built, deployed to **staging**, verified, and then pro
 - [x] Also shipping with this batch: the #4 TPR race fix (see Batch 3).
 - [x] **v9.2 deployed to production 2026-10-12.** Post-deploy HAR: `/deals/history` payload 4.7 MB → 60 KB, `/user/prefs` 1.7 s → 0.4 s, admin unblocked. But the server still took ~4.9 s per history request, because the cache-freshness check re-read every history row (4.7 MB) on each call.
 - [x] **v9.2.1 (staging next):** the finished history index is saved in the history table (`sk="_summary"` + gzip chunks of ≤350 KB; ~600 KB in 2 chunks at 30 weeks). Requests do one meta read, plus 2 chunk reads on a freshly started instance. The scraper deletes `_summary` after writing each weekly snapshot, and summaries older than 8 days rebuild anyway. List-item frequency now uses a substring search over all titles at once: identical results on real data, ~19× faster. Expected `/deals/history` time: ~0.3 s from a fresh instance, less when warm. 92 tests passing.
-- [ ] Test on staging → approve → commit, push and deploy production, then verify with a new HAR.
+- [x] Tested on staging, approved, deployed to production 2026-10-12.
 - Note: with exact title matching, "Rarely on sale" fires on ~30% of this week's deals (566 of 1,854). Watch whether that's too noisy; it can be tightened (e.g. require 20+ weeks of history) without code changes elsewhere.
 
-### Batch 2: Broken interactions
-- [ ] #1 login flag stuck after a validation error
-- [ ] #2 Enter in store search (duplicate `data-action`)
-- [ ] #3 autocomplete tap/click blocked by CSP (move to delegation)
-- [ ] #5 corpus attribute `terms` vs `titles`. Also backfill: the corpus row has been accumulating under `terms`, so the data may already be there.
-- [ ] #7 `StackedDeals` in the Extra filter; add a Sale/TPR filter so the counts add up to "All"
-- [ ] #11 slider default vs the effective threshold (pick one value; staging uses 80)
-- [ ] #12 admin PIN reset clears the lockout and sets `valid_after`
+### Batch 2: Broken interactions ✅ code done 2026-10-12 (v9.2.2), staging next
+Test plan: `docs/v9.2.2-test-plan.md`. 18 new pytest tests (110 total) and 12 browser checks with the page's real CSP enforced; 10 of the 12 fail on the current production frontend and all pass on v9.2.2.
+- [x] #1 login flag stuck after a validation error: `_authInFlight` is set only after validation passes.
+- [x] #2 Enter in store search: one `data-action="store-search"` handles typing and Enter (the browser kept only the first of the two duplicate attributes).
+- [x] #3 autocomplete click: inline `onmousedown` replaced by `data-action="ac-select"` and a document `mousedown` listener (with `preventDefault` so the input keeps focus).
+- [x] #5 corpus: `/deals/corpus` reads `terms` (what the scraper writes) merged with legacy `titles`. No backfill needed; the data was already under `terms`.
+- [x] #7 Publix sends `saving_type: "Stacked"` (12 deals at store 1546), not `StackedDeals`. Parser, card tag and labels now accept both. New **Price drops** filter (`Tpr`, 973 deals) was the missing piece: before, TPR deals only showed under "All deals". Filter counts refresh after the TPR merge, so the TPR count appears and "All" equals the loaded total.
+- [x] #11 threshold: the slider shows what the matcher uses (`cwGetThreshold`: stored threshold, else sensitivity tier, default "normal" = 65). Only moving the slider writes a threshold; adding items or changing other settings keeps the stored value (before, any save pinned 75 in production and 80 in staging).
+- [x] #12 admin PIN reset clears `failed_attempts`/`lockout_until`/`last_failed_at` and sets `valid_after` (signs out old sessions).
 
 ### Batch 3: Data integrity and ops
-- [ ] #6 scraper keeps the last good cache when Publix fails or returns 0 deals; write chunks before deleting stale ones
+- [x] #6 scraper safety (v9.2.2): each store fetch retries once (20 s, `FETCH_RETRY_DELAY_S`). If a source still fails or 0 deals come back, the store is skipped: no cache, history or corpus write and no emails, plus an error row in app logs (`source=scraper`, new "Weekly scrape" filter in Admin → Logs). Cache writes are generation-keyed (`store#<gen>#N`): new chunks, then the index row, then delete the old generation, so readers never see a half-written cache. Readers handle legacy `store#N` rows and retry once if a generation swap happens mid-read.
 - [x] #4 TPR race: **pulled into the Batch 1 deploy.** Each load gets a generation number, and a TPR response that beats the core response is parked and merged when core lands. Browser-tested in all orderings: old code dropped 973 of 1,888 deals in 4 of 6 cases; new code keeps all 1,888.
 - [ ] #13 admin logs newest-first (GSI on `source`+`ts`, or paginate and sort); stop scanning the whole app-logs table
 - [ ] TTL on every log writer (scraper email and cleanup logs have none); stop writing a log row on every cache hit
@@ -250,6 +251,6 @@ Each batch is meant to be built, deployed to **staging**, verified, and then pro
 - [ ] The same fixture rendered by card and email shows identical headline, context, and save text.
 - [ ] Matcher parity fixture passes in pytest **and** Node.
 - [ ] HAR: TPR merged on the first load and on a same-store refresh (deal count = `total_all`).
-- [ ] Simulate a Publix fetch failure in the scraper: the previous week's cache is retained.
+- [x] Simulate a Publix fetch failure in the scraper: the previous week's cache is retained (pytest `TestStoreWorkerSafety`).
 - [ ] Admin auth log's newest row equals the latest login.
 - [ ] Mobile (≤ 600px): filters reachable, autocomplete tap works, Enter in store search works.

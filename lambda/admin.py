@@ -186,12 +186,16 @@ def admin_reset_pin(event, body, email: str):
     if new_pin in PIN_DENYLIST: return err("That PIN is too common.")
     if not users_table.get_item(Key={"email": email}).get("Item"):
         return err("User not found.", 404)
+    # v9.2.2 (#12): a reset also clears the brute-force lockout (otherwise the user
+    # stays locked out with the new PIN) and signs out sessions made with the old one.
+    import time as _time
     users_table.update_item(
         Key={"email": email},
-        UpdateExpression="SET pin_hash = :p",
-        ExpressionAttributeValues={":p": hash_pin(new_pin)},
+        UpdateExpression="SET pin_hash = :p, valid_after = :t "
+                         "REMOVE failed_attempts, lockout_until, last_failed_at",
+        ExpressionAttributeValues={":p": hash_pin(new_pin), ":t": int(_time.time())},
     )
-    return ok({"message": f"PIN reset for {email}."})
+    return ok({"message": f"PIN reset for {email}. Lockout cleared."})
 
 
 @require_admin

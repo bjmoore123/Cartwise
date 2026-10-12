@@ -46,13 +46,23 @@ def _fetch(url: str, store_id: str) -> dict:
 
 
 def get_deals(store_id: str) -> list:
+    """Fetch and merge Weekly Ad + Digital Coupon deals for a store (list only)."""
+    return get_deals_with_status(store_id)[0]
+
+
+def get_deals_with_status(store_id: str) -> tuple:
     """Fetch and merge Weekly Ad + Digital Coupon deals for a store.
+
+    Returns (deals, failed_sources). v9.2.2 (#6): callers need to know when a
+    source failed, so a Publix outage never replaces a good cache with a
+    partial or empty one.
 
     Architecture #2: uses shared.deal_parser.parse_deal — comprehensive BOGO
     regex replaces old substring-match logic; output shape is identical.
     """
     seen_ids = set()
     deals    = []
+    failed   = []
 
     # 1. Weekly Ad (BOGOs, regular sales, extra savings)
     try:
@@ -63,6 +73,7 @@ def get_deals(store_id: str) -> list:
                 seen_ids.add(item["id"])
                 deals.append(item)
     except Exception as e:
+        failed.append("weekly_ad")
         print(f"  Warning: Weekly Ad fetch failed for store {store_id}: {e}")
 
     # 2. Digital Coupons (separate pool)
@@ -74,6 +85,7 @@ def get_deals(store_id: str) -> list:
                 seen_ids.add(item["id"])
                 deals.append(item)
     except Exception as e:
+        failed.append("digital_coupons")
         print(f"  Warning: Digital Coupon fetch failed for store {store_id}: {e}")
 
-    return deals
+    return deals, failed

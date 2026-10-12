@@ -19,7 +19,10 @@ import resend
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
 
-from scraper import get_deals
+import time
+import secrets as _secrets
+
+from scraper import get_deals_with_status
 from shared.matcher import match_deals_for_user
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -93,26 +96,38 @@ def get_all_users() -> list[dict]:
 
 CHUNK_SIZE = 200  # deals per DynamoDB row (~200 rows * ~200 bytes = ~40KB per chunk, well under 400KB)
 
+def _chunk_key(store_id: str, gen: str, i: int) -> str:
+    """Same key scheme as lambda/deals.py _chunk_key (legacy rows have no gen)."""
+    return f"{store_id}#{gen}#{i}" if gen else f"{store_id}#{i}"
+
+
 def cache_deals(store_id: str, deals: list[dict]):
-    fetched_at = datetime.now(timezone.utc).isoformat()
-    ttl_epoch  = int((datetime.now(timezone.utc) + timedelta(days=10)).timestamp())
+    """Write this week's deals for a store without a window where readers see nothing.
+
+    v9.2.2 (#6): the old version deleted the previous chunks first, so a failure
+    mid-write (or a reader in between) saw a partial or empty cache. Now:
+      1. write new chunks under a fresh generation key  store_id#<gen>#N
+      2. switch the index row to the new generation
+      3. delete the previous generation's chunks (legacy store_id#N rows included)
+    """
+    now        = datetime.now(timezone.utc)
+    fetched_at = now.isoformat()
+    gen        = now.strftime("%Y%m%dT%H%M%S") + _secrets.token_hex(2)
+    ttl_epoch  = int((now + timedelta(days=10)).timestamp())
     chunks = [deals[i:i+CHUNK_SIZE] for i in range(0, max(len(deals), 1), CHUNK_SIZE)]
     num_chunks = len(chunks)
 
-    # Delete stale chunks from previous runs before writing new ones.
-    # Read the old num_chunks from the index row to know how many to delete.
+    old_meta = {}
     try:
         old_meta = deals_table.get_item(Key={"store_id": store_id}).get("Item") or {}
-        old_num_chunks = int(old_meta.get("num_chunks", 0))
-        for i in range(old_num_chunks):
-            deals_table.delete_item(Key={"store_id": f"{store_id}#{i}"})
     except Exception as e:
-        print(f"  WARNING: could not delete old chunks for {store_id}: {e}")
+        print(f"  WARNING: could not read old cache index for {store_id}: {e}")
 
-    # Write each chunk as store_id#N
+    # 1. New chunks (if this raises, the old cache is untouched)
     for i, chunk in enumerate(chunks):
         deals_table.put_item(Item={
-            "store_id":    f"{store_id}#{i}",
+            "store_id":    _chunk_key(store_id, gen, i),
+            "gen":         gen,
             "fetched_at":  fetched_at,
             "deals":       json.dumps(chunk),
             "count":       len(chunk),
@@ -121,14 +136,24 @@ def cache_deals(store_id: str, deals: list[dict]):
             "expires_at":  ttl_epoch,
         })
 
-    # Write an index row at store_id (no deals, just metadata)
+    # 2. Switch the index row (no deals, just metadata) to the new generation
     deals_table.put_item(Item={
         "store_id":   store_id,
         "fetched_at": fetched_at,
         "count":      len(deals),
         "num_chunks": num_chunks,
+        "gen":        gen,
         "expires_at": ttl_epoch,
     })
+
+    # 3. Remove the previous generation (best effort; TTL cleans up leftovers)
+    old_gen = str(old_meta.get("gen", "") or "")
+    if old_meta and old_gen != gen:
+        for i in range(int(old_meta.get("num_chunks", 0))):
+            try:
+                deals_table.delete_item(Key={"store_id": _chunk_key(store_id, old_gen, i)})
+            except Exception as e:
+                print(f"  WARNING: could not delete old chunk {i} for {store_id}: {e}")
 
 
 def _week_start(deals: list[dict]) -> str:
@@ -514,6 +539,52 @@ def handler(event, context):
     return {"statusCode": 200, "body": "Done (orchestrator)."}
 
 
+FETCH_RETRY_DELAY_S = int(os.environ.get("FETCH_RETRY_DELAY_S", "20"))
+
+
+def _log_scrape_problem(store_id: str, store_name: str, message: str, **fields):
+    """app_logs entry (source=scraper) so a skipped store shows up in Admin → Logs."""
+    try:
+        now = datetime.now(timezone.utc)
+        app_logs_tbl.put_item(Item={
+            "log_id":     f"{now.isoformat()}#{_secrets.token_hex(4)}",
+            "ts":         now.isoformat(),
+            "source":     "scraper",
+            "level":      "error",
+            "store_id":   str(store_id),
+            "store_name": store_name or "",
+            "message":    message[:300],
+            "expires_at": int((now + timedelta(days=30)).timestamp()),
+            **{k: v for k, v in fields.items() if v is not None},
+        })
+    except Exception as e:
+        print(f"  WARNING: could not write scraper log: {e}")
+
+
+def fetch_deals_safely(store_id: str):
+    """Fetch deals, retrying once. Returns (deals, problem); problem is "" when the data is usable.
+
+    Usable means every source answered and at least one deal came back. Anything
+    else keeps last week's cache, history and corpus as they are (v9.2.2 #6).
+    """
+    problem = ""
+    for attempt in (1, 2):
+        try:
+            deals, failed = get_deals_with_status(store_id)
+        except Exception as e:
+            deals, failed = [], [f"exception: {e}"]
+        if failed:
+            problem = f"source(s) failed: {', '.join(failed)} ({len(deals)} deals from the rest)"
+        elif not deals:
+            problem = "Publix returned 0 deals"
+        else:
+            return deals, ""
+        print(f"  attempt {attempt}: {problem}")
+        if attempt == 1 and FETCH_RETRY_DELAY_S > 0:
+            time.sleep(FETCH_RETRY_DELAY_S)
+    return deals, problem
+
+
 def _store_worker(event):
     """Process a single store: fetch deals, cache, write history, match users, send emails."""
     store_id    = event["store_id"]
@@ -524,12 +595,16 @@ def _store_worker(event):
 
     print(f"▶ Worker: {store_name or f'Store #{store_id}'} — {len(store_users)} user(s)")
 
-    try:
-        deals = get_deals(store_id)
-        print(f"  {len(deals)} deals fetched")
-    except Exception as e:
-        print(f"  ERROR fetching deals: {e}")
+    deals, problem = fetch_deals_safely(store_id)
+    if problem:
+        # Keep the last good cache: no cache/history/corpus writes and no emails
+        # built from partial data. Admin can re-run or resend once Publix recovers.
+        msg = f"Skipped store {store_id}: {problem}. Kept the previous cache; no emails sent."
+        print(f"  ERROR: {msg}")
+        _log_scrape_problem(store_id, store_name, msg, job_id=job_id or None,
+                            deal_count=len(deals), users=len(store_users))
         return
+    print(f"  {len(deals)} deals fetched")
 
     try:
         cache_deals(store_id, deals)

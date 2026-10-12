@@ -349,7 +349,6 @@ function _startLockoutCountdown(retryAfterSeconds) {
 let _authInFlight = false;
 async function doAuth() {
   if (_authInFlight) return;  // prevent double-fire from pin input + initPins callback
-  _authInFlight = true;
   const em = document.getElementById('auth-email').value.trim().toLowerCase();
   const pin = getPin('.auth-pin');
   if(!em){ setMsg('auth-msg','Please enter your email.','err'); return; }
@@ -357,6 +356,9 @@ async function doAuth() {
     setMsg('auth-msg','Please enter a valid email address.','err'); return;
   }
   if(pin.length!==4){ setMsg('auth-msg','Please enter your 4-digit PIN.','err'); return; }
+  // v9.2.2 (#1): claim the flag only after validation passes; the early returns
+  // above used to leave it set, so the button never worked again until reload.
+  _authInFlight = true;
   const btn=document.getElementById('auth-btn');
   btn.disabled=true; btn.textContent=authMode==='login'?'Signing in…':'Creating account…';
   try{
@@ -550,11 +552,11 @@ function loadPrefs() {
   document.getElementById('email-settings-wrap').style.display = emailEnabled ? '' : 'none';
   document.getElementById('notify-email-display').textContent = prefs.notify_email || userEmail || '';
   renderItems();
-  const t=((prefs.matching||{}).threshold)||75;
+  const t=cwGetThreshold(prefs.matching||{});   // v9.2.2 (#11): same value the matcher uses
   document.getElementById('threshold').value=t;
   document.getElementById('threshold-val').textContent=t;
 }
-function collectPrefs(){
+function collectPrefs(ctx){
   return {
     store_id:      prefs?.store_id||'',
     store_name:    prefs?.store_name||'',
@@ -562,7 +564,10 @@ function collectPrefs(){
     notify_email:  userEmail,
     email_enabled: document.getElementById('email-enabled').checked,
     items:         prefs?.items||[],
-    matching:      {threshold:parseInt(document.getElementById('threshold').value)||75},
+    // v9.2.2 (#11): only the slider writes a threshold; other saves keep what is stored
+    matching:      ctx==='matching'
+                     ? {threshold:parseInt(document.getElementById('threshold').value)||cwGetThreshold(prefs?.matching||{})}
+                     : (prefs?.matching||{}),
   };
 }
 let _saveToastTimer=null;
@@ -575,7 +580,7 @@ function showSaveToast(){
 }
 async function savePrefs(ctx){
   if(ctx === 'list' || ctx === 'matching') _matchesDirty = true;
-  const p=collectPrefs();
+  const p=collectPrefs(ctx);
   if(prefs) p.items=prefs.items||[];
   try{
     const res=await fetch(API+'/user/prefs',{method:'PUT',credentials:'include',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({prefs:p})});
@@ -901,7 +906,25 @@ function isBogo(d){
 }
 // Helper: is a deal "extra savings"
 function isExtra(d){
-  return d.saving_type==='ExtraSavings' || d.saving_type==='Stacked' || d.is_extra===true;
+  return d.saving_type==='ExtraSavings' || isStacked(d) || d.is_extra===true;
+}
+// Publix sends 'Stacked'; older code expected 'StackedDeals'. Accept both (v9.2.2 #7).
+function isStacked(d){
+  return d.saving_type==='Stacked' || d.saving_type==='StackedDeals' || d.is_stacked===true;
+}
+// Temporary price reductions ("Tpr", mixed case from Publix)
+function isTpr(d){
+  return String(d.saving_type||'').toLowerCase()==='tpr';
+}
+// v9.2.2 (#7): counts refresh after core load AND after the TPR merge
+function updateFilterCounts(){
+  const set=(id,n)=>{const el=document.getElementById(id); if(el) el.textContent=n||'';};
+  set('fcnt-all',    Math.max(_totalAllDeals||0, _allDeals.length));
+  set('fcnt-weekly', _allDeals.filter(d=>d.saving_type==='WeeklyAd'&&!isBogo(d)).length);
+  set('fcnt-tpr',    _allDeals.filter(d=>isTpr(d)&&!isBogo(d)).length);
+  set('fcnt-bogo',   _allDeals.filter(d=>isBogo(d)).length);
+  set('fcnt-coupon', _allDeals.filter(d=>isCoupon(d)).length);
+  set('fcnt-extra',  _allDeals.filter(d=>isExtra(d)).length);
 }
 // Helper: is a deal a digital coupon
 function isCoupon(d){
@@ -978,12 +1001,7 @@ async function loadDeals(forceRefresh=false){
     // Cache the timestamp so preloadDeals can skip reloading when data hasn't changed
     if(_dealsUpdated) localStorage.setItem('cw_deals_ts_'+sid, _dealsUpdated);
 
-    // Populate Savings filter counts using correct saving_type mappings
-    document.getElementById('fcnt-all').textContent    = _totalAllDeals||'';
-    document.getElementById('fcnt-weekly').textContent = _allDeals.filter(d=>d.saving_type==='WeeklyAd'&&!isBogo(d)).length||'';
-    document.getElementById('fcnt-bogo').textContent   = _allDeals.filter(d=>isBogo(d)).length||'';
-    document.getElementById('fcnt-coupon').textContent = _allDeals.filter(d=>isCoupon(d)).length||'';
-    document.getElementById('fcnt-extra').textContent  = _allDeals.filter(d=>isExtra(d)).length||'';
+    updateFilterCounts();
 
     // Validity sublabels on banner
     const wa=_allDeals.find(d=>d.saving_type==='WeeklyAd'&&hasValidDates(d));
@@ -1054,17 +1072,18 @@ function clearDeptCB(cid, dept){
 }
 
 // Savings filter: selecting one unchecks others; if none checked, default to Weekly ad
+const SAVINGS_SUBFILTERS=['f-weekly','f-tpr','f-bogo','f-coupon','f-extra'];
 function onSavingsFilter(changed){
-  const ids=['f-all','f-weekly','f-bogo','f-coupon','f-extra'];
+  const ids=['f-all',...SAVINGS_SUBFILTERS];
   const els=Object.fromEntries(ids.map(id=>[id,document.getElementById(id)]));
   if(changed==='all' && els['f-all'].checked){
     // All deals — uncheck everything else
-    ['f-weekly','f-bogo','f-coupon','f-extra'].forEach(id=>els[id].checked=false);
+    SAVINGS_SUBFILTERS.forEach(id=>els[id].checked=false);
   } else if(changed!=='all'){
     els['f-all'].checked=false;
-    // If nothing checked, revert to all four defaults
-    const anyChecked=['f-weekly','f-bogo','f-coupon','f-extra'].some(id=>els[id].checked);
-    if(!anyChecked) ['f-weekly','f-bogo','f-coupon','f-extra'].forEach(id=>els[id].checked=true);
+    // If nothing checked, revert to all defaults
+    const anyChecked=SAVINGS_SUBFILTERS.some(id=>els[id].checked);
+    if(!anyChecked) SAVINGS_SUBFILTERS.forEach(id=>els[id].checked=true);
   }
   renderDeals();
 }
@@ -1259,6 +1278,7 @@ function renderDeals(keepPage){
   const fBogo=document.getElementById('f-bogo').checked;
   const fCo  =document.getElementById('f-coupon').checked;
   const fE   =document.getElementById('f-extra').checked;
+  const fTpr =(document.getElementById('f-tpr')||{checked:true}).checked;
   const depts=getCheckedDepts('dept-deals');
   const showMatchesFirst = (document.getElementById('matches-toggle')||{}).checked !== false;
 
@@ -1268,6 +1288,7 @@ function renderDeals(keepPage){
     if(fCo   && isCoupon(d)) return true;
     if(fE    && isExtra(d))  return true;
     if(fW    && d.saving_type==='WeeklyAd' && !isBogo(d)) return true;
+    if(fTpr  && isTpr(d)) return true;
     return false;
   });
   if(depts.length) deals=deals.filter(d=>depts.includes(d.department||''));
@@ -1429,7 +1450,7 @@ function matchCardHtml(d){
 // Returns a small coloured tag showing the deal type on every card.
 function dealTypeTag(d) {
   if (isBogo(d))              return `<span class="deal-type-tag bogo">BOGO</span>`;
-  if (d.saving_type === 'StackedDeals') return `<span class="deal-type-tag stacked">Stacked</span>`;
+  if (isStacked(d)) return `<span class="deal-type-tag stacked">Stacked</span>`;
   if (d.saving_type === 'ExtraSavings') return `<span class="deal-type-tag extra">Extra Savings</span>`;
   if (isCoupon(d))            return `<span class="deal-type-tag coupon">Coupon</span>`;
   if ((d.saving_type || '').toLowerCase() === 'tpr') return `<span class="deal-type-tag tpr">TPR</span>`;
@@ -1497,7 +1518,7 @@ function savingsDisplay(d) {
   }
 
   // Extra/Stacked — savings field is a discount amount, not a price
-  const isDiscountType = d.is_extra || d.saving_type === 'ExtraSavings' || d.saving_type === 'StackedDeals';
+  const isDiscountType = d.is_extra || d.saving_type === 'ExtraSavings' || isStacked(d);
   if (isDiscountType && sv) {
     const prefix = /^save/i.test(sv) ? '' : 'Save ';
     return { text: prefix + sv, pctx: null, save: null, isDiscount: true, isClip: false };
@@ -1540,6 +1561,7 @@ const SAVING_TYPE_LABEL = {
   PrintableCoupon: 'Printable Coupon',
   ExtraSavings:    'Extra Savings',
   StackedDeals:    'Stacked Deal',
+  Stacked:         'Stacked Deal',
 };
 
 // Build an inline SVG price history chart inside svgEl for the given deal + history.
@@ -1970,6 +1992,7 @@ function mergeTprDeals(data){
     _deptCounts[dept]=(_deptCounts[dept]||0)+cnt;
   }
   buildDeptFilters('dept-deals', _deptCounts, 'renderDeals');
+  updateFilterCounts();
 
   _tprLoaded=true;
   _matchesDirty=true;
@@ -2597,7 +2620,7 @@ function adminRenderAppLogs(){
     el.innerHTML='<div style="color:var(--ink-soft);font-size:13px;padding:10px">No logs found.</div>';
     return;
   }
-  const SOURCE_ICONS={'frontend':'💻','api':'⚡','email':'✉️','cache':'🗄️'};
+  const SOURCE_ICONS={'frontend':'💻','api':'⚡','email':'✉️','cache':'🗄️','scraper':'🛒'};
   const rows=logs.map(l=>{
     const dt=new Date(l.ts);
     const est=dt.toLocaleString('en-US',{timeZone:'America/New_York',month:'numeric',day:'numeric',
@@ -2820,9 +2843,9 @@ function acInput() {
   _acIdx = -1;
 
   drop.innerHTML = [
-    `<div class="ac-item ac-item-free" data-val="${escH(q)}" onmousedown="acSelect(this.dataset.val)">${escH(q)} <span style="font-size:10px;opacity:.55;margin-left:4px">add custom</span></div>`,
+    `<div class="ac-item ac-item-free" data-val="${escH(q)}" data-action="ac-select">${escH(q)} <span style="font-size:10px;opacity:.55;margin-left:4px">add custom</span></div>`,
     ...suggestions.map(s =>
-      `<div class="ac-item ac-item-deal" data-val="${escH(s)}" onmousedown="acSelect(this.dataset.val)">${escH(s)}</div>`
+      `<div class="ac-item ac-item-deal" data-val="${escH(s)}" data-action="ac-select">${escH(s)}</div>`
     )
   ].join('');
 
@@ -3028,7 +3051,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const action = el.dataset.action;
 
     if (action === 'sanitize-email')    return sanitizeEmailInput(el);
-    if (action === 'store-input-type')  return onStoreInputType();
+    if (action === 'store-input-type' || action === 'store-search')  return onStoreInputType();
     if (action === 'threshold-slider') {
       document.getElementById('threshold-val').textContent = el.value;
       return;
@@ -3044,9 +3067,19 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!el) return;
     const action = el.dataset.action;
 
-    if (action === 'store-search-key' && e.key === 'Enter')  return doStoreSearch();
+    if ((action === 'store-search-key' || action === 'store-search') && e.key === 'Enter')  return doStoreSearch();
     if (action === 'ac-input')           return acKeydown(e);
     if (action === 'admin-secret-key' && e.key === 'Enter')  return adminLogin();
+  });
+
+  // ── Mousedown delegation (v9.2.2 #3) ──────────────────────────────
+  // Autocomplete picks fire on mousedown so they land before the input's blur
+  // hides the list. The old inline onmousedown was blocked by the CSP.
+  document.addEventListener('mousedown', (e) => {
+    const el = e.target.closest('[data-action="ac-select"]');
+    if (!el) return;
+    e.preventDefault();                 // keep focus in the input
+    acSelect(el.dataset.val || el.textContent.trim());
   });
 
   // ── Blur delegation ───────────────────────────────────────────────

@@ -134,6 +134,6 @@ def parse_deal(d: dict) -> dict:
         "is_bogo":              is_bogo,
         "is_publix_brand":      brand_lower == "publix" or title_lower.startswith("publix "),
         "has_coupon":           bool(d.get("has_coupon") or d.get("hasCoupon")) or saving_type in ("PrintableCoupon", "DigitalCoupon"),
-        "is_stacked":           saving_type == "StackedDeals",
+        "is_stacked":           saving_type in ("Stacked", "StackedDeals"),   # v9.2.2: Publix sends "Stacked"
         "is_extra":             saving_type == "ExtraSavings",
     }
