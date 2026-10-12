@@ -1,0 +1,13 @@
+{
+  "name": "Cartwise",
+  "short_name": "Cartwise",
+  "description": "Track Publix deals and get alerted when your list goes on sale",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#faf8f3",
+  "theme_color": "#114B3A",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
