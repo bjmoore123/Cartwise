@@ -101,6 +101,7 @@ function parseSaveAmount(str) {
 // Uses savingsDisplay() output so BOGO, multi-buy, and standard deals all
 // sort by their computed save amount. Deals without savings sort last.
 function dealSortSavings(d) {
+  if (d.offer && typeof d.offer.save === 'number') return d.offer.save;   // v9.3: per-unit savings
   const sv = savingsDisplay(d);
   if (sv.save) {
     const m = sv.save.match(/\$(\d+(?:\.\d+)?)/);
@@ -120,14 +121,17 @@ function cwHistKey(title) {
   return (title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-const HIST_BADGE_LABEL = { repeat: '🔁 Repeat deal', rare: '📅 Rarely on sale' };
+const HIST_BADGE_LABEL = { best: 'Lowest price', repeat: 'Repeat deal', rare: 'Rarely on sale' };
 let _badgeIndex = null;   // Map: cwHistKey(title) → badge, built once per history load
 
 function buildBadgeIndex(history) {
   const m = new Map();
   const b = (history && history.badges) || {};
+  const weeks = (history && history.num_weeks) || 0;
   for (const type of Object.keys(HIST_BADGE_LABEL)) {
-    for (const key of (b[type] || [])) m.set(key, { type, label: HIST_BADGE_LABEL[type] });
+    // v9.4 (#9): "best" = this week's price is the lowest seen in the loaded history
+    const label = type === 'best' && weeks ? `Lowest in ${weeks} wks` : HIST_BADGE_LABEL[type];
+    for (const key of (b[type] || [])) if (!m.has(key)) m.set(key, { type, label });
   }
   return m;
 }
@@ -177,9 +181,13 @@ function buildQualityBanner(matches, history) {
     if (badge.type === 'best' || badge.type === 'recent') bestItems.push(name);
     else if (badge.type === 'repeat') repeatItems.push(name);
   });
+  // v9.4: one mention per list item (two cereal deals both matching "cheerios")
+  const uniq = arr => [...new Set(arr.map(x => x.toLowerCase()))];
+  bestItems.splice(0, bestItems.length, ...uniq(bestItems));
+  repeatItems.splice(0, repeatItems.length, ...uniq(repeatItems));
   if (!bestItems.length && !repeatItems.length) return null;
   const parts = [];
-  if (bestItems.length)   parts.push(`🔥 <strong>${bestItems.slice(0,3).map(escH).join(' &amp; ')}</strong> ${bestItems.length===1?'is':'are'} at their best price this year.`);
+  if (bestItems.length)   parts.push(`🔥 <strong>${bestItems.slice(0,3).map(escH).join(' &amp; ')}</strong> ${bestItems.length===1?'is':'are'} at the lowest price in ${escH(String(history.num_weeks))} weeks.`);
   if (repeatItems.length) parts.push(`🔁 <strong>${repeatItems.slice(0,2).map(escH).join(' &amp; ')}</strong> ${repeatItems.length===1?'is a repeat':'are repeats'} from last week.`);
   return parts.join(' ');
 }
@@ -477,7 +485,18 @@ function enterApp(opts) {
   // preloadDeals() removed — showPanel('deals') handles it; calling both caused a duplicate /deals fetch
   loadDealHistory();
   loadCorpus();
+  // #admin hash — reveal admin nav and go straight to admin panel (from staging, March 2026)
+  _checkAdminHash();
 }
+
+function _checkAdminHash() {
+  if (window.location.hash === '#admin') {
+    document.querySelectorAll('#nav-admin,#mnav-admin,#nav-admin-sep,#mnav-admin-sep')
+      .forEach(el => el.style.display = '');
+    showPanel('admin');
+  }
+}
+window.addEventListener('hashchange', _checkAdminHash);
 async function doLogout(){
   // PDC-05: browser sends HttpOnly cookie automatically with credentials:'include'
   try{await fetch(API+'/auth/logout',{method:'POST',credentials:'include',headers:authHeaders()});}catch(_){}
@@ -1104,6 +1123,19 @@ function applySortOrder(arr, sortVal) {
       if (!isFinite(sy)) return -1;
       return sy - sx;
     });
+  } else if (sortVal === 'pct-desc' || sortVal === 'price-asc') {
+    // v9.4 (#8): % off (exact savings only) and lowest price you pay per unit.
+    // Deals without the number sort last, in their original order.
+    const key = sortVal === 'pct-desc'
+      ? (d => (d.offer && d.offer.pct) || -Infinity)
+      : (d => (d.offer && typeof d.offer.price === 'number') ? -d.offer.price : -Infinity);
+    a.sort((x,y) => {
+      const kx = key(x), ky = key(y);
+      if (!isFinite(kx) && !isFinite(ky)) return 0;
+      if (!isFinite(kx)) return 1;
+      if (!isFinite(ky)) return -1;
+      return ky - kx;
+    });
   } else if (sortVal === 'score-desc') {
     a.sort((x,y) => (y.match_score||0) - (x.match_score||0));
   }
@@ -1124,13 +1156,23 @@ const CW_NOISE = new Set([
   'count','pack','size',
 ]);
 
+// v9.4 (#10): identical to normalize() in shared/matcher.py. Python DELETES
+// punctuation ("Jerry's" -> "jerrys") and its \w is Unicode-aware; the old JS
+// replaced it with a space ("jerry s") and was ASCII-only, so ~1.3% of scores
+// differed between the web page and the email. tests/matcher_parity.test.js checks this.
 function cwNormalize(text) {
   if (!text) return '';
   return text
-    .replace(/[^\w\s-]/g, ' ')   // strip specials, keep hyphens
+    .replace(/[^\p{L}\p{N}\p{M}_\s-]/gu, '')   // strip specials, keep hyphens
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
+}
+
+// Python's round(): halves go to the even neighbour (round(32.5) == 32)
+function cwPyRound(x) {
+  const r = Math.round(x);
+  return (Math.abs(x % 1) === 0.5 && r % 2 !== 0) ? r - 1 : r;
 }
 
 function cwTokenize(text) {
@@ -1225,16 +1267,16 @@ function cwMatchScore(itemStr, deal) {
         firstCandidate.length >= 5 && tt.length >= 5 &&
         (firstCandidate.startsWith(tt) || tt.startsWith(firstCandidate))
       );
-      if (!inTitle) return Math.min(45, Math.round((precision * 0.65 + coverage * 0.35) * 100));
+      if (!inTitle) return Math.min(45, cwPyRound((precision * 0.65 + coverage * 0.35) * 100));
     }
     // Brand match bonus
     // (precision already set; apply inline below)
     const boostedPrecision = itemHasBrand ? Math.min(1.0, precision * 1.1) : precision;
-    const score = Math.round((boostedPrecision * 0.65 + coverage * 0.35) * 100);
+    const score = cwPyRound((boostedPrecision * 0.65 + coverage * 0.35) * 100);
     return Math.min(100, score);
   }
 
-  return Math.min(100, Math.round((precision * 0.65 + coverage * 0.35) * 100));
+  return Math.min(100, cwPyRound((precision * 0.65 + coverage * 0.35) * 100));
 }
 
 function cwMatchDealsForUser(deals, items, matchingCfg) {
@@ -1382,6 +1424,8 @@ function renderDeals(keepPage){
   const sortedDeals = applySortOrder(dealsToShow, dealsSortVal);
   const pageDeals   = sortedDeals.slice(0, _dealsPageLimit);
   const remaining   = sortedDeals.length - pageDeals.length;
+  _dealsShownTotal = totalShown;
+  updateFilterSheetCount();
   grid.innerHTML = pageDeals.map(d=>dealCardHtml(d)).join('')
     + (remaining > 0
       ? `<div class="load-more-wrap"><button class="btn-load-more" data-action="load-more-deals">Show ${Math.min(remaining, DEALS_PAGE_SIZE)} more deal${Math.min(remaining, DEALS_PAGE_SIZE)!==1?'s':''} <span class="load-more-ct">(${remaining} remaining)</span></button></div>`
@@ -1390,72 +1434,29 @@ function renderDeals(keepPage){
   attachDealCBListeners();
 }
 
-// Render a matched deal using the deal card style + match reason annotation
-function matchCardHtml(d){
-  const emoji=deptEmoji(d.department);
-  const title=decodeEntities(d.title || d.deal_name);
-  const desc=decodeEntities(d.description);
-  const sv=savingsDisplay(d);
-  const cbId=`mcb-${d.id}`;
-  const img=d.image_url
-    ?`<img class="deal-card-img" src="${escH(d.image_url)}" alt="${escH(title)}"
-        data-img-fallback>
-       <div class="deal-card-img-ph" style="display:none">${emoji}</div>`
-    :`<div class="deal-card-img-ph">${emoji}</div>`;
-  // Badges over image
-  const badges=[];
-  if(d.is_publix_brand) badges.push(`<span class="badge badge-publix">Publix</span>`);
-  if(d.has_coupon)      badges.push(`<span class="badge badge-coupon">Coupon</span>`);
-  const histBadge = _badgeCache.get(d.id) || null;
-  if(histBadge) badges.push(`<span class="badge badge-${histBadge.type}">${histBadge.label}</span>`);
-  const badgesHtml = badges.length ? `<div class="deal-card-badges">${badges.join('')}</div>` : '';
-  // Price row
-  let priceHtml = '';
-  if(sv.text) {
-    priceHtml = `<span class="deal-card-price${sv.isDiscount?' is-discount':''}">${escH(sv.text)}</span>`;
-    if(sv.pctx) priceHtml += ` <span class="deal-card-pctx">${escH(sv.pctx)}</span>`;
-  }
-  // Save row
-  let saveHtml;
-  if(sv.isClip) {
-    saveHtml = `<span class="deal-card-save is-clip">✂️ Clip Coupon</span>`;
-  } else if(sv.save) {
-    saveHtml = `<span class="deal-card-save">${escH(sv.save)}</span>`;
-  } else {
-    saveHtml = `<span class="deal-card-save-hidden">&nbsp;</span>`;
-  }
-  return `<div class="deal-card is-match" data-action="open-deal-modal" data-deal-id="${escH(d.id)}">
-    <div class="deal-add-wrap">
-      <input type="checkbox" class="deal-add-cb" id="${cbId}" data-title="${escH(title)}" data-id="${escH(d.id)}">
-      <label class="deal-add-lbl" for="${cbId}" title="Add to My List"></label>
-    </div>
-    ${badgesHtml}
-    ${img}
-    <div class="deal-card-body">
-      <div class="deal-card-row-tag">${dealTypeTag(d)}</div>
-      <div class="deal-card-row-dept"><span class="deal-card-dept">${escH(decodeEntities(d.department||''))}</span></div>
-      <div class="deal-card-row-title"><span class="deal-card-title">${escH(title)}</span></div>
-      <div class="deal-card-row-desc"><span class="deal-card-desc">${escH(desc)}</span></div>
-      <div class="deal-card-row-price">${priceHtml}</div>
-      <div class="deal-card-row-save">${saveHtml}</div>
-      <div class="deal-card-row-valid">
-        <span class="match-reason">matched: ${escH(d.my_item)}</span>
-        <span class="match-score">${d.match_score}%</span>
-      </div>
-    </div></div>`;
-}
-
+// v9.4: one card for matches and deals (design canvas "Unified deal card").
+// Tag over the image (one per card, plus "+ Coupon"), headline colored by what it
+// means, save line in red, and a footer with the matched item / history chip.
+function matchCardHtml(d){ return dealCardHtml(d, true); }
 
 // ── Deal type helpers ─────────────────────────────────────────────────────────
-// Returns a small coloured tag showing the deal type on every card.
+// v9.4: one tag per deal, same order and labels as the email (shared/email_render.py deal_tag)
+// Sale = weekly ad price, price drop or $ off; the source feed moves to the modal.
+function dealTypeKey(d) {
+  const o = d.offer || {};
+  if (o.kind === 'bogo' || isBogo(d)) return 'bogo';
+  if (isCoupon(d) && !isStacked(d)) return 'coupon';
+  if (isStacked(d) || isExtra(d)) return 'extra';
+  if (o.kind === 'multi') return 'multi';
+  return 'sale';
+}
+function dealTypeLabel(d, k) {
+  if (k === 'multi') { const m = /^(\d+) for/.exec((d.offer||{}).headline||''); return m ? `${m[1]} for` : 'Multi-buy'; }
+  return { bogo:'BOGO', coupon:'Coupon', extra:'Extra', sale:'Sale' }[k];
+}
 function dealTypeTag(d) {
-  if (isBogo(d))              return `<span class="deal-type-tag bogo">BOGO</span>`;
-  if (isStacked(d)) return `<span class="deal-type-tag stacked">Stacked</span>`;
-  if (d.saving_type === 'ExtraSavings') return `<span class="deal-type-tag extra">Extra Savings</span>`;
-  if (isCoupon(d))            return `<span class="deal-type-tag coupon">Coupon</span>`;
-  if ((d.saving_type || '').toLowerCase() === 'tpr') return `<span class="deal-type-tag tpr">TPR</span>`;
-  if (d.saving_type === 'WeeklyAd')     return `<span class="deal-type-tag weekly">Weekly Ad</span>`;
-  return '';
+  const k = dealTypeKey(d);
+  return `<span class="deal-type-tag ${k}">${escH(dealTypeLabel(d, k))}</span>`;
 }
 
 // ── savingsDisplay: consistent card output for all deal types ────────────────
@@ -1465,7 +1466,31 @@ function dealTypeTag(d) {
 //   save       = red save line (e.g. "Save $3.00") or null
 //   isDiscount = true → text is amber, false → text is green
 //   isClip     = true → save row shows "Clip coupon" instead
+// v9.3: the server normalizes every deal into `offer` (shared/deal_parser.py
+// classify_offer). Render that when present; the guessing below is only for
+// responses cached before v9.3.
+//   green  = what you pay (price, multi-buy)
+//   amber  = a mechanic or an amount off (BOGO, $2 off, 20% off)
 function savingsDisplay(d) {
+  const o = d.offer;
+  if (o && o.headline) {
+    const kind = o.kind || 'other';
+    let save = o.save_text || null;
+    if (save && o.pct) save += ` (${o.pct}%)`;
+    return {
+      text: o.headline,
+      pctx: o.context || null,
+      save,
+      extra: o.extra || null,
+      isDiscount: !(kind === 'price' || kind === 'multi'),
+      isClip: !!(d.has_coupon && !save),
+      kind,
+    };
+  }
+  return savingsDisplayLegacy(d);
+}
+
+function savingsDisplayLegacy(d) {
   const sv  = decodeEntities(d.savings  || '');
   const ai  = decodeEntities(d.save_line || '');
   const fp  = d.final_price || 0;
@@ -1562,6 +1587,7 @@ const SAVING_TYPE_LABEL = {
   ExtraSavings:    'Extra Savings',
   StackedDeals:    'Stacked Deal',
   Stacked:         'Stacked Deal',
+  Tpr:             'Price drop',
 };
 
 // Build an inline SVG price history chart inside svgEl for the given deal + history.
@@ -1569,12 +1595,21 @@ const SAVING_TYPE_LABEL = {
 // Current week (newest) dot is highlighted green with a glow ring.
 // A dashed amber line marks the best (lowest) price point.
 function buildDealChart(svgEl, points) {
-  // points: [{week, savings}] oldest first, from GET /deals/history?title=…
+  // points: [{week, savings, price?}] oldest first, from GET /deals/history?title=…
+  // v9.4 (#9): chart the real price (server-derived) when 2+ weeks have one. The old
+  // fallback read the first "$" in the savings text, which mixed prices with
+  // discounts ("$0.24" off a price drop, "Save $2.00" coupons).
   const pts = [];
-  (points || []).forEach(p => {
-    const amt = parseSavingsAmount(p.savings);
-    if (amt !== null) pts.push({ week: p.week, amt, savings: p.savings });
-  });
+  const priced = (points || []).filter(p => typeof p.price === 'number');
+  if (priced.length >= 2) {
+    priced.forEach(p => pts.push({ week: p.week, amt: p.price, savings: p.savings }));
+  } else {
+    (points || []).forEach(p => {
+      if (/off|save/i.test(p.savings || '')) return;   // discounts are not prices
+      const amt = parseSavingsAmount(p.savings);
+      if (amt !== null) pts.push({ week: p.week, amt, savings: p.savings });
+    });
+  }
 
   // Deduplicate by week (keep first match per week)
   const seen = new Set();
@@ -1680,14 +1715,10 @@ function openDealModal(dealId) {
     : `<div class="deal-modal-img-ph">${emoji}</div>`;
 
   // ── Badges ────────────────────────────────────────────────────────────────
+  // v9.4: the type tag is shown once at the top; history signal is a neutral chip
   const badges = [];
-  if (d.is_publix_brand) badges.push(`<span class="badge badge-publix">Publix Brand</span>`);
-  if (d.is_bogo)         badges.push(`<span class="badge badge-bogo">BOGO</span>`);
-  if (d.has_coupon)      badges.push(`<span class="badge badge-coupon">Digital Coupon</span>`);
-  if (d.is_extra)        badges.push(`<span class="badge badge-extra">Extra Savings</span>`);
-  if (d.is_stacked)      badges.push(`<span class="badge badge-stacked">Stacked Deal</span>`);
   const histBadge = _badgeCache.get(d.id) || null;
-  if (histBadge) badges.push(`<span class="badge badge-${histBadge.type}">${histBadge.label}</span>`);
+  if (histBadge) badges.push(`<span class="chip-hist chip-hist-${escH(histBadge.type)}">${escH(histBadge.label)}</span>`);
 
   // ── Structured data rows (Option C influence) ─────────────────────────────
   const rows = [];
@@ -1701,7 +1732,11 @@ function openDealModal(dealId) {
   if (hasValidDates(d))
     rows.push(dr('Valid', `${escH(decodeEntities(d.valid_from))} – ${escH(decodeEntities(d.valid_thru))}`));
   if (d.saving_type)
-    rows.push(dr('Deal type', escH(SAVING_TYPE_LABEL[d.saving_type] || d.saving_type)));
+    rows.push(dr('Deal source', escH(SAVING_TYPE_LABEL[d.saving_type] || d.saving_type)
+      + (d.is_extra && d.saving_type !== 'ExtraSavings' ? ' · Extra Savings' : '')));
+  const match = (_allMatches || []).find(m => m.id === d.id);
+  if (match && match.my_item)
+    rows.push(dr('Matched', `${escH(match.my_item)} <span class="dm-score">(score ${escH(String(match.match_score))})</span>`));
   if (fine)
     rows.push(dr('Fine print', escH(fine), 'fine'));
 
@@ -1726,7 +1761,7 @@ function openDealModal(dealId) {
 
   const timelineHtml = _dealHistory
     ? `<div class="dm-timeline">
-        <div class="dm-timeline-hd">Price History — past ${escH(String(_dealHistory.num_weeks || 0))} weeks</div>
+        <div class="dm-timeline-hd">Price history · last ${escH(String(_dealHistory.num_weeks || 0))} weeks</div>
         <svg id="dm-chart-svg" class="dm-chart"></svg>
         ${validCaption ? `<div class="dm-timeline-caption">${validCaption}</div>` : ''}
       </div>`
@@ -1736,12 +1771,11 @@ function openDealModal(dealId) {
   document.getElementById('deal-modal-content').innerHTML = `
     ${img}
     <div class="deal-modal-body">
-      ${dealTypeTag(d)}
+      <div class="dm-tagline">${dealTypeTag(d)}${couponPlusTag(d)}<span class="deal-modal-dept">${escH([d.is_publix_brand ? 'Publix' : '', decodeEntities(d.department || '')].filter(Boolean).join(' · '))}</span></div>
       <div class="deal-modal-title">${escH(title)}</div>
       ${desc ? `<div class="deal-modal-desc">${escH(desc)}</div>` : ''}
-      <div class="deal-modal-price">${escH(savings)}</div>
-      ${saveLine ? `<div class="deal-modal-save">${escH(saveLine)}</div>` : ''}
-      ${badges.length ? `<div class="deal-card-badges" style="margin-bottom:10px">${badges.join('')}</div>` : ''}
+      ${modalPriceHtml(d, savings, saveLine)}
+      ${badges.length ? `<div class="dm-chips">${badges.join('')}</div>` : ''}
       ${rows.length ? `<div class="dm-data-rows">${rows.join('')}</div>` : ''}
       ${actions.length ? `<div class="deal-modal-actions">${actions.join('')}</div>` : ''}
       ${timelineHtml}
@@ -1773,6 +1807,20 @@ function openDealModal(dealId) {
   }
 }
 
+// v9.3: modal price block = same headline / context / save as the card
+function modalPriceHtml(d, savings, saveLine) {
+  const sv = savingsDisplay(d);
+  if (!d.offer || !d.offer.headline)
+    return `<div class="deal-modal-price">${escH(savings)}</div>${saveLine ? `<div class="deal-modal-save">${escH(saveLine)}</div>` : ''}`;
+  return `<div class="dm-price-panel"><div class="dm-price-main">`
+    + `<span class="deal-modal-price ${headlineClass(sv.kind, sv.isDiscount)}">${escH(sv.text)}</span>`
+    + (sv.pctx ? `<span class="deal-modal-pctx">${escH(sv.pctx)}</span>` : '') + `</div>`
+    + ((sv.save || sv.extra) ? `<div class="dm-price-sep"></div><div class="dm-price-save">`
+        + (sv.save ? `<div class="deal-modal-save">${escH(sv.save)}</div>` : '')
+        + (sv.extra ? `<div class="deal-modal-extra">${escH(sv.extra)}</div>` : '') + `</div>` : '')
+    + `</div>`;
+}
+
 function closeDealModal() {
   document.getElementById('deal-modal-overlay').classList.remove('vis');
   document.body.style.overflow = '';
@@ -1799,10 +1847,9 @@ function modalToggleList() {
   if (btn) btn.textContent = onList ? '✓ On My List' : '+ Add to My List';
 }
 
-function dealCardHtml(d){
+function dealCardHtml(d, isMatch){
   const emoji=deptEmoji(d.department);
-  const title=decodeEntities(d.title);
-  const desc=decodeEntities(d.description);
+  const title=decodeEntities(d.title || d.deal_name);
   const sv=savingsDisplay(d);
   // All 50 cards per page load images eagerly — they're small (15-30KB)
   // and cached by Publix CDN (max-age=86400). Lazy loading caused a 20s+
@@ -1812,47 +1859,57 @@ function dealCardHtml(d){
         data-img-fallback>
        <div class="deal-card-img-ph" style="display:none">${emoji}</div>`
     :`<div class="deal-card-img-ph">${emoji}</div>`;
-  // Badges — positioned absolute over top-left of image
-  const badges=[];
-  if(d.is_publix_brand) badges.push(`<span class="badge badge-publix">Publix</span>`);
-  if(d.has_coupon)      badges.push(`<span class="badge badge-coupon">Coupon</span>`);
-  if(d.is_extra)        badges.push(`<span class="badge badge-extra">Extra</span>`);
-  if(d.is_stacked)      badges.push(`<span class="badge badge-stacked">Stacked</span>`);
+  const tags = `<div class="deal-card-badges">${dealTypeTag(d)}${couponPlusTag(d)}</div>`;
+  const dept = [d.is_publix_brand ? 'Publix' : '', decodeEntities(d.department||'')].filter(Boolean).join(' · ');
+  const priceHtml = sv.text
+    ? `<span class="deal-card-price ${headlineClass(sv.kind, sv.isDiscount)}">${escH(sv.text)}</span>`
+      + (sv.pctx ? ` <span class="deal-card-pctx">${escH(sv.pctx)}</span>` : '')
+    : '';
+  let saveHtml = '';
+  if (sv.save) saveHtml = `<span class="deal-card-save">${escH(sv.save)}</span>`;
+  else if (sv.extra) saveHtml = `<span class="deal-card-extra">${escH(sv.extra)}</span>`;
+  else if (sv.isClip || (d.has_coupon && d.coupon_id)) saveHtml = clipLinkHtml(d);
+  if (sv.save && sv.extra) saveHtml += ` <span class="deal-card-extra">${escH(sv.extra)}</span>`;
   const histBadge = _badgeCache.get(d.id) || null;
-  if(histBadge) badges.push(`<span class="badge badge-${histBadge.type}">${histBadge.label}</span>`);
-  const badgesHtml = badges.length ? `<div class="deal-card-badges">${badges.join('')}</div>` : '';
-  // Price row: main price + optional context (multi-buy)
-  let priceHtml = '';
-  if(sv.text) {
-    priceHtml = `<span class="deal-card-price${sv.isDiscount?' is-discount':''}">${escH(sv.text)}</span>`;
-    if(sv.pctx) priceHtml += ` <span class="deal-card-pctx">${escH(sv.pctx)}</span>`;
-  }
-  // Save row: red save amount, clip coupon, or invisible placeholder
-  let saveHtml;
-  if(sv.isClip) {
-    saveHtml = `<span class="deal-card-save is-clip">✂️ Clip Coupon</span>`;
-  } else if(sv.save) {
-    saveHtml = `<span class="deal-card-save">${escH(sv.save)}</span>`;
-  } else {
-    saveHtml = `<span class="deal-card-save-hidden">&nbsp;</span>`;
-  }
-  const cbId=`dcb-${d.id}`;
-  return `<div class="deal-card" data-action="open-deal-modal" data-deal-id="${escH(d.id)}">
+  const chips = [];
+  if (isMatch && d.my_item) chips.push(`<span class="chip-match" title="Match score ${escH(String(d.match_score||''))}%">${escH(d.my_item)}</span>`);
+  if (histBadge) chips.push(`<span class="chip-hist chip-hist-${escH(histBadge.type)}">${escH(histBadge.label)}</span>`);
+  const footer = chips.length ? chips.join('')
+    : (hasValidDates(d) ? `<span class="deal-card-valid">Valid ${escH(decodeEntities(d.valid_from))} – ${escH(decodeEntities(d.valid_thru))}</span>` : '');
+  const cbId=`${isMatch?'mcb':'dcb'}-${d.id}`;
+  return `<div class="deal-card${isMatch?' is-match':''}" data-action="open-deal-modal" data-deal-id="${escH(d.id)}">
     <div class="deal-add-wrap">
       <input type="checkbox" class="deal-add-cb" id="${cbId}" data-title="${escH(title)}" data-id="${escH(d.id)}">
       <label class="deal-add-lbl" for="${cbId}" title="Add to My List"></label>
     </div>
-    ${badgesHtml}
+    ${tags}
     ${img}
     <div class="deal-card-body">
-      <div class="deal-card-row-tag">${dealTypeTag(d)}</div>
-      <div class="deal-card-row-dept"><span class="deal-card-dept">${escH(decodeEntities(d.department||''))}</span></div>
+      <div class="deal-card-row-dept"><span class="deal-card-dept">${escH(dept)}</span></div>
       <div class="deal-card-row-title"><span class="deal-card-title">${escH(title)}</span></div>
-      <div class="deal-card-row-desc"><span class="deal-card-desc">${escH(desc)}</span></div>
       <div class="deal-card-row-price">${priceHtml}</div>
-      <div class="deal-card-row-save">${saveHtml}</div>
-      <div class="deal-card-row-valid">${hasValidDates(d)?`<span class="deal-card-valid">Valid ${escH(decodeEntities(d.valid_from))}–${escH(decodeEntities(d.valid_thru))}</span>`:''}</div>
+      <div class="deal-card-row-save">${saveHtml || '<span class="deal-card-save-hidden">&nbsp;</span>'}</div>
+      <div class="deal-card-row-valid">${footer}</div>
     </div></div>`;
+}
+
+// Green = what you pay; red = an amount off; ink = a mechanic (BOGO, % off)
+function headlineClass(kind, isDiscount) {
+  if (kind === 'price' || kind === 'multi') return 'k-pay';
+  if (kind === 'amount_off' || kind === 'coupon' || kind === 'free') return 'k-off';
+  if (kind) return 'k-mech';
+  return isDiscount ? 'k-off' : 'k-pay';     // pre-v9.3 data
+}
+function couponPlusTag(d) {
+  const k = dealTypeKey(d);
+  const o = d.offer || {};
+  if (k === 'coupon') return '';
+  return (o.extra || (o.coupon_required && k !== 'coupon') || (d.has_coupon && k !== 'coupon'))
+    ? `<span class="deal-type-tag plus">+ Coupon</span>` : '';
+}
+function clipLinkHtml(d) {
+  const url = `https://www.publix.com/savings/digital-coupons${d.coupon_id ? '?cid=' + encodeURIComponent(d.coupon_id) : ''}`;
+  return `<a class="deal-card-save is-clip" href="${escH(url)}" target="_blank" rel="noopener" data-stop>Clip coupon →</a>`;
 }
 
 // Sync checkbox states to match prefs.items
@@ -1997,6 +2054,35 @@ function mergeTprDeals(data){
   _tprLoaded=true;
   _matchesDirty=true;
   loadMatches();  // re-runs matcher with expanded deal set → renderDeals()
+}
+
+// ── v9.4: mobile filter sheet (same filter controls, shown as a bottom sheet <900px) ──
+function toggleFilterSheet(open){
+  const col = document.getElementById('deals-filter-col');
+  const bd  = document.getElementById('filter-sheet-backdrop');
+  if (!col) return;
+  col.classList.toggle('sheet-open', !!open);
+  if (bd) bd.classList.toggle('vis', !!open);
+  document.body.style.overflow = open ? 'hidden' : '';
+  if (open) updateFilterSheetCount();
+}
+function resetDealFilters(){
+  document.getElementById('f-all').checked = false;
+  SAVINGS_SUBFILTERS.forEach(id => { const el = document.getElementById(id); if (el) el.checked = true; });
+  document.querySelectorAll('#dept-deals .dept-cb').forEach(cb => { cb.checked = false; });
+  renderDeals();
+}
+let _dealsShownTotal = null;
+function updateFilterSheetCount(){
+  const btn = document.getElementById('filter-sheet-apply');
+  if (btn) btn.textContent = _dealsShownTotal != null
+    ? `Show ${_dealsShownTotal.toLocaleString()} deal${_dealsShownTotal === 1 ? '' : 's'}` : 'Show deals';
+  const fb = document.querySelector('.btn-filters');
+  if (fb) {
+    const off = SAVINGS_SUBFILTERS.filter(id => { const el = document.getElementById(id); return el && !el.checked; }).length
+      + document.querySelectorAll('#dept-deals .dept-cb:checked').length;
+    fb.innerHTML = off ? `Filters <span class="cnt">${off}</span>` : 'Filters';
+  }
 }
 
 function onMatchesToggle(){
@@ -2613,7 +2699,7 @@ async function adminLoadAppLogs(){
 }
 function adminRenderAppLogs(){
   const filter=document.getElementById('app-log-filter').value;
-  let logs=_allAppLogs;
+  let logs=_allAppLogs.filter(l=>l.kind!=='stats');   // v9.3: daily cache counters live in the Cache widget
   if(filter!=='all') logs=logs.filter(l=>l.source===filter);
   const el=document.getElementById('app-log-wrap');
   if(!logs.length){
@@ -2666,21 +2752,29 @@ async function adminLoadCacheStats(){
     const res=await fetch(API+'/admin/app-logs?limit=500&source=cache',{credentials:'include',headers:adminHdrs()});
     const data=await res.json();
     if(!res.ok) throw new Error(data.error||'Failed');
-    const cacheLogs=(data.logs||[]).filter(l=>l.source==='cache');
-    if(!cacheLogs.length){
+    const all=(data.logs||[]).filter(l=>l.source==='cache');
+    // v9.3: daily counter rows (kind=stats, hits_<store>/misses_<store>) replace one row per request.
+    // Older per-request rows (hit=true/false) still count until they expire.
+    const byStore={};
+    const bump=(s,k,n)=>{ if(!byStore[s]) byStore[s]={hits:0,misses:0,store:s}; byStore[s][k]+=n; };
+    for(const l of all){
+      if(l.kind==='stats'){
+        for(const [k,v] of Object.entries(l)){
+          const m=/^(hits|misses)_(.+)$/.exec(k);
+          if(m) bump(m[2], m[1], Number(v)||0);
+        }
+      } else {
+        bump(l.store_id||'unknown', l.hit?'hits':'misses', 1);
+      }
+    }
+    const stores=Object.values(byStore);
+    const totalHits=stores.reduce((a,s)=>a+s.hits,0);
+    const totalMiss=stores.reduce((a,s)=>a+s.misses,0);
+    if(!totalHits && !totalMiss){
       el.innerHTML='<div style="color:var(--ink-soft);font-size:13px">No cache events recorded yet.</div>';
       return;
     }
-    // Group by store
-    const byStore={};
-    for(const l of cacheLogs){
-      const s=l.store_id||'unknown';
-      if(!byStore[s]) byStore[s]={hits:0,misses:0,store:s};
-      if(l.hit) byStore[s].hits++; else byStore[s].misses++;
-    }
-    const totalHits=cacheLogs.filter(l=>l.hit).length;
-    const totalMiss=cacheLogs.length-totalHits;
-    const hitPct=cacheLogs.length?Math.round(totalHits/cacheLogs.length*100):0;
+    const hitPct=Math.round(totalHits/(totalHits+totalMiss)*100);
     const rows=Object.values(byStore).sort((a,b)=>(b.hits+b.misses)-(a.hits+a.misses)).map(s=>{
       const total=s.hits+s.misses;
       const pct=total?Math.round(s.hits/total*100):0;
@@ -2916,9 +3010,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── Click delegation ──────────────────────────────────────────────
   document.addEventListener('click', (e) => {
+    if (e.target.closest('a[data-stop]')) return;   // v9.4: links inside cards (Clip coupon)
     const el = e.target.closest('[data-action]');
     if (!el) return;
     const action = el.dataset.action;
+
+    // -- v9.4 mobile filter sheet --
+    if (action === 'open-filter-sheet')  return toggleFilterSheet(true);
+    if (action === 'close-filter-sheet') return toggleFilterSheet(false);
+    if (action === 'reset-filters')      return resetDealFilters();
 
     // -- Auth / Nav --
     if (action === 'switch-tab')        return switchTab(el.dataset.tab);

@@ -14,7 +14,10 @@
 <title>Cartwise</title>
 <link rel="preconnect" href="https://akimages.shoplocal.com" crossorigin>
 <link rel="preconnect" href="https://images.publixcdn.com" crossorigin>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='52' font-size='56'>🛒</text></svg>">
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1a6b3c">
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -555,6 +558,80 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
 .toggle-switch input:checked+.toggle-track{background:var(--green)}
 .toggle-track::after{content:'';position:absolute;left:3px;top:3px;width:18px;height:18px;background:white;border-radius:50%;transition:transform var(--t);box-shadow:0 1px 3px rgba(0,0,0,.2)}
 .toggle-switch input:checked+.toggle-track::after{transform:translateX(20px)}
+
+/* ══ v9.4 UI refresh (design canvas: Tags, DealCard, Modal, MobileFilters) ══════
+   Same nav, fonts and colors; one tag palette, price-color rule, neutral history
+   chips, mobile filter sheet, 4.5:1 secondary text. */
+:root{--ink-soft:#6b6b6b;--sale:#1a6b3c;--sale-bg:#e0efe7;--deal-amber:#8a4106;--deal-amber-bg:#fdf0dc;
+  --coupon:#6b21a8;--coupon-bg:#f3e8fb;--extra:#1e40af;--extra-bg:#e6edfb;--chip-bg:#f1efe9}
+.deal-type-tag{font-size:10px;font-weight:900;letter-spacing:.06em;padding:3px 7px;margin:0}
+.deal-type-tag.sale{background:var(--sale-bg);color:var(--sale)}
+.deal-type-tag.bogo,.deal-type-tag.multi{background:var(--deal-amber-bg);color:var(--deal-amber)}
+.deal-type-tag.coupon,.deal-type-tag.plus{background:var(--coupon-bg);color:var(--coupon)}
+.deal-type-tag.extra{background:var(--extra-bg);color:var(--extra)}
+.deal-card-badges{gap:4px}
+.deal-card-row-tag,.deal-card-row-desc{display:none}
+.deal-card-row-dept{height:16px;margin-bottom:2px}
+.deal-card-row-title{font-size:13.5px;line-height:1.3;height:2.6em}
+.deal-card-title{font-size:inherit;line-height:inherit}
+.deal-card-row-price{height:auto;min-height:28px;display:flex;align-items:baseline;flex-wrap:wrap;gap:0 6px}
+.deal-card-price{font-size:19px;font-weight:500}
+.deal-card-price.k-pay{color:var(--green)}
+.deal-card-price.k-off{color:var(--red)}
+.deal-card-price.k-mech{color:var(--ink);font-size:16px}
+.deal-card-pctx{display:inline;font-size:11.5px;margin:0}
+.deal-card-row-save{height:auto;min-height:18px}
+.deal-card-extra{font-size:11.5px;font-weight:700;color:var(--coupon)}
+a.deal-card-save.is-clip{color:var(--coupon);font-size:12px;text-decoration:none}
+a.deal-card-save.is-clip:hover{text-decoration:underline}
+.deal-card-row-valid{height:auto;min-height:22px;margin-top:4px;padding-top:7px;border-top:1px dashed #e4dfd5;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.chip-match{font-size:11px;font-weight:700;padding:2px 7px;border-radius:10px;background:var(--sale-bg);color:var(--sale);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip-hist{font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;background:var(--chip-bg);color:var(--ink-mid);white-space:nowrap}
+.btn-load-more:hover{background:var(--green-lt)}
+.filter-opt > div{flex:1;text-align:left}
+.filter-opt{justify-content:flex-start}
+.filter-dot{width:8px;height:8px;border-radius:2px;flex-shrink:0;margin-top:5px}
+.filter-dot.sale{background:var(--sale)}.filter-dot.tpr{background:#4f9a6c}
+.filter-dot.bogo{background:#d08a3c}.filter-dot.coupon{background:var(--coupon)}.filter-dot.extra{background:var(--extra)}
+/* Modal */
+.dm-tagline{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+.dm-tagline .deal-modal-dept{margin:0 0 0 2px}
+.dm-price-panel{display:flex;align-items:center;gap:16px;padding:12px 14px;background:var(--green-bg);border-radius:10px;margin:4px 0 10px}
+.dm-price-main{display:flex;flex-direction:column}
+.deal-modal-price{font-size:28px;font-weight:500;margin:0}
+.deal-modal-price.k-pay{color:var(--green)}.deal-modal-price.k-off{color:var(--red)}.deal-modal-price.k-mech{color:var(--ink)}
+.deal-modal-pctx{font-size:12px;color:var(--ink-mid)}
+.dm-price-sep{width:1px;align-self:stretch;background:#cfe5d8}
+.dm-price-save .deal-modal-save{font-size:15px;color:var(--red);margin:0}
+.deal-modal-extra{font-size:12.5px;font-weight:700;color:var(--coupon);margin-top:2px}
+.dm-score{color:var(--ink-soft);font-size:11px}
+.dm-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}
+/* Mobile filter sheet (filters had no way in below 900px) */
+.btn-filters{display:none;align-items:center;gap:6px;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--white);font:700 13px var(--body);color:var(--ink-mid);cursor:pointer;min-height:38px}
+.btn-filters .cnt{font-family:var(--mono);font-size:11px;background:var(--green);color:#fff;border-radius:9px;padding:0 6px}
+.filter-sheet-hd,.filter-sheet-ft{display:none}
+.filter-sheet-backdrop{display:none}
+@media(max-width:900px){
+  .btn-filters{display:inline-flex}
+  .filter-col.sheet-open{display:flex;flex-direction:column;position:fixed;left:0;right:0;bottom:0;top:auto;width:auto;max-height:86vh;z-index:600;background:var(--white);border-radius:20px 20px 0 0;padding:0;box-shadow:var(--sh-lg);animation:slideUp .25s cubic-bezier(.22,1,.36,1)}
+  .filter-col.sheet-open .filter-sheet-hd{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 12px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--white);z-index:1}
+  .filter-col.sheet-open .filter-sheet-body{flex:1;overflow-y:auto;padding:12px 16px}
+  .filter-col.sheet-open .filter-sec{box-shadow:none;border:none;padding:6px 0;margin:0}
+  .filter-col.sheet-open .filter-opt{min-height:44px;align-items:center}
+  .filter-col.sheet-open .filter-sheet-ft{display:block;padding:12px 16px 20px;border-top:1px solid var(--border)}
+  .filter-sheet-backdrop.vis{display:block;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:590}
+}
+@media(max-width:680px){
+  .matches-grid,.deals-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .deal-card-img,.deal-card-img-ph{aspect-ratio:4/3}
+  .deal-card-body{padding:10px}
+  .deal-card-price{font-size:17px}
+  .validity-bar.vis{display:block;font-size:12.5px}
+}
+.filter-sheet-title{font-family:var(--serif);font-size:20px}
+.filter-sheet-x{background:none;border:none;font-size:22px;color:var(--ink-mid);width:44px;height:44px;cursor:pointer;text-align:left}
+.filter-sheet-reset{background:none;border:none;font:700 13px var(--body);color:var(--green);cursor:pointer;width:44px;text-align:right}
+.filter-sheet-apply{display:flex;align-items:center;justify-content:center;width:100%;height:48px;border:none;border-radius:10px;background:var(--green);color:#fff;font:700 15px var(--body);cursor:pointer}
 </style>
 </head>
 <body>
@@ -614,8 +691,8 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
         <button class="nav-item" data-action="nav-panel-mobile" data-panel="schedule"id="mnav-schedule"><span class="nav-icon">🔔</span> Notifications</button>
         <button class="nav-item" data-action="nav-panel-mobile" data-panel="store"   id="mnav-store">   <span class="nav-icon">🏪</span> My Store</button>
         <button class="nav-item" data-action="nav-panel-mobile" data-panel="account" id="mnav-account"> <span class="nav-icon">👤</span> Account</button>
-        <div class="nav-sep"></div>
-        <button class="nav-item" data-action="nav-panel-mobile" data-panel="admin"   id="mnav-admin">   <span class="nav-icon">⚙️</span> Admin</button>
+        <div class="nav-sep" id="mnav-admin-sep" style="display:none"></div>
+        <button class="nav-item" data-action="nav-panel-mobile" data-panel="admin"   id="mnav-admin" style="display:none">   <span class="nav-icon">⚙️</span> Admin</button>
       </div>
     </div>
   </div>
@@ -626,8 +703,8 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
       <button class="nav-item"        data-action="nav-panel" data-panel="schedule" id="nav-schedule"><span class="nav-icon">🔔</span> Notifications</button>
       <button class="nav-item"        data-action="nav-panel" data-panel="store"    id="nav-store">   <span class="nav-icon">🏪</span> My Store</button>
       <button class="nav-item"        data-action="nav-panel" data-panel="account"  id="nav-account"> <span class="nav-icon">👤</span> Account</button>
-      <div class="nav-sep"></div>
-      <button class="nav-item"        data-action="nav-panel" data-panel="admin"    id="nav-admin">   <span class="nav-icon">⚙️</span> Admin</button>
+      <div class="nav-sep" id="nav-admin-sep" style="display:none"></div>
+      <button class="nav-item"        data-action="nav-panel" data-panel="admin"    id="nav-admin" style="display:none">   <span class="nav-icon">⚙️</span> Admin</button>
     </nav>
 
     <div class="main-content">
@@ -697,47 +774,65 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
   <div id="deals-browser" style="display:none">
     <div class="validity-bar" id="deals-vbar"></div>
     <div class="deals-layout">
-      <div class="filter-col" id="deals-filter-col">
+      <div class="filter-sheet-backdrop" id="filter-sheet-backdrop" data-action="close-filter-sheet"></div>
+      <div class="filter-col" id="deals-filter-col" role="dialog" aria-label="Filters">
+        <div class="filter-sheet-hd">
+          <button class="filter-sheet-x" type="button" data-action="close-filter-sheet" aria-label="Close filters">×</button>
+          <div class="filter-sheet-title">Filters</div>
+          <button class="filter-sheet-reset" type="button" data-action="reset-filters">Reset</button>
+        </div>
+        <div class="filter-sheet-body">
         <div class="filter-sec">
           <div class="filter-hd">Savings</div>
           <label class="filter-opt"><input type="checkbox" id="f-all" data-action="savings-filter" data-filter="all">
             <div><div class="filter-opt-label">All deals</div></div>
             <span class="filter-opt-cnt" id="fcnt-all"></span></label>
           <label class="filter-opt"><input type="checkbox" id="f-weekly" checked data-action="savings-filter" data-filter="weekly">
+            <span class="filter-dot sale"></span>
             <div><div class="filter-opt-label">Weekly ad</div></div>
             <span class="filter-opt-cnt" id="fcnt-weekly"></span></label>
           <label class="filter-opt"><input type="checkbox" id="f-tpr" checked data-action="savings-filter" data-filter="tpr">
+            <span class="filter-dot tpr"></span>
             <div><div class="filter-opt-label">Price drops</div></div>
             <span class="filter-opt-cnt" id="fcnt-tpr"></span></label>
           <label class="filter-opt"><input type="checkbox" id="f-bogo" checked data-action="savings-filter" data-filter="bogo">
+            <span class="filter-dot bogo"></span>
             <div><div class="filter-opt-label">BOGOs</div></div>
             <span class="filter-opt-cnt" id="fcnt-bogo"></span></label>
           <label class="filter-opt"><input type="checkbox" id="f-coupon" checked data-action="savings-filter" data-filter="coupon">
+            <span class="filter-dot coupon"></span>
             <div><div class="filter-opt-label">Digital coupons</div></div>
             <span class="filter-opt-cnt" id="fcnt-coupon"></span></label>
           <label class="filter-opt"><input type="checkbox" id="f-extra" checked data-action="savings-filter" data-filter="extra">
+            <span class="filter-dot extra"></span>
             <div><div class="filter-opt-label">Extra savings</div></div>
             <span class="filter-opt-cnt" id="fcnt-extra"></span></label>
         </div>
         <div class="filter-sec"><div class="filter-hd">Department</div><div id="dept-deals"></div></div>
+        </div>
+        <div class="filter-sheet-ft"><button class="filter-sheet-apply" type="button" data-action="close-filter-sheet" id="filter-sheet-apply">Show deals</button></div>
       </div>
       <div class="deals-main">
         <div class="deals-topbar">
+          <button class="btn-filters" type="button" data-action="open-filter-sheet" aria-controls="deals-filter-col">Filters</button>
           <input class="deals-search" type="text" id="deals-q" placeholder="Search deals…" data-action="deals-search-input">
           <select class="sort-select" id="deals-sort" data-action="deals-sort">
             <option value="default">Sort: Default</option>
+            <option value="savings-desc">Biggest savings</option>
+            <option value="pct-desc">Biggest % off</option>
+            <option value="price-asc">Lowest price</option>
             <option value="name-az">Name A→Z</option>
             <option value="name-za">Name Z→A</option>
-            <option value="savings-desc">Savings ↓</option>
           </select>
         </div>
         <div class="chips" id="deals-chips"></div>
         <div class="deals-meta" id="deals-meta"></div>
         <details class="badge-legend" id="badge-legend-deals" style="display:none">
-          <summary>What do these badges mean?</summary>
+          <summary>What do the grey chips mean?</summary>
           <div class="badge-legend-body">
-            <span class="badge badge-repeat">🔁 Repeat deal</span>
-            <span class="badge badge-rare">📅 Rarely on sale</span>
+            <span class="chip-hist">Lowest in N wks</span> this week's price is the lowest seen in your store's history
+            <span class="chip-hist">Repeat deal</span> also on sale last week
+            <span class="chip-hist">Rarely on sale</span> on sale fewer than 3 times in 12+ weeks
           </div>
         </details>
         <!-- Matches section (shown when toggle is on and matches exist) -->
@@ -1106,7 +1201,7 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
       <!-- Step 2: How to use -->
       <div class="wlc-step" id="wlc-step-1">
         <div class="wlc-step-title">Getting set up takes 2 minutes</div>
-        <div class="wlc-step-sub">Three things to do to get the most out of Deal Checker:</div>
+        <div class="wlc-step-sub">Three things to do to get the most out of Cartwise:</div>
         <div class="wlc-instruction">
           <div class="wlc-num">1</div>
           <p><strong>Set your store</strong> — search by city, ZIP, or store number. Your store determines which weekly deals you see.</p>

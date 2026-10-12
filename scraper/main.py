@@ -23,6 +23,7 @@ import time
 import secrets as _secrets
 
 from scraper import get_deals_with_status
+from shared import email_render
 from shared.matcher import match_deals_for_user
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -77,6 +78,7 @@ def _log_email(to: str, subject: str, ok: bool, user: str = "", message: str = "
             "trigger": "scheduled",
             "user":    user,
             "message": message[:200],
+            "expires_at": int((datetime.now(timezone.utc) + timedelta(days=30)).timestamp()),  # v9.3
         })
     except Exception:
         pass
@@ -192,6 +194,10 @@ def _slim_deal(d: dict) -> dict:
         "is_bogo":     d.get("is_bogo", False),
         "department":  d.get("department", ""),
         "brand":       d.get("brand", ""),
+        # v9.4: what history needs to chart and compare real prices
+        "final_price": d.get("final_price") or 0,
+        "save_line":   d.get("save_line", ""),
+        **({"regular_price": d["regular_price"]} if d.get("regular_price") else {}),
     }
 
 
@@ -326,74 +332,31 @@ def _unsub_url(account_email: str) -> str:
     return f"{API_URL}/user/unsubscribe?{params}"
 
 def build_html(matches, store_id, store_name, frontend_url="", account_email=""):
-    today = date.today().strftime("%B %d, %Y")
-    rows  = ""
-    for m in matches:
-        valid = ""
-        if m.get("valid_from") or m.get("valid_thru"):
-            valid = f'<div style="font-size:11px;color:#999;">Valid {m.get("valid_from","")}–{m.get("valid_thru","")}</div>'
-        coupon_link = ""
-        if m.get("coupon_id"):
-            coupon_link = f'<div><a href="https://www.publix.com/savings/digital-coupons?cid={m["coupon_id"]}" style="font-size:11px;color:#8b5cf6;">✂️ Clip Coupon</a></div>'
-        rows += f"""
-        <tr style="border-bottom:1px solid #eee;">
-          <td style="padding:10px 8px;width:40px;text-align:center;font-size:22px;">🛒</td>
-          <td style="padding:10px 8px;">
-            <div style="font-size:10px;font-weight:700;color:#1a6b3c;text-transform:uppercase;letter-spacing:.07em;margin-bottom:2px;">{m.get('my_item','')}</div>
-            <div style="font-weight:600;">{m['deal_name']}</div>
-            {f'<div style="font-size:12px;color:#555;">{m["description"]}</div>' if m.get('description') else ''}
-            {f'<div style="font-size:11px;color:#999;">{m["fine_print"]}</div>' if m.get('fine_print') else ''}
-            {valid}
-            {coupon_link}
-          </td>
-          <td style="padding:10px 8px;text-align:right;white-space:nowrap;">
-            <div style="font-size:20px;font-weight:700;color:#1a6b3c;">{m.get('savings','')}</div>
-            {f'<div style="font-size:12px;color:#e76f51;">{m["save_line"]}</div>' if m.get('save_line') else ''}
-          </td>
-        </tr>"""
-
+    """v9.3: rendered by shared/email_render.py from the normalized offer."""
     unsub_url = _unsub_url(account_email) if account_email else ""
-    unsub_section = (
-        f'<div style="margin-top:8px;font-size:12px;color:#aaa;">'
-        f'Don\'t want these alerts? '
-        f'<a href="{unsub_url}" style="color:#aaa;">Unsubscribe</a>'
-        f'</div>'
-    ) if unsub_url else ""
-
-    return f"""<html><body style="font-family:Arial,sans-serif;max-width:680px;margin:0 auto;color:#333;">
-      <div style="background:#1a6b3c;color:white;padding:20px 24px;border-radius:8px 8px 0 0;">
-        <h2 style="margin:0;">&#x1F6D2; Publix Deal Alert</h2>
-        <p style="margin:4px 0 0;opacity:.85;">{today} &nbsp;&middot;&nbsp; {store_name or f'Store #{store_id}'} &nbsp;&middot;&nbsp; {len(matches)} item(s) on sale</p>
-      </div>
-      <table style="width:100%;border-collapse:collapse;background:white;border:1px solid #ddd;border-top:none;">
-        <thead><tr style="background:#f8f8f8;font-size:11px;color:#888;text-transform:uppercase;">
-          <th style="padding:8px;"></th>
-          <th style="padding:8px;text-align:left;">Item</th>
-          <th style="padding:8px;text-align:right;">Price</th>
-        </tr></thead>
-        <tbody>{rows}</tbody>
-      </table>
-      <div style="padding:16px;background:#f0f7f3;border:1px solid #ddd;border-top:none;border-radius:0 0 8px 8px;text-align:center;">
-        <a href="{frontend_url or 'https://www.publix.com/savings/weekly-ad/view-all'}"
-           style="background:#1a6b3c;color:white;padding:10px 24px;border-radius:4px;text-decoration:none;font-weight:600;">
-          View My Matches &#x2197;
-        </a>
-        {unsub_section}
-      </div>
-    </body></html>"""
+    return email_render.build_html(matches, store_id, store_name, frontend_url,
+                                   unsub_url=unsub_url, account_email=account_email)
 
 
 def send_alert(notify_email: str, matches: list[dict], store_id: str, store_name: str,
                account_email: str = ""):
-    today   = date.today().strftime("%B %d")
-    subject = f"🛒 Publix Deals — {len(matches)} item(s) on sale ({today})"
+    subject   = email_render.subject_line(matches)
+    unsub_url = _unsub_url(account_email) if account_email else ""
+    msg = {
+        "from":    RESEND_FROM,
+        "to":      [notify_email],
+        "subject": subject,
+        "html":    build_html(matches, store_id, store_name, FRONTEND_URL, account_email=account_email),
+        "text":    email_render.build_text(matches, store_name, unsub_url),
+    }
+    if unsub_url:
+        # v9.3: one-click unsubscribe (RFC 8058); POST /user/unsubscribe accepts the same query
+        msg["headers"] = {
+            "List-Unsubscribe":      f"<{unsub_url}>",
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        }
     try:
-        resend.Emails.send({
-            "from":    RESEND_FROM,
-            "to":      [notify_email],
-            "subject": subject,
-            "html":    build_html(matches, store_id, store_name, FRONTEND_URL, account_email=account_email),
-        })
+        resend.Emails.send(msg)
         _log_email(notify_email, subject, ok=True, user=account_email)
         print(f"   Email sent → {notify_email}")
     except Exception as exc:
@@ -468,6 +431,7 @@ def purge_inactive_users() -> None:
                 "action":  "cleanup-user-deleted",
                 "message": f"Inactive account deleted: {email} ({', '.join(reason)})",
                 "user":    email,
+                "expires_at": int((datetime.now(timezone.utc) + timedelta(days=90)).timestamp()),  # v9.3
             })
         except Exception as e:
             skipped.append(email)
@@ -488,6 +452,7 @@ def purge_inactive_users() -> None:
             "message":        summary,
             "deleted_count":  len(deleted),
             "error_count":    len(skipped),
+            "expires_at":     int((datetime.now(timezone.utc) + timedelta(days=90)).timestamp()),  # v9.3
         })
     except Exception:
         pass

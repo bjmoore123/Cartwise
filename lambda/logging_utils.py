@@ -71,6 +71,28 @@ def _log_app_event(source: str, level: str = "info", **fields):
         print(f"[CW] _log_app_event failed: {e}")
 
 
+def count_cache_event(store_id: str, hit: bool):
+    """v9.3: one counter row per day instead of one log row per /deals request.
+
+    Row: log_id "cachestats#YYYY-MM-DD", source "cache", kind "stats",
+    attributes hits_<store> / misses_<store>. Admin → Cache sums these.
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        day = now.strftime("%Y-%m-%d")
+        app_logs_tbl.update_item(
+            Key={"log_id": f"cachestats#{day}"},
+            UpdateExpression="ADD #c :one SET #s = :s, #k = :k, ts = :ts, expires_at = :t",
+            ExpressionAttributeNames={"#c": f"{'hits' if hit else 'misses'}_{store_id}",
+                                      "#s": "source", "#k": "kind"},
+            ExpressionAttributeValues={":one": 1, ":s": "cache", ":k": "stats",
+                                       ":ts": now.isoformat(),
+                                       ":t": int((now + timedelta(days=30)).timestamp())},
+        )
+    except Exception as e:
+        print(f"[CW] count_cache_event failed: {e}")
+
+
 def log_frontend_error(event, body):
     """POST /log/error — receive frontend JS error reports.
     PDC-11: requires session auth; log level validated against allowlist."""

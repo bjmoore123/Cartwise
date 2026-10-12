@@ -15,10 +15,17 @@ Keep norm_title() in sync with cwHistKey() in frontend/app.js.
 """
 import re
 
+try:                                    # Lambda package: shared/ next to this file
+    from shared.deal_parser import classify_offer
+except ImportError:                     # pragma: no cover
+    classify_offer = None
+
 # Minimum weeks of history before each signal is shown (mirrors HIST_MIN in app.js)
 MIN_WEEKS_REPEAT = 2
 MIN_WEEKS_RARE   = 12
 RARE_MAX_PAST    = 3      # fewer past weeks than this on sale = "rarely on sale"
+MIN_PRICE_POINTS = 6      # v9.4: past weeks with a known price before "lowest price" shows
+SUMMARY_FMT      = 3      # v9.4: index entries carry a price; bump to force a rebuild
 FREQ_MATCH_SCORE = 70     # same threshold the old client-side frequency hint used
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
@@ -51,6 +58,27 @@ def fuzzy_score(item: str, title: str) -> int:
     return round(matched / len(toks) * 100)
 
 
+def deal_price(d: dict):
+    """Price per unit you pay, from a history row, or None (v9.4).
+
+    Only real prices count (a sale price or a multi-buy's price each); BOGO
+    estimates and "$X off" have no reliable price. Old rows only have
+    `savings`, which still yields a price for "$3.99", "$4.99 lb", "2 for $7".
+    TPR rows written before v9.4 hold the DISCOUNT in `savings` and no
+    final_price, so they give no price rather than a wrong one.
+    """
+    if classify_offer is None:
+        return None
+    st = d.get("saving_type") or ""
+    fp = d.get("final_price") or 0
+    if st.lower() == "tpr" and not fp:
+        return None
+    o = classify_offer(st, d.get("savings", ""), d.get("save_line", ""), fp, d.get("regular_price") or 0)
+    if o.get("kind") in ("price", "multi") and o.get("price"):
+        return round(float(o["price"]), 2)
+    return None
+
+
 def build_index(snapshots: list[dict]) -> dict:
     """Build the per-title index from weekly snapshots.
 
@@ -68,12 +96,16 @@ def build_index(snapshots: list[dict]) -> dict:
             key = norm_title(title)
             if not key:
                 continue
-            titles.setdefault(key, {}).setdefault(idx, (title, d.get("savings", "")))
+            per = titles.setdefault(key, {})
+            entry = (title, d.get("savings", ""), deal_price(d))
+            # Same title twice in a week (sizes/flavors): keep the lowest known price
+            if idx not in per or (entry[2] is not None and (per[idx][2] is None or entry[2] < per[idx][2])):
+                per[idx] = entry
     # Derived from `titles` (not the raw rows) so a freshly built index and one
     # restored by deserialize_index() are identical.
     lower_titles: dict[str, set] = {}
     for per in titles.values():
-        for idx, (title, _sv) in per.items():
+        for idx, (title, _sv, _p) in per.items():
             lower_titles.setdefault(title.lower(), set()).add(idx)
     return {"weeks": weeks, "titles": titles, "lower_titles": lower_titles}
 
@@ -88,17 +120,22 @@ def compute_badges(index: dict) -> dict:
     Lists of keys (labels added client-side) keep the payload small.
     """
     num_weeks = len(index["weeks"])
-    out = {"repeat": [], "rare": []}
+    out = {"best": [], "repeat": [], "rare": []}
     for key, weeks_on in index["titles"].items():
         if 0 not in weeks_on:
             continue
         past = len(weeks_on) - 1
-        if num_weeks >= MIN_WEEKS_REPEAT and 1 in weeks_on:
+        # v9.4 (#9): lowest price seen in the whole history (needs 6+ past prices that vary)
+        now_p = weeks_on[0][2] if len(weeks_on[0]) > 2 else None
+        past_p = [e[2] for i, e in weeks_on.items() if i != 0 and len(e) > 2 and e[2] is not None]
+        if now_p is not None and len(past_p) >= MIN_PRICE_POINTS and now_p <= min(past_p) and now_p < max(past_p):
+            out["best"].append(key)
+        elif num_weeks >= MIN_WEEKS_REPEAT and 1 in weeks_on:
             out["repeat"].append(key)
         elif num_weeks >= MIN_WEEKS_RARE and past < RARE_MAX_PAST:
             out["rare"].append(key)
-    out["repeat"].sort()
-    out["rare"].sort()
+    for k in out:
+        out[k].sort()
     return out
 
 
@@ -179,30 +216,38 @@ def serialize_index(index: dict) -> bytes:
     for k, v in index["titles"].items():
         entries = sorted(v.items())
         base = entries[0][1][0]
-        titles[k] = [base, [[i, sv] if t == base else [i, sv, t] for i, (t, sv) in entries]]
-    data = {"weeks": index["weeks"], "titles": titles}
+        titles[k] = [base, [[i, sv, p] if t == base else [i, sv, p, t] for i, (t, sv, p) in entries]]
+    data = {"fmt": SUMMARY_FMT, "weeks": index["weeks"], "titles": titles}
     return gzip.compress(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"), 6)
 
 
 def deserialize_index(blob: bytes) -> dict:
     import gzip, json
     data = json.loads(gzip.decompress(blob).decode("utf-8"))
+    fmt = data.get("fmt", 2)
     titles, lower_titles = {}, {}
     for key, (base, entries) in data["titles"].items():
         per = {}
         for e in entries:
-            t = e[2] if len(e) > 2 else base
-            per[e[0]] = (t, e[1])
+            if fmt >= 3:                    # [i, savings, price(, title)]
+                t, p = (e[3] if len(e) > 3 else base), e[2]
+            else:                           # v9.2.1: [i, savings(, title)]
+                t, p = (e[2] if len(e) > 2 else base), None
+            per[e[0]] = (t, e[1], p)
             lower_titles.setdefault(t.lower(), set()).add(e[0])
         titles[key] = per
     return {"weeks": data["weeks"], "titles": titles, "lower_titles": lower_titles}
 
 
 def title_points(index: dict, title: str) -> list[dict]:
-    """Chart points for one deal title, oldest first: [{"week", "savings"}]."""
+    """Chart points for one deal title, oldest first: [{"week", "savings", "price"?}]."""
     weeks_on = index["titles"].get(norm_title(title), {})
     weeks = index["weeks"]
-    return [
-        {"week": weeks[i], "savings": weeks_on[i][1]}
-        for i in sorted(weeks_on, reverse=True)
-    ]
+    out = []
+    for i in sorted(weeks_on, reverse=True):
+        e = weeks_on[i]
+        pt = {"week": weeks[i], "savings": e[1]}
+        if len(e) > 2 and e[2] is not None:
+            pt["price"] = e[2]
+        out.append(pt)
+    return out

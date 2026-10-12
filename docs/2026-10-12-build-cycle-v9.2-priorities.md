@@ -170,7 +170,7 @@ Target: history payload under 100 KB, no main-thread task over 50 ms after login
 
 ## 4. Release batches
 
-Each batch is meant to be built, deployed to **staging**, verified, and then promoted. Batch 1 is the exception: it may go straight to production because it fixes the slowness users are feeling now. Estimates are working days. Progress: **Batches 0–1 done and in production (v9.2.1). Batch 2 and #6 built as v9.2.2, staging next.**
+Each batch is meant to be built, deployed to **staging**, verified, and then promoted. Batch 1 is the exception: it may go straight to production because it fixes the slowness users are feeling now. Estimates are working days. Progress: **Batches 0–2 and #6 in production (v9.2.2). Batches 3 (most), 4 and 5 built as v9.3 + v9.4, staging next.**
 
 | Batch | Theme | Items | Est. | Risk | Path |
 |---|---|---|---|---|---|
@@ -192,7 +192,7 @@ Each batch is meant to be built, deployed to **staging**, verified, and then pro
 - [ ] SSM secrets stay shared under `/publix/*` (acceptable for now; split only if staging ever needs different keys)
 - [ ] **Decision needed:** production fonts (DM Serif/Lato) or staging fonts (Fraunces/Outfit). The design canvas assumes production.
 
-### Batch 1: Performance hotfix (P0-B) ✅ code done 2026-10-12, awaiting deploy
+### Batch 1: Performance hotfix (P0-B) ✅ in production 2026-10-12 (v9.2 + v9.2.1)
 - [x] New `lambda/history.py` (pure, unit-tested) builds a per-title index; `/deals/history` returns `{badges: {repeat:[…], rare:[…]}, freq: {item: weeks}}`. The index is cached in the warm Lambda and invalidated by a keys-only signature query when a new weekly snapshot lands.
 - [x] `/deals/history?title=…` returns chart points for one deal, fetched only when a deal modal opens.
 - [x] Browser: `computeBadge` is a `Map` lookup (`cwHistKey()` ⇄ `norm_title()`, KEEP IN SYNC); `fuzzyScore` removed; frequency hints refresh 1.5 s after list edits.
@@ -206,7 +206,7 @@ Each batch is meant to be built, deployed to **staging**, verified, and then pro
 - [x] Tested on staging, approved, deployed to production 2026-10-12.
 - Note: with exact title matching, "Rarely on sale" fires on ~30% of this week's deals (566 of 1,854). Watch whether that's too noisy; it can be tightened (e.g. require 20+ weeks of history) without code changes elsewhere.
 
-### Batch 2: Broken interactions ✅ code done 2026-10-12 (v9.2.2), staging next
+### Batch 2: Broken interactions ✅ in production 2026-10-12 (v9.2.2)
 Test plan: `docs/v9.2.2-test-plan.md`. 18 new pytest tests (110 total) and 12 browser checks with the page's real CSP enforced; 10 of the 12 fail on the current production frontend and all pass on v9.2.2.
 - [x] #1 login flag stuck after a validation error: `_authInFlight` is set only after validation passes.
 - [x] #2 Enter in store search: one `data-action="store-search"` handles typing and Enter (the browser kept only the first of the two duplicate attributes).
@@ -224,33 +224,48 @@ Test plan: `docs/v9.2.2-test-plan.md`. 18 new pytest tests (110 total) and 12 br
 - [ ] Investigate the 2026-03-30 history snapshot (3,257 deals)
 - [ ] Fix the retention, throttling and schedule copy (admin note, `deploy.sh` message, "8 AM ET")
 
-### Batch 4: Offer model and price display
-- [ ] Fixtures from one real week of Publix JSON (2–3 stores) → `tests/fixtures/`
-- [ ] `classify_offer()` in `shared/deal_parser.py`; the cache and history store `offer`
-- [ ] Card, match card, modal and email render `offer.headline / context / save_text`; one BOGO detector
-- [ ] #8 sort by `save` / `unit_price`; #9 badges and chart on price
-- [ ] Email: drop the "Price" column, add images, type tags and CartWise branding, add a `List-Unsubscribe` header, escape HTML
-- [ ] #10 matcher parity: same `normalize` in Python and JS; a shared fixture run by pytest and Node
+### Batch 4: Offer model and price display ✅ built 2026-10-12 as v9.3 (staging next, together with v9.4)
+Test plan: `docs/v9.4-test-plan.md`.
+- [x] Fixtures from one real week of Publix JSON (store 1546, 1,890 deals): one deal per distinct shape (55) → `tests/fixtures/publix_offers.json`
+- [x] **Root cause confirmed from the raw feed:** for price drops (`Tpr`, 1,023 deals) `savings` is the **discount** (`$0.24`); the price you pay is `finalPrice` and the regular price `originalDeal`. The email printed `savings` under "Price". Coupons put "Save $2.00" in the same field.
+- [x] `classify_offer()` in `shared/deal_parser.py` → `offer {kind, headline, context, save_text, price, regular, save, pct, unit, coupon_required, extra}`; all 55 real shapes classified, none fall through to "other". Works on old cache rows (TPR regular price = price + discount).
+- [x] Card, match card, modal and email all render `offer`; one tag function (`dealTypeKey` ⇄ `email_render.deal_tag`, KEEP IN SYNC)
+- [x] Extra Savings is `wa_promotionTypeId == 4` under `savingType: WeeklyAd` (81 deals), not a saving type; `is_extra` fixed. Stacked deals show their extra coupon ("+ $1 off with digital coupon").
+- [x] Email (`shared/email_render.py`): no "Price" column; headline/context/save per row, images, type tags and counts, Cartwise header, real validity dates (TPR/coupons carry a "1/1" placeholder), everything HTML-escaped, plain-text part, `List-Unsubscribe` + one-click POST header, clip-coupon link (the matcher never passed `coupon_id`, so the link never showed), capped at 30 rows (Gmail clips ~102 KB).
+- [x] #8 sort: Biggest savings (per unit), Biggest % off, Lowest price → v9.4
+- [x] #9 history stores a price per week (summary format 3; old rows yield a price for "$3.99", "2 for $7", "$4.99 lb" but not for old TPR rows). "Lowest in N wks" badge (6+ past prices that vary; 112 titles at store 1546); modal chart plots price. → v9.4
+- [x] #10 matcher parity: JS `cwNormalize` now deletes punctuation like Python (it inserted a space: "jerry s" vs "jerrys") and is Unicode-aware; Python-style rounding. 339 of 26,880 real pairs differed; now 0. Fixture `tests/fixtures/matcher_parity.json` (3,222 pairs) run by pytest and Node (`tests/matcher_parity.js`). → v9.4
 
-### Batch 5: UI refresh
-- [ ] Reconcile the design canvas with staging's March changes (single tag already done there)
-- [ ] One tag palette, price-color rule (green = pay, red = save), history chips in the card footer
-- [ ] Mobile filter sheet (no filters below 900px today)
-- [ ] Copy fixes: "Deal Checker", "set your notification email", panel titles vs nav labels
-- [ ] Link the orphaned icons and `manifest.json` (now in the repo from GitHub)
-- [ ] `--ink-soft` to #6b6b6b for contrast; fix the Load-more hover
+### Batch 3 remainder ✅ built with v9.3
+- [x] #13 admin auth logs: read the whole (TTL-bounded) table and sort newest-first; the old `Scan(Limit=100)` returned an arbitrary 100 rows
+- [x] TTL on every log writer (scraper email logs: 30 days; cleanup logs: 90 days)
+- [x] Stop writing a log row on every `/deals` request: one counter row per day (`cachestats#YYYY-MM-DD`, `hits_<store>` / `misses_<store>`); Admin → Cache sums them
+- [ ] Investigate the 2026-03-30 history snapshot (3,257 deals)
+- [ ] Fix the retention, throttling and schedule copy (admin note, `deploy.sh` message, "8 AM ET")
+
+### Batch 5: UI refresh ✅ built 2026-10-12 as v9.4 (production fonts DM Serif/Lato; Ben can still switch)
+- [x] **Staging and production frontends are now the same files.** Staging's March theme (Fraunces/Outfit, gradients, `tag-*` classes, default threshold 80) is replaced; the old staging files are kept in `staging/archive/frontend-2026-03/`. Staging's hidden Admin nav + `#admin` route is adopted in both (go to `/#admin`).
+- [x] One tag per card over the image: Sale (weekly ad, price drop, $ off) · BOGO · "2 for" · Coupon · Extra, plus "+ Coupon"; source feed moved to the modal's "Deal source" row; duplicate Coupon/Extra/Stacked badges removed; "Publix" is a prefix in the department line
+- [x] Price colors: green = what you pay, red = amount off / savings, ink = a mechanic (BOGO, % off); purple "Clip coupon →" is a real link
+- [x] Card footer: matched-item chip and one neutral history chip ("Lowest in 30 wks", "Repeat deal", "Rarely on sale")
+- [x] Modal: price panel (headline · context | save), Deal source, Matched (with score), history chip, "Price history · last N weeks"
+- [x] Mobile: Filters button opens the same filters as a bottom sheet (44 px rows, Reset, "Show N deals"); two-column cards ≤680px
+- [x] Copy: "Deal Checker" → Cartwise; badge legend rewritten. Icons and `manifest.json` linked and now uploaded by `deploy.sh`
+- [x] `--ink-soft` #8a8a8a → #6b6b6b (4.5:1); Load-more hover no longer turns pale green on white text
+- [ ] Copy pass on "set your notification email" and panel titles vs nav labels (not touched)
 
 ### Batch 6: Hygiene (ride-along)
-- [ ] Delete `lambda/api.py`, the unused `rapidfuzz` install, dead CSS/JS, and duplicate test classes
+- [x] Delete `lambda/api.py` (stale duplicate parser, never deployed) and the unused `rapidfuzz` install (v9.3)
+- [ ] Dead CSS/JS (old `.badge-*`, `savingsDisplayLegacy` once no pre-v9.3 cache rows remain) and duplicate test classes
 - [ ] URL-encode the verification email link; inbound log fixes; session cleanup on account delete or email reset
 - [ ] Update the design doc (history key format, environments, release process)
 
 ## 5. Verification checklist
 
-- [ ] Fixture table: every distinct `savings`/`save_line` shape → expected `offer` (pytest).
+- [x] Fixture table: every distinct `savings`/`save_line` shape → expected `offer` (pytest `test_offer.py`).
 - [ ] The same fixture rendered by card and email shows identical headline, context, and save text.
-- [ ] Matcher parity fixture passes in pytest **and** Node.
+- [x] Matcher parity fixture passes in pytest **and** Node.
 - [ ] HAR: TPR merged on the first load and on a same-store refresh (deal count = `total_all`).
 - [x] Simulate a Publix fetch failure in the scraper: the previous week's cache is retained (pytest `TestStoreWorkerSafety`).
-- [ ] Admin auth log's newest row equals the latest login.
-- [ ] Mobile (≤ 600px): filters reachable, autocomplete tap works, Enter in store search works.
+- [ ] Admin auth log's newest row equals the latest login (fixed in v9.3; check on staging, T-ops-1).
+- [x] Mobile (≤ 600px): filters reachable (v9.4 sheet), autocomplete tap works, Enter in store search works (v9.2.2).

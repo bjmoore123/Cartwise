@@ -14,11 +14,11 @@ from helpers import (
     dynamodb, history_tbl, corpus_tbl, users_table,
     FRONTEND_URL, API_URL, DEFAULT_PREFS,
 )
-from logging_utils import _log_app_event
+from logging_utils import _log_app_event, count_cache_event
 from shared.deal_parser import parse_deal
 from shared.matcher import match_deals_for_user
 from history import (build_index, compute_badges, item_frequency, title_points,
-                     serialize_index, deserialize_index)
+                     serialize_index, deserialize_index, SUMMARY_FMT)
 
 # ── Publix API URLs ───────────────────────────────────────────────────────────
 
@@ -203,7 +203,8 @@ def get_deals(event):
             raw_deals = [d for d in raw_deals if (d.get("saving_type") or "").lower() == "tpr"]
         # Re-enrich from cache via shared parser
         deals = [parse_deal(d) for d in raw_deals]
-        _log_app_event("cache", "info", hit=True, store_id=store_id, endpoint="/deals", deal_count=len(deals))
+        if types != "tpr":          # count once per page load (core + tpr are one load)
+            count_cache_event(store_id, hit=True)
     else:
         _hdrs = {
             "Accept":      "application/json, text/plain, */*",
@@ -232,6 +233,8 @@ def get_deals(event):
             except Exception as e:
                 fetch_failed = True
                 print(f"[CW] get_deals live fetch: {e}")
+        if types != "tpr":
+            count_cache_event(store_id, hit=False)
         if fetch_failed and not deals:
             return err("Deals temporarily unavailable.", 502)
         total_all = len(deals)
@@ -262,6 +265,9 @@ def get_deals(event):
     for d in deals:
         for f in _STRIP_FIELDS:
             d.pop(f, None)
+        for f in ("regular_price", "additional_savings"):   # v9.3: only send when set
+            if not d.get(f):
+                d.pop(f, None)
 
     return ok({
         "deals":        deals,
@@ -325,6 +331,8 @@ def _load_history_snapshots(store_id: str) -> list:
 
 def _summary_is_fresh(meta: dict) -> bool:
     from datetime import datetime, timezone, timedelta
+    if int(meta.get("fmt", 2)) != SUMMARY_FMT:       # v9.4: older format has no prices
+        return False
     try:
         built = datetime.fromisoformat(str(meta.get("built_at", "")))
         return datetime.now(timezone.utc) - built < timedelta(days=SUMMARY_MAX_AGE_DAYS)
@@ -356,6 +364,7 @@ def _persist_index(store_id: str, index: dict) -> str:
     history_tbl.put_item(Item={"store_id": store_id, "sk": SUMMARY_SK, "version": version,
                                "num_chunks": len(parts), "built_at": version,
                                "newest_week": index["weeks"][0] if index["weeks"] else "",
+                               "fmt": SUMMARY_FMT,
                                "bytes": len(blob), "expires_at": expires})
     return version
 
@@ -513,6 +522,10 @@ def get_matches(event):
             m["savings_per_item"]     = src.get("savings_per_item")
             m["final_price"]          = src.get("final_price", 0)
             m["wa_promotion_type_id"] = src.get("wa_promotion_type_id", 1)
+            m["is_stacked"]           = src.get("is_stacked", False)
+            m["offer"]                = src.get("offer") or {}        # v9.3
+            if src.get("regular_price"):      m["regular_price"]      = src["regular_price"]
+            if src.get("additional_savings"): m["additional_savings"] = src["additional_savings"]
             # Map deal_name to title for frontend consistency
             m["title"] = m["deal_name"]
 

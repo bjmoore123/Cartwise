@@ -377,8 +377,15 @@ def get_auth_logs(event):
     try:
         params = event.get("queryStringParameters") or {}
         limit  = min(int(params.get("limit", 100)), 500)
-        resp   = auth_logs_tbl.scan(Limit=limit)
-        items  = _to_py(resp.get("Items", []))
+        # v9.3 (#13): Scan `Limit` caps items examined (in hash order), so the old
+        # single page returned an arbitrary 100 rows, not the newest. The table is
+        # bounded by its 90-day TTL, so read it all and sort.
+        items, resp = [], auth_logs_tbl.scan()
+        items.extend(resp.get("Items", []))
+        while "LastEvaluatedKey" in resp:
+            resp = auth_logs_tbl.scan(ExclusiveStartKey=resp["LastEvaluatedKey"])
+            items.extend(resp.get("Items", []))
+        items = _to_py(items)
         items.sort(key=lambda x: x.get("ts", ""), reverse=True)
         return ok({"logs": items[:limit]})
     except Exception as e:

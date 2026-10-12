@@ -170,7 +170,7 @@ class TestHistoryEndpoint:
         body = json.loads(resp["body"])
         assert resp["statusCode"] == 200
         assert body["version"] == 2 and body["num_weeks"] == 3
-        assert body["badges"] == {"repeat": ["chips"], "rare": []}
+        assert body["badges"] == {"best": [], "repeat": ["chips"], "rare": []}
         assert body["freq"] == {"milk": 1, "chips": 1}
         assert "snapshots" not in body
         assert len(resp["body"]) < 2000

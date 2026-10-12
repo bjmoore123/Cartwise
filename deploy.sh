@@ -481,14 +481,15 @@ mkdir -p "${SCRAPER_TMP}/shared"
 cp "${SCRIPT_DIR}/shared/__init__.py"    "${SCRAPER_TMP}/shared/"
 cp "${SCRIPT_DIR}/shared/deal_parser.py" "${SCRAPER_TMP}/shared/"
 cp "${SCRIPT_DIR}/shared/matcher.py"     "${SCRAPER_TMP}/shared/"
+cp "${SCRIPT_DIR}/shared/email_render.py" "${SCRAPER_TMP}/shared/"   # v9.3
 
 info "Installing scraper dependencies..."
-${PIP_CMD} install resend rapidfuzz \
+${PIP_CMD} install resend \
   --target "${SCRAPER_TMP}" --quiet \
   --platform manylinux2014_x86_64 \
   --python-version 3.12 \
   --only-binary=:all: 2>/dev/null || \
-${PIP_CMD} install resend rapidfuzz --target "${SCRAPER_TMP}" --quiet
+${PIP_CMD} install resend --target "${SCRAPER_TMP}" --quiet
 
 python3 -c "
 import zipfile, os
@@ -740,6 +741,18 @@ MSYS_NO_PATHCONV=1 aws s3 cp index_deploy_tmp.html \
 MSYS_NO_PATHCONV=1 aws s3 cp app_deploy_tmp.js \
   "s3://${S3_FRONTEND}/app.js" \
   --content-type "application/javascript" --cache-control "no-cache, no-store, must-revalidate" --no-progress
+# v9.4: icons and web manifest (linked from index.html; were never uploaded before)
+for asset in favicon.ico apple-touch-icon.png icon-192.png icon-512.png cartwise_logo.svg manifest.json; do
+  [ -f "${SCRIPT_DIR}/frontend/${asset}" ] || continue
+  case "${asset}" in
+    *.ico)  ctype="image/x-icon" ;;
+    *.png)  ctype="image/png" ;;
+    *.svg)  ctype="image/svg+xml" ;;
+    *.json) ctype="application/manifest+json" ;;
+  esac
+  MSYS_NO_PATHCONV=1 aws s3 cp "${SCRIPT_DIR}/frontend/${asset}" "s3://${S3_FRONTEND}/${asset}" \
+    --content-type "${ctype}" --cache-control "public, max-age=86400" --no-progress
+done
 
 
 # Verify uploads succeeded by comparing local MD5 to S3 ETag

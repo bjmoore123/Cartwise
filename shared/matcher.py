@@ -267,6 +267,12 @@ def match_deals_for_user(
                         "valid_from":  deal.get("valid_from", ""),
                         "valid_thru":  deal.get("valid_thru", ""),
                         "image_url":   deal.get("image_url", ""),
+                        # v9.3: the email needs these to render the offer and the clip link
+                        "saving_type": deal.get("saving_type", ""),
+                        "coupon_id":   deal.get("coupon_id", ""),
+                        "has_coupon":  deal.get("has_coupon", False),
+                        "is_bogo":     deal.get("is_bogo", False),
+                        "offer":       deal.get("offer") or {},
                         "match_score": score,
                     })
 

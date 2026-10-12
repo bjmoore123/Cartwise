@@ -1,0 +1,1451 @@
+[
+ {
+  "raw": {
+   "id": "ff25e9c9-41ed-43c3-8bfd-f7d765424450",
+   "title": "Ground Chuck",
+   "savings": "$4.99 lb",
+   "additionalSavings": null,
+   "additionalDealInfo": "SAVE UP TO $3.57 LB",
+   "finalPrice": 4.99,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "meat"
+   ],
+   "brand": "Publix"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$4.99/lb",
+   "context": null,
+   "save_text": "Save up to $3.57/lb",
+   "price": 4.99,
+   "save": 3.57,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "904eac93-f6c0-46a9-8772-d19b83475699",
+   "title": "Fresh Express Chopped Kit",
+   "savings": "2 for $7.00",
+   "additionalSavings": null,
+   "additionalDealInfo": "SAVE UP TO $2.98 ON 2",
+   "finalPrice": 3.5,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "produce"
+   ],
+   "brand": "Fresh Express"
+  },
+  "expect": {
+   "kind": "multi",
+   "headline": "2 for $7",
+   "context": "$3.50 ea",
+   "save_text": "Save up to $2.98 on 2",
+   "price": 3.5,
+   "save": 1.49,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "60771da3-6d72-47e5-86f8-ba5749caa62b",
+   "title": "Publix Fried Chicken Tenders Quick Bites",
+   "savings": "$5.00 each",
+   "additionalSavings": null,
+   "additionalDealInfo": "SAVE UP TO $1.49",
+   "finalPrice": 5.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "deli",
+    "order-now"
+   ],
+   "brand": "Publix"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$5.00",
+   "context": null,
+   "save_text": "Save up to $1.49",
+   "price": 5.0,
+   "save": 1.49,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "150e6ba5-3487-40e2-b9df-89268d54e499",
+   "title": "Triscuit Crackers",
+   "savings": "Buy 2 Get 1 FREE",
+   "additionalSavings": null,
+   "additionalDealInfo": "SAVE UP TO $4.99 ON 3",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "grocery"
+   ],
+   "brand": "Triscuit"
+  },
+  "expect": {
+   "kind": "bogo",
+   "headline": "Buy 2 Get 1 Free",
+   "context": "≈ $3.33 ea when you buy 3",
+   "save_text": "Save up to $4.99 on 3",
+   "price": 3.33,
+   "save": 1.66,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "bd134be9-47e1-4bab-9f8e-8f9aebf6d194",
+   "title": "GreenWise Bagels",
+   "savings": "$1.99",
+   "additionalSavings": null,
+   "additionalDealInfo": "SAVE UP TO $0.70",
+   "finalPrice": 1.99,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "bakery"
+   ],
+   "brand": "Publix"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$1.99",
+   "context": null,
+   "save_text": "Save up to $0.70",
+   "price": 1.99,
+   "save": 0.7,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "8ddce92e-bb7d-4979-b858-b3d4485cd78b",
+   "title": "Kraft Mac &amp; Cheese",
+   "savings": "Buy 1 Get 1 FREE",
+   "additionalSavings": null,
+   "additionalDealInfo": "SAVE UP TO $6.99",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "grocery",
+    "bogo"
+   ],
+   "brand": "Kraft"
+  },
+  "expect": {
+   "kind": "bogo",
+   "headline": "Buy 1 Get 1 Free",
+   "context": "≈ $3.50 ea when you buy 2",
+   "save_text": "Save up to $6.99",
+   "price": 3.5,
+   "save": 3.5,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "9974ac39-b735-436f-88b1-4028e61e8541",
+   "title": "General Mills Cheerios Cereal",
+   "savings": "Buy 1 Get 1 FREE",
+   "additionalSavings": "Save $1.00",
+   "additionalDealInfo": "SAVE UP TO $8.99",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "Stacked",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "grocery",
+    "bogo"
+   ],
+   "brand": "General Mills"
+  },
+  "expect": {
+   "kind": "bogo",
+   "headline": "Buy 1 Get 1 Free",
+   "context": "≈ $4.50 ea when you buy 2",
+   "save_text": "Save up to $8.99",
+   "price": 4.5,
+   "save": 4.5,
+   "extra": "+ $1 off with digital coupon"
+  }
+ },
+ {
+  "raw": {
+   "id": "e416207c-2afb-4874-87fb-aaf3cd56dccb",
+   "title": "Premier Protein Ready to Drink Protein Shake",
+   "savings": "$2.00 Off",
+   "additionalSavings": null,
+   "additionalDealInfo": "SAVE $2.00",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "health-and-nutrition",
+    "protein"
+   ],
+   "brand": "Premier Protein"
+  },
+  "expect": {
+   "kind": "amount_off",
+   "headline": "$2 off",
+   "context": null,
+   "save_text": "Save $2",
+   "price": null,
+   "save": 2.0,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "834ac055-3ff2-46c2-8e34-2449a7f520cb",
+   "title": "Pantene Pro-V Shampoo or Conditioner",
+   "savings": "Buy 2 Get $3.00 Off",
+   "additionalSavings": null,
+   "additionalDealInfo": "SAVE $3.00 ON 2",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "beauty-and-personal-care"
+   ],
+   "brand": "Pantene"
+  },
+  "expect": {
+   "kind": "amount_off",
+   "headline": "Buy 2, get $3 off",
+   "context": null,
+   "save_text": "Save $3 on 2",
+   "price": null,
+   "save": 1.5,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "cbc80829-6b3d-43ca-a899-94ecf323dbd9",
+   "title": "Meow Mix Cat Food",
+   "savings": "Buy 1 Get 1 FREE",
+   "additionalSavings": null,
+   "additionalDealInfo": "new, SAVE UP TO $7.49",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "pet",
+    "bogo",
+    "new"
+   ],
+   "brand": "Meow Mix"
+  },
+  "expect": {
+   "kind": "bogo",
+   "headline": "Buy 1 Get 1 Free",
+   "context": "≈ $3.75 ea when you buy 2",
+   "save_text": "Save up to $7.49",
+   "price": 3.75,
+   "save": 3.75,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "bc39dd15-414c-43a5-9618-f5f909ac2471",
+   "title": "Huggies Diapers",
+   "savings": "2 for $18.00",
+   "additionalSavings": "Save $1.50",
+   "additionalDealInfo": "SAVE UP TO $4.78 ON 2",
+   "finalPrice": 9.0,
+   "originalDeal": 0.0,
+   "savingType": "Stacked",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "baby"
+   ],
+   "brand": "Huggies"
+  },
+  "expect": {
+   "kind": "multi",
+   "headline": "2 for $18",
+   "context": "$9.00 ea",
+   "save_text": "Save up to $4.78 on 2",
+   "price": 9.0,
+   "save": 2.39,
+   "extra": "+ $1.50 off with digital coupon"
+  }
+ },
+ {
+  "raw": {
+   "id": "90ed3375-3e03-4b5c-b04f-3982f7dd95e1",
+   "title": "Heirloom Pumpkins",
+   "savings": "$7.49 each",
+   "additionalSavings": null,
+   "additionalDealInfo": "SURPRISINGLY LOW PRICE",
+   "finalPrice": 7.49,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "produce"
+   ],
+   "brand": "Other"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$7.49",
+   "context": "Low price",
+   "save_text": null,
+   "price": 7.49,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "91e3ff2c-6f30-4c43-abd1-f8f7a697d6df",
+   "title": "Large Pumpkins",
+   "savings": "$7.49 Each",
+   "additionalSavings": null,
+   "additionalDealInfo": "SURPRISINGLY LOW PRICE",
+   "finalPrice": 7.49,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "produce"
+   ],
+   "brand": "Other"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$7.49",
+   "context": "Low price",
+   "save_text": null,
+   "price": 7.49,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "8a711789-54c5-4413-9557-03511e7dbbf4",
+   "title": "Tutto Baguette",
+   "savings": "$4.99",
+   "additionalSavings": null,
+   "additionalDealInfo": "SURPRISINGLY LOW PRICE",
+   "finalPrice": 4.99,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "bakery"
+   ],
+   "brand": "Publix"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$4.99",
+   "context": "Low price",
+   "save_text": null,
+   "price": 4.99,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "41987115-9f9f-47e0-846e-5c06634cf04f",
+   "title": "Publix Pork Shoulder Blade Steaks",
+   "savings": "Buy 1 Get 1 FREE",
+   "additionalSavings": null,
+   "additionalDealInfo": "SAVE UP TO $4.49 LB",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "meat",
+    "bogo"
+   ],
+   "brand": "Publix"
+  },
+  "expect": {
+   "kind": "bogo",
+   "headline": "Buy 1 Get 1 Free",
+   "context": "≈ $2.25/lb when you buy 2",
+   "save_text": "Save up to $4.49/lb",
+   "price": 2.25,
+   "save": 2.25,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "76b41636-451b-4524-b46b-32194868855c",
+   "title": "Key West Sunset Bouquet",
+   "savings": "$15.99 Each",
+   "additionalSavings": null,
+   "additionalDealInfo": "SAVE UP TO $1.00",
+   "finalPrice": 15.99,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "floral"
+   ],
+   "brand": "Other"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$15.99",
+   "context": null,
+   "save_text": "Save up to $1",
+   "price": 15.99,
+   "save": 1.0,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "4a5cdce8-8155-4b29-8676-2df750f69ab7",
+   "title": "Red or White Seedless Grapes",
+   "savings": "$2.99 lb",
+   "additionalSavings": null,
+   "additionalDealInfo": "SURPRISINGLY LOW PRICE",
+   "finalPrice": 2.99,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "produce"
+   ],
+   "brand": "Other"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$2.99/lb",
+   "context": "Low price",
+   "save_text": null,
+   "price": 2.99,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "905349c4-efad-496c-af10-bed6598b0d9c",
+   "title": "Cookie Butter Brownies",
+   "savings": "$5.99",
+   "additionalSavings": null,
+   "additionalDealInfo": "SAVE UP TO $0.50, limited time",
+   "finalPrice": 5.99,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "bakery"
+   ],
+   "brand": "Publix"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$5.99",
+   "context": "Limited time",
+   "save_text": "Save up to $0.50",
+   "price": 5.99,
+   "save": 0.5,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "5da9fdc2-4c68-46fb-8931-13f8be6ae904",
+   "title": "Fresh Express Lettuce Shreds",
+   "savings": "2 for $6.00",
+   "additionalSavings": null,
+   "additionalDealInfo": "Save Up To $1.78 on 2",
+   "finalPrice": 6.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "produce"
+   ],
+   "brand": "Fresh Express"
+  },
+  "expect": {
+   "kind": "multi",
+   "headline": "2 for $6",
+   "context": "$3.00 ea",
+   "save_text": "Save up to $1.78 on 2",
+   "price": 3.0,
+   "save": 0.89,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "fe96e26c-4c38-44be-b4a5-6777096e03f1",
+   "title": "Market Ground Beef",
+   "savings": "$4.99 lb",
+   "additionalSavings": null,
+   "additionalDealInfo": "Save Up To $3.80 lb",
+   "finalPrice": 4.99,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "meat"
+   ],
+   "brand": "Publix"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$4.99/lb",
+   "context": null,
+   "save_text": "Save up to $3.80/lb",
+   "price": 4.99,
+   "save": 3.8,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "f35d7de1-b682-482c-a1b4-4085f0e131b3",
+   "title": "Coca-Cola Products",
+   "savings": "Buy 2 Get 2 FREE",
+   "additionalSavings": null,
+   "additionalDealInfo": "Save Up To $8.30 ON 4",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "grocery",
+    "beverages"
+   ],
+   "brand": "Coca-Cola"
+  },
+  "expect": {
+   "kind": "bogo",
+   "headline": "Buy 2 Get 2 Free",
+   "context": "≈ $2.08 ea when you buy 4",
+   "save_text": "Save up to $8.30 on 4",
+   "price": 2.08,
+   "save": 2.08,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "9c652479-4275-44db-a0e9-a82eb9dac803",
+   "title": "Honeycrisp Apples",
+   "savings": "$4.99",
+   "additionalSavings": null,
+   "additionalDealInfo": "Save Up To $3.26",
+   "finalPrice": 4.99,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "produce"
+   ],
+   "brand": "Honeycrisp Apples"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$4.99",
+   "context": null,
+   "save_text": "Save up to $3.26",
+   "price": 4.99,
+   "save": 3.26,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "5e4f83a7-2f0c-4f51-92b4-8fb31a5eac89",
+   "title": "Mission Tortillas",
+   "savings": "Buy 1 Get 1 FREE",
+   "additionalSavings": null,
+   "additionalDealInfo": "Save Up To $5.99",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "grocery",
+    "bogo"
+   ],
+   "brand": "Mission"
+  },
+  "expect": {
+   "kind": "bogo",
+   "headline": "Buy 1 Get 1 Free",
+   "context": "≈ $3.00 ea when you buy 2",
+   "save_text": "Save up to $5.99",
+   "price": 3.0,
+   "save": 3.0,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "132bb865-0c74-46eb-93b2-3441d53254f7",
+   "title": "Publix Cooked Shrimp",
+   "savings": "$16.49",
+   "additionalSavings": "Save $1.00",
+   "additionalDealInfo": "Save Up To $6.00",
+   "finalPrice": 16.49,
+   "originalDeal": 0.0,
+   "savingType": "Stacked",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "seafood"
+   ],
+   "brand": "Publix"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$16.49",
+   "context": null,
+   "save_text": "Save up to $6",
+   "price": 16.49,
+   "save": 6.0,
+   "extra": "+ $1 off with digital coupon"
+  }
+ },
+ {
+  "raw": {
+   "id": "91739678-4a4b-4a90-b7c5-4532fb2e1242",
+   "title": "Colgate Optic White Stain Fighter Toothpaste",
+   "savings": "2 for $8.00",
+   "additionalSavings": "Save $2.00",
+   "additionalDealInfo": "Save Up To $1.50 on 2",
+   "finalPrice": 8.0,
+   "originalDeal": 0.0,
+   "savingType": "Stacked",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "beauty-and-personal-care"
+   ],
+   "brand": "Colgate"
+  },
+  "expect": {
+   "kind": "multi",
+   "headline": "2 for $8",
+   "context": "$4.00 ea",
+   "save_text": "Save up to $1.50 on 2",
+   "price": 4.0,
+   "save": 0.75,
+   "extra": "+ $2 off with digital coupon"
+  }
+ },
+ {
+  "raw": {
+   "id": "f419af9e-2da9-4ad7-a75c-26ada6bb6997",
+   "title": "100 Coconut Water, Pure",
+   "savings": "$0.24",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 2.15,
+   "originalDeal": 2.39,
+   "savingType": "Tpr",
+   "wa_promotionTypeId": 0,
+   "categories": [
+    "grocery"
+   ],
+   "brand": "100"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$2.15",
+   "context": "was $2.39",
+   "save_text": "Save $0.24",
+   "price": 2.15,
+   "save": 0.24,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "cdf51a3e-08d3-4131-bcc5-463df8a15d1f",
+   "title": "Save $2.00 on any ONE (1) ARM &amp; HAMMER&trade; In-Wash Scent Boosters",
+   "savings": "Save $2.00",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "DigitalCoupon",
+   "wa_promotionTypeId": 0,
+   "categories": [
+    "non-foods"
+   ],
+   "brand": "A&amp;H"
+  },
+  "expect": {
+   "kind": "coupon",
+   "headline": "$2 off",
+   "context": "with digital coupon",
+   "save_text": null,
+   "price": null,
+   "save": 2.0,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "c7bc550b-3244-4d92-8aa6-ba5ca90e85a0",
+   "title": "Aleve Tablets, Caplets or Back &amp; Muscle 50-ct. OR Bayer 100&ndash;200-ct.",
+   "savings": "$7.99",
+   "additionalSavings": null,
+   "additionalDealInfo": "your choice",
+   "finalPrice": 7.99,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "health-and-nutrition"
+   ],
+   "brand": "Aleve"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$7.99",
+   "context": "Your choice",
+   "save_text": null,
+   "price": 7.99,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "cbca857e-d2a4-41be-8225-e5e42e32dbf1",
+   "title": "Alouette Spreadable Cheese",
+   "savings": "$4.49",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 4.49,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "deli"
+   ],
+   "brand": "Alouette"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$4.49",
+   "context": null,
+   "save_text": null,
+   "price": 4.49,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "db1792bb-12c5-477d-90ed-8d4ebef47635",
+   "title": "Always Discreet Pads",
+   "savings": "Buy 2 Get $7.00 off",
+   "additionalSavings": null,
+   "additionalDealInfo": "your choice",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "beauty-and-personal-care"
+   ],
+   "brand": "Always"
+  },
+  "expect": {
+   "kind": "amount_off",
+   "headline": "Buy 2, get $7 off",
+   "context": "Your choice",
+   "save_text": "Save $7 on 2",
+   "price": null,
+   "save": 3.5,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "5913ae45-1ae4-490e-a63c-36f61ac351c2",
+   "title": "Arizona Tea",
+   "savings": "2 for $6.00",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 3.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "grocery"
+   ],
+   "brand": "Arizona"
+  },
+  "expect": {
+   "kind": "multi",
+   "headline": "2 for $6",
+   "context": "$3.00 ea",
+   "save_text": null,
+   "price": 3.0,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "8c5e67e0-758f-4c77-89b8-cab97c615567",
+   "title": "Arm &amp; Hammer Fabric Softener Sheets",
+   "savings": "Buy 1 Get 1 FREE",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "non-foods",
+    "bogo"
+   ],
+   "brand": "Arm &amp; Hammer"
+  },
+  "expect": {
+   "kind": "bogo",
+   "headline": "Buy 1 Get 1 Free",
+   "context": null,
+   "save_text": null,
+   "price": null,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "fa600b23-cd80-401d-91d0-beeeac232bf5",
+   "title": "Any 1 Banquet Mega Chicken Tenders or Filets",
+   "savings": "$2.00 off WITH MFR DIGITAL COUPON",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "frozen-food"
+   ],
+   "brand": "Banquet"
+  },
+  "expect": {
+   "kind": "amount_off",
+   "headline": "$2 off",
+   "context": "with digital coupon",
+   "save_text": null,
+   "price": null,
+   "save": 2.0,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "15f322df-11c1-421a-9152-54da833f736a",
+   "title": "Boar&#39;s Head&reg; Baby Swiss Round Cheese",
+   "savings": "$10.99 lb",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 10.99,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "deli",
+    "order-now"
+   ],
+   "brand": "Boar&#39;s Head"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$10.99/lb",
+   "context": null,
+   "save_text": null,
+   "price": 10.99,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "177736ab-83b1-4438-8102-15979857782d",
+   "title": "$3 off When You Spend $15 on Bob Evans or Simply Potatoes Products",
+   "savings": "$3.00 off $15.00 WITH MFR DIGITAL COUPON",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "meat"
+   ],
+   "brand": "Bob Evans"
+  },
+  "expect": {
+   "kind": "amount_off",
+   "headline": "$3 off $15",
+   "context": "with digital coupon",
+   "save_text": null,
+   "price": null,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "d23b87c6-8137-4baa-bda2-4d4f9e89ff33",
+   "title": "Chicken of the Sea Chunk Light Tuna in Water",
+   "savings": "$2.99",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 2.99,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "grocery"
+   ],
+   "brand": "Chicken of the Sea"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$2.99",
+   "context": null,
+   "save_text": null,
+   "price": 2.99,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "84b32eb6-9f26-4585-aaa5-e9fc7dac1f81",
+   "title": "Claritin Allergy Relief Medicine",
+   "savings": "$4.00 Off",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "health-and-nutrition"
+   ],
+   "brand": "Claritin"
+  },
+  "expect": {
+   "kind": "amount_off",
+   "headline": "$4 off",
+   "context": null,
+   "save_text": null,
+   "price": null,
+   "save": 4.0,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "59504804-be64-490e-a7df-93810b511f0f",
+   "title": "Buy Any 1 Coca-Cola 20-oz Product and Get Any 1 Fanta Branded 20-oz Free",
+   "savings": "Buy Any 1 &amp; Get Any 1 Free WITH MFR DIGITAL COUPON",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "grocery"
+   ],
+   "brand": "Coca-Cola"
+  },
+  "expect": {
+   "kind": "bogo",
+   "headline": "Buy 1 Get 1 Free",
+   "context": "with digital coupon",
+   "save_text": null,
+   "price": null,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "b1b070cb-f6e6-426e-b046-b2a516b390dd",
+   "title": "Buy any ONE (1) Coca-Cola 20oz Soft Drinks Product and Get any ONE (1) Fanta Product Free (Excludes Dr Pepper and Dasani)",
+   "savings": "Free with purchase",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "DigitalCoupon",
+   "wa_promotionTypeId": 0,
+   "categories": [
+    "grocery",
+    "beverages",
+    "bogo"
+   ],
+   "brand": "Coca-Cola, Fanta"
+  },
+  "expect": {
+   "kind": "free",
+   "headline": "Free",
+   "context": "with purchase · with digital coupon",
+   "save_text": null,
+   "price": null,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "3cd67f17-914e-4ae3-b7c1-53eca3395858",
+   "title": "Dawn Dishwashing Liquid",
+   "savings": "2/$10.00",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 5.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "non-foods"
+   ],
+   "brand": "Dawn"
+  },
+  "expect": {
+   "kind": "multi",
+   "headline": "2 for $10",
+   "context": "$5.00 ea",
+   "save_text": null,
+   "price": 5.0,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "dc5e0dff-32de-4a6e-bb33-b324010983d8",
+   "title": "Buy Any 1 Degree Deodorant Dry Spray or Whole Body 2.9&ndash;3.8-oz and Get 1 Free",
+   "savings": "Buy Any 1 and Get 1 Free WITH MFR DIGITAL COUPON",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "beauty-and-personal-care"
+   ],
+   "brand": "Degree"
+  },
+  "expect": {
+   "kind": "bogo",
+   "headline": "Buy 1 Get 1 Free",
+   "context": "with digital coupon",
+   "save_text": null,
+   "price": null,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "be7944ff-bab2-4f2b-b1a6-1222c7b7a1fc",
+   "title": "Buy any ONE (1) Degree Deodorant Dry Spray or Whole Body 2.9-3.8-oz and Get ONE (1) FREE (equal or lesser value)",
+   "savings": "Buy 1 Get 1 Free",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "DigitalCoupon",
+   "wa_promotionTypeId": 0,
+   "categories": [
+    "beauty-and-personal-care",
+    "bogo"
+   ],
+   "brand": "Degree"
+  },
+  "expect": {
+   "kind": "bogo",
+   "headline": "Buy 1 Get 1 Free",
+   "context": "with digital coupon",
+   "save_text": null,
+   "price": null,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "eb56164c-08d7-4b3c-a38b-9df9fb5168fd",
+   "title": "Desitin Diaper Rash 4&ndash;16-oz or Johnson&#39;s Baby 27.1-oz",
+   "savings": "$2.00 off",
+   "additionalSavings": null,
+   "additionalDealInfo": "your choice",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "baby"
+   ],
+   "brand": "Desitin"
+  },
+  "expect": {
+   "kind": "amount_off",
+   "headline": "$2 off",
+   "context": "Your choice",
+   "save_text": null,
+   "price": null,
+   "save": 2.0,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "e7eb16c7-5ee8-474a-97d6-91060822a18e",
+   "title": "EOS Body Lotion or Shave Cream",
+   "savings": "20% Off",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "beauty-and-personal-care"
+   ],
+   "brand": "EOS"
+  },
+  "expect": {
+   "kind": "pct_off",
+   "headline": "20% off",
+   "context": null,
+   "save_text": null,
+   "price": null,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "7ad38d37-7583-4a89-84ae-0be7e9310ae5",
+   "title": "Flonase",
+   "savings": "$8.00 off",
+   "additionalSavings": null,
+   "additionalDealInfo": "new",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "health-and-nutrition",
+    "new"
+   ],
+   "brand": "Flonase"
+  },
+  "expect": {
+   "kind": "amount_off",
+   "headline": "$8 off",
+   "context": null,
+   "save_text": null,
+   "price": null,
+   "save": 8.0,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "a879a799-d7ab-41d0-92f4-2cd37e9f6295",
+   "title": "Green Giant Specialty Corn",
+   "savings": "3 for $5.00",
+   "additionalSavings": null,
+   "additionalDealInfo": "your choice",
+   "finalPrice": 1.67,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "grocery"
+   ],
+   "brand": "Green Giant"
+  },
+  "expect": {
+   "kind": "multi",
+   "headline": "3 for $5",
+   "context": "$1.67 ea",
+   "save_text": null,
+   "price": 1.67,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "fececccf-e6ee-4d99-a069-160bd2de17ac",
+   "title": "Halloween Party Supplies",
+   "savings": "From $1.99",
+   "additionalSavings": null,
+   "additionalDealInfo": "SURPRISINGLY LOW PRICE",
+   "finalPrice": 1.99,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "housewares"
+   ],
+   "brand": "Halloween"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "From $1.99",
+   "context": "Low price",
+   "save_text": null,
+   "price": 1.99,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "31e82d34-1c36-44c8-82a3-5350eb50ec2f",
+   "title": "Lactaid Sour Cream",
+   "savings": "2 for $5.00",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 2.5,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "dairy"
+   ],
+   "brand": "Lactaid"
+  },
+  "expect": {
+   "kind": "multi",
+   "headline": "2 for $5",
+   "context": "$2.50 ea",
+   "save_text": null,
+   "price": 2.5,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "95d5dd0a-1f30-4668-a179-ac4279450681",
+   "title": "Cado Frozen Dessert",
+   "savings": "Buy 1 Get 1 FREE",
+   "additionalSavings": null,
+   "additionalDealInfo": "your choice",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "frozen-food",
+    "bogo"
+   ],
+   "brand": "Other"
+  },
+  "expect": {
+   "kind": "bogo",
+   "headline": "Buy 1 Get 1 Free",
+   "context": "Your choice",
+   "save_text": null,
+   "price": null,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "ef1c9c17-c690-4316-8a6f-801c9b23f09f",
+   "title": "Humann SuperBeets Heart Chews or Gummies OR Cholesterol Health",
+   "savings": "25% off",
+   "additionalSavings": null,
+   "additionalDealInfo": "your choice",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "health-and-nutrition"
+   ],
+   "brand": "Other"
+  },
+  "expect": {
+   "kind": "pct_off",
+   "headline": "25% off",
+   "context": "Your choice",
+   "save_text": null,
+   "price": null,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "82bb43a6-22d1-41d3-a581-584571fc99a3",
+   "title": "5-Piece Fried Shrimp or 3-Piece Fried Wing Quick Bites",
+   "savings": "$5.00 each",
+   "additionalSavings": null,
+   "additionalDealInfo": null,
+   "finalPrice": 5.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "deli",
+    "order-now"
+   ],
+   "brand": "Other"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$5.00",
+   "context": null,
+   "save_text": null,
+   "price": 5.0,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "852d1364-1099-4374-a25b-e3656d48ebca",
+   "title": "Pampers Baby Wipes",
+   "savings": "Sale Price $6.99",
+   "additionalSavings": null,
+   "additionalDealInfo": "your choice",
+   "finalPrice": 6.99,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "baby"
+   ],
+   "brand": "Pampers"
+  },
+  "expect": {
+   "kind": "price",
+   "headline": "$6.99",
+   "context": "Your choice",
+   "save_text": null,
+   "price": 6.99,
+   "save": null,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "535bc7cc-52e8-4fcb-ac8f-8f50a3c06134",
+   "title": "Softsoap Body Wash",
+   "savings": "2 for $10.00",
+   "additionalSavings": "Save $2.00",
+   "additionalDealInfo": null,
+   "finalPrice": 5.0,
+   "originalDeal": 0.0,
+   "savingType": "Stacked",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "beauty-and-personal-care"
+   ],
+   "brand": "Softsoap"
+  },
+  "expect": {
+   "kind": "multi",
+   "headline": "2 for $10",
+   "context": "$5.00 ea",
+   "save_text": null,
+   "price": 5.0,
+   "save": null,
+   "extra": "+ $2 off with digital coupon"
+  }
+ },
+ {
+  "raw": {
+   "id": "6f0a15a6-19b0-4d8c-ae67-e521c8b23dd3",
+   "title": "Steak-Umm Sandwich Steaks",
+   "savings": "Buy 1 Get 1 FREE",
+   "additionalSavings": null,
+   "additionalDealInfo": "Save Up To $13.39",
+   "finalPrice": 6.49,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 1,
+   "categories": [
+    "meat",
+    "bogo"
+   ],
+   "brand": "Steak-umm"
+  },
+  "expect": {
+   "kind": "bogo",
+   "headline": "Buy 1 Get 1 Free",
+   "context": "≈ $3.25 ea when you buy 2",
+   "save_text": "Save up to $13.39",
+   "price": 3.25,
+   "save": 6.7,
+   "extra": null
+  }
+ },
+ {
+  "raw": {
+   "id": "e52b24a4-dfbc-4193-a3f4-7d84021ca0d9",
+   "title": "Any 1 Adult Zyrtec Allergen Shield Spray",
+   "savings": "$5.00 off WITH MFR DIGITAL COUPON",
+   "additionalSavings": null,
+   "additionalDealInfo": "new",
+   "finalPrice": 0.0,
+   "originalDeal": 0.0,
+   "savingType": "WeeklyAd",
+   "wa_promotionTypeId": 4,
+   "categories": [
+    "health-and-nutrition",
+    "new"
+   ],
+   "brand": "Zyrtec"
+  },
+  "expect": {
+   "kind": "amount_off",
+   "headline": "$5 off",
+   "context": "with digital coupon",
+   "save_text": null,
+   "price": null,
+   "save": 5.0,
+   "extra": null
+  }
+ }
+]
