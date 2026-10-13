@@ -254,6 +254,28 @@ Test plan: `docs/v9.4-test-plan.md`.
 - [x] `--ink-soft` #8a8a8a → #6b6b6b (4.5:1); Load-more hover no longer turns pale green on white text
 - [ ] Copy pass on "set your notification email" and panel titles vs nav labels (not touched)
 
+### v9.5: Accounts and security ✅ staging-tested 2026-10-12, production deploy next — test plan `docs/v9.5-test-plan.md`
+- [x] Sessions of deleted accounts or changed emails are rejected; account delete, admin delete and admin email change revoke every session for that email
+- [x] `UNSUB_SECRET` fails closed (no `changeme` default)
+- [x] Verification link URL-encodes the email (plus addresses) and the email HTML is escaped
+- [x] "Account created!" no longer shown for an existing email (enumeration-safe server answer unchanged)
+- [x] Sign-out clears the previous user's cards, matches and caches from the page
+- [x] Admin "Last run" and inbound logs read the full table, newest first (#13 complete)
+- [x] "Users Deleted" counts self-deletes and monthly cleanup
+- [x] Admin sessions are bound to the current `ADMIN_SECRET`; rotating it ends them
+- [ ] Rotate the Resend API key and admin secrets (exposed in chat 2026-10-12): **not doing this; Ben accepted the risk 2026-10-12.** Steps remain in the v9.5 test plan if that changes. Never rotate `UNSUB_SECRET`.
+
+### v9.6: Data accuracy and ops (next)
+- [ ] `_week_start()` doesn't parse Publix "M/D" dates; a manual Mon/Tue scrape labels last week's ad as the new week
+- [ ] Investigate and clean the 2026-03-30 history snapshot (3,257 deals; likely staging writing to production tables)
+- [ ] "↻ Refresh" doesn't refresh (`forceRefresh` unused; responses cached 5 min)
+- [ ] Schedule copy "8:00 AM ET" vs the fixed-UTC cron (7 AM Nov–Mar): fix the copy or use an EventBridge Scheduler time zone
+- [ ] Admin retention note and the `deploy.sh` throttling message don't match the code
+
+### v9.7: Inbound email import
+- [ ] Resend `/emails/receiving/{id}` returns 403 (open since v9.1): key permissions and endpoint version
+- [ ] `added_items` log lists the first N parsed, not the ones added; two inbound events have no admin label; unknown senders aren't logged
+
 ### Batch 6: Hygiene (ride-along)
 - [x] Delete `lambda/api.py` (stale duplicate parser, never deployed) and the unused `rapidfuzz` install (v9.3)
 - [ ] Dead CSS/JS (old `.badge-*`, `savingsDisplayLegacy` once no pre-v9.3 cache rows remain) and duplicate test classes

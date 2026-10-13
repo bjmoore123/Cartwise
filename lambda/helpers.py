@@ -34,7 +34,11 @@ corpus_tbl          = dynamodb.Table(os.environ.get("CORPUS_TABLE",   "cartwise-
 ADMIN_SECRET     = (os.environ.get("ADMIN_SECRET", "") or "").strip()
 SCRAPER_FUNCTION = os.environ.get("SCRAPER_FUNCTION", "cartwise-scraper")
 LOG_GROUP        = f"/aws/lambda/{SCRAPER_FUNCTION}"
-UNSUB_SECRET     = (os.environ.get("UNSUB_SECRET", "changeme-set-in-deploy") or "").strip()
+# v9.5: no default. Empty means unsubscribe links are neither issued nor accepted
+# (fail closed); deploy.sh always sets it.
+UNSUB_SECRET     = (os.environ.get("UNSUB_SECRET", "") or "").strip()
+if UNSUB_SECRET == "changeme-set-in-deploy":
+    UNSUB_SECRET = ""
 # ASCII-only email validation — RFC 5321 printable characters, no Unicode.
 # Local part: alphanumeric + !#$%&'*+/=?^_`{|}~.- 
 # Domain: alphanumeric + hyphen + dot, TLD >= 2 chars, no leading/trailing hyphens.
@@ -258,6 +262,8 @@ def verify_pin(pin: str, stored_hash: str) -> bool:
 # ── Unsubscribe token helpers ─────────────────────────────────────────────────
 
 def _unsub_token(email: str) -> str:
+    if not UNSUB_SECRET:
+        raise RuntimeError("UNSUB_SECRET is not configured")
     return hmac.new(
         UNSUB_SECRET.encode(),
         email.lower().strip().encode(),
@@ -265,6 +271,8 @@ def _unsub_token(email: str) -> str:
     ).hexdigest()
 
 def _verify_unsub_token(email: str, token: str) -> bool:
+    if not UNSUB_SECRET:
+        return False
     expected = _unsub_token(email)
     return hmac.compare_digest(expected, token.lower().strip())
 
@@ -294,14 +302,65 @@ def get_session(event):
     if email and email != "__admin__":
         try:
             user = users_table.get_item(Key={"email": email}).get("Item")
-            if user:
-                valid_after      = int(user.get("valid_after", 0))
-                session_created  = int(item.get("session_created_at", 0))
-                if valid_after and session_created and session_created < valid_after:
-                    return None
+            # v9.5: a session whose account no longer exists (deleted, or the email was
+            # changed by an admin) is dead. Before, it kept working for its full 30 days.
+            if not user:
+                return None
+            valid_after      = int(user.get("valid_after", 0))
+            session_created  = int(item.get("session_created_at", 0))
+            if valid_after and session_created and session_created < valid_after:
+                return None
         except Exception:
-            pass  # never let this check break auth
+            pass  # a DynamoDB hiccup must not log everyone out
     return item
+
+
+def _scan_all(table, **kwargs) -> list:
+    """Every item of a table (or a filtered subset), following pagination.
+
+    v9.5: DynamoDB `Scan(Limit=N)` caps items *examined* in hash order, so a
+    single limited page is an arbitrary sample, not the newest rows. The log
+    tables are bounded by TTL, so reading them fully is cheap.
+    """
+    items, resp = [], table.scan(**kwargs)
+    items.extend(resp.get("Items", []))
+    while "LastEvaluatedKey" in resp:
+        resp = table.scan(ExclusiveStartKey=resp["LastEvaluatedKey"], **kwargs)
+        items.extend(resp.get("Items", []))
+    return items
+
+
+def revoke_sessions(email: str) -> int:
+    """Delete every session for an account (v9.5). Sessions are keyed by token with
+    no email index, so this scans the (TTL-bounded) sessions table."""
+    from boto3.dynamodb.conditions import Attr
+    n = 0
+    try:
+        for item in _scan_all(sessions_table, FilterExpression=Attr("email").eq(email),
+                              ProjectionExpression="#t", ExpressionAttributeNames={"#t": "token"}):
+            sessions_table.delete_item(Key={"token": item["token"]})
+            n += 1
+    except Exception as e:
+        print(f"[CW] revoke_sessions({email}) failed: {e}")
+    return n
+
+
+def count_deleted_user():
+    """Bump the "Users Deleted" admin stat (v9.5: self-deletes and cleanup count too)."""
+    try:
+        users_table.update_item(
+            Key={"email": "__meta__"},
+            UpdateExpression="ADD deleted_count :one SET last_deleted_at = :ts",
+            ExpressionAttributeValues={":one": 1, ":ts": datetime.now(timezone.utc).isoformat()},
+        )
+    except Exception as e:
+        print(f"[CW] count_deleted_user: {e}")
+
+
+def admin_secret_fp() -> str:
+    """Short fingerprint of the current ADMIN_SECRET (v9.5). Admin sessions record it at
+    login, so rotating the secret ends every admin session made with the old one."""
+    return hashlib.sha256(("cw-admin:" + ADMIN_SECRET).encode()).hexdigest()[:16] if ADMIN_SECRET else ""
 
 
 def get_admin_auth(event) -> bool:
@@ -327,6 +386,8 @@ def get_admin_auth(event) -> bool:
     try:
         item = admin_sessions_tbl.get_item(Key={"token": token}).get("Item")
         if not item: return False
+        if item.get("secret_fp") != admin_secret_fp():   # v9.5: secret rotated (or pre-v9.5 session)
+            return False
         now_ts = int(datetime.now(timezone.utc).timestamp())
         return item.get("expires_at", 0) >= now_ts
     except Exception as e:

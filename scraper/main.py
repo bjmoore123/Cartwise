@@ -420,6 +420,14 @@ def purge_inactive_users() -> None:
         try:
             users_table.delete_item(Key={"email": email})
             deleted.append(email)
+            try:                                    # v9.5: count in Admin "Users Deleted"
+                users_table.update_item(
+                    Key={"email": "__meta__"},
+                    UpdateExpression="ADD deleted_count :one SET last_deleted_at = :ts",
+                    ExpressionAttributeValues={":one": 1, ":ts": datetime.now(timezone.utc).isoformat()},
+                )
+            except Exception as e:
+                print(f"  WARNING: deleted_count update failed: {e}")
             print(f"  Deleted: {email} ({', '.join(reason)}, created {created_at[:10]})")
 
             now = datetime.now(timezone.utc).isoformat()

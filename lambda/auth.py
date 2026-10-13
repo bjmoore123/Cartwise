@@ -9,6 +9,8 @@ the user clicks the link in the verification email sent at registration.
 import os
 import re
 import secrets
+import urllib.parse
+from html import escape as _esc
 from datetime import datetime, timezone, timedelta
 
 from helpers import (
@@ -35,16 +37,17 @@ def _send_verification_email(email: str, token: str) -> None:
         print("[CW] _send_verification_email: no RESEND_API_KEY -- skipping")
         return
 
-    verify_url = f"{API_URL}/auth/verify-email?token={token}&email={email}"
+    # v9.5: encode the query; a raw "+" (ben+test@x.com) arrives as a space and fails verification
+    verify_url = f"{API_URL}/auth/verify-email?" + urllib.parse.urlencode({"token": token, "email": email})
     app_url    = FRONTEND_URL or "#"
 
     html = f"""<!DOCTYPE html>
 <html><body style="font-family:sans-serif;max-width:480px;margin:32px auto;color:#1a1a1a">
   <h2 style="color:#1a6b3c">Verify your Cartwise email</h2>
-  <p>Thanks for signing up! Click below to verify <strong>{email}</strong>
+  <p>Thanks for signing up! Click below to verify <strong>{_esc(email)}</strong>
      and activate weekly deal alerts.</p>
   <p style="margin:24px 0">
-    <a href="{verify_url}"
+    <a href="{_esc(verify_url)}"
        style="background:#1a6b3c;color:#fff;padding:12px 24px;border-radius:8px;
               text-decoration:none;font-weight:600;display:inline-block">
       Verify Email Address

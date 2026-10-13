@@ -8,7 +8,7 @@ import urllib.parse
 
 from helpers import (
     ok, err, _to_py, get_session,
-    users_table, sessions_table,
+    users_table, sessions_table, revoke_sessions, count_deleted_user,
     DEFAULT_PREFS, ALLOWED_PREF_KEYS,
     FRONTEND_URL, API_URL,
     UNSUB_SECRET, _verify_unsub_token,
@@ -75,6 +75,8 @@ def delete_account(event):
     if not sess: return err("Not authenticated.", 401)
     users_table.delete_item(Key={"email": sess["email"]})
     sessions_table.delete_item(Key={"token": sess.get("token", "")})
+    revoke_sessions(sess["email"])              # v9.5: every other device too
+    count_deleted_user()
     return ok({"message": "Account deleted."})
 
 

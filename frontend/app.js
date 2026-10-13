@@ -3,6 +3,42 @@
 // ═══════════════════════════════════════════════════════════════════
 const API = window.CARTWISE_API_URL || 'https://YOUR_API_GATEWAY_URL';
 
+// ── v9.5: notice when the session ends elsewhere ──────────────────────────────
+// Deleting the account, an admin email change, or a PIN reset revokes sessions on
+// the server. Before, other open tabs kept showing the app (and failing quietly)
+// until a full reload. Any 401 from a user endpoint now returns to sign-in, and
+// the session is re-checked when the tab regains focus and every 5 minutes.
+const _cwFetch = window.fetch.bind(window);
+window.fetch = async function(input, init) {
+  const res = await _cwFetch(input, init);
+  try {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (res.status === 401 && url.startsWith(API) && !/\/(auth|admin)\/|\/user\/unsubscribe/.test(url)) {
+      sessionEnded();
+    }
+  } catch (_) {}
+  return res;
+};
+let _lastSessionCheck = 0;
+function checkSession(force) {
+  if (typeof userEmail === 'undefined' || !userEmail) return;
+  const now = Date.now();
+  if (!force && now - _lastSessionCheck < 60000) return;   // at most once a minute
+  _lastSessionCheck = now;
+  fetch(API + '/user/prefs', {credentials:'include', cache:'no-store'}).catch(() => {});  // 401 → sessionEnded()
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkSession(); });
+window.addEventListener('focus', () => checkSession());
+setInterval(() => checkSession(true), 5 * 60 * 1000);
+function sessionEnded() {
+  if (typeof userEmail === 'undefined' || !userEmail) return;   // already signed out
+  try { closeDealModal(); } catch (_) {}
+  try { toggleFilterSheet(false); } catch (_) {}
+  document.querySelectorAll('.overlay.vis').forEach(o => o.classList.remove('vis'));
+  doLogout({ local: true });
+  setMsg('auth-msg', 'Your session has ended. Please sign in again.', 'err');
+}
+
 // PDC-05: session token travels in HttpOnly cookie (SameSite=Lax; Secure).
 // Browser sends it automatically on all requests to *.cartwise.shopping.
 let userEmail = localStorage.getItem('cw_email') || null;
@@ -383,7 +419,9 @@ async function doAuth() {
     if(authMode==='register'){
       // Auto-login with the credentials just used — no re-prompting required.
       // If email is unverified we still sign in; the app shows a banner prompting verification.
-      setMsg('auth-msg','Account created! Signing you in…','ok');
+      // v9.5: the server answers the same way for new and existing emails (no account
+      // enumeration), so don't claim an account was created — just try to sign in.
+      setMsg('auth-msg','Signing you in…','ok');
       const loginRes = await fetch(API+'/auth/login', {
         method:'POST', credentials:'include',
         headers:{'Content-Type':'application/json'},
@@ -391,9 +429,9 @@ async function doAuth() {
       });
       const loginData = await loginRes.json();
       if(!loginRes.ok){
-        // Shouldn't happen — fall back to login tab so user can sign in manually
-        setMsg('auth-msg','Account created! Please sign in.','ok');
+        // Either this email already has an account with a different PIN, or sign-in failed
         switchTab('login');
+        setMsg('auth-msg','If this email is new, check your inbox to verify it, then sign in. If you already have an account, sign in with your PIN.','ok');
         return;
       }
       clearInterval(_lockoutTimer); _lockoutTimer=null;
@@ -497,10 +535,18 @@ function _checkAdminHash() {
   }
 }
 window.addEventListener('hashchange', _checkAdminHash);
-async function doLogout(){
+async function doLogout(opts){
   // PDC-05: browser sends HttpOnly cookie automatically with credentials:'include'
-  try{await fetch(API+'/auth/logout',{method:'POST',credentials:'include',headers:authHeaders()});}catch(_){}
+  // v9.5: {local:true} when the server already ended the session (sessionEnded)
+  if (!(opts && opts.local)) {
+    try{await fetch(API+'/auth/logout',{method:'POST',credentials:'include',headers:authHeaders()});}catch(_){}
+  }
   userEmail=null;prefs=null;_allDeals=[];_allMatches=[];_dealsStoreId='';_storeData=null;_badgeCache=new Map();_tprLoaded=false;_totalAllDeals=0;_dealHistory=null;_badgeIndex=null;_dealsGen++;_coreGen=0;_pendingTpr=null;
+  // v9.5: nothing from this user should be visible to the next person on this browser
+  _dealTokenCache=new Map();_deptCounts={};_dealsShownTotal=null;_matchesDirty=true;
+  ['matches-grid','deals-grid','deals-meta','deals-chips','quality-banner'].forEach(id=>{const el=document.getElementById(id); if(el) el.innerHTML='';});
+  const _vb=document.getElementById('deals-vbar'); if(_vb){_vb.innerHTML='';_vb.classList.remove('vis');}
+  try{ Object.keys(localStorage).filter(k=>k.startsWith('cw_deals_ts_')).forEach(k=>localStorage.removeItem(k)); }catch(_){}
   localStorage.removeItem('cw_email');
   // Reset store UI so it doesn't bleed into the next session
   document.getElementById('store-card-wrap').style.display='none';

@@ -14,7 +14,7 @@ from helpers import (
     ok, err, _to_py, get_admin_auth, hash_pin,
     users_table, sessions_table, admin_sessions_tbl,
     scrape_logs_tbl, auth_logs_tbl, app_logs_tbl,
-    lambda_client, logs_client,
+    lambda_client, logs_client, revoke_sessions, count_deleted_user, _scan_all, admin_secret_fp,
     DEFAULT_PREFS, SCRAPER_FUNCTION, LOG_GROUP,
     ADMIN_SECRET, ADMIN_SESSION_TTL_HOURS,
     EMAIL_RE, PIN_DENYLIST, ALLOWED_PREF_KEYS,
@@ -50,6 +50,7 @@ def admin_login(event, body):
         "token":      token,
         "created_at": now.isoformat(),
         "expires_at": expires_at,
+        "secret_fp":  admin_secret_fp(),        # v9.5: rotating ADMIN_SECRET ends this session
     })
     # PDC-21: set HttpOnly cookie — XSS can no longer steal admin token
     cookie = make_cookie(ADMIN_COOKIE_NAME, token, ADMIN_SESSION_TTL_HOURS * 3600)
@@ -168,15 +169,9 @@ def admin_create_user(event, body):
 def admin_delete_user(event, email: str):
     if not email: return err("Missing email.")
     users_table.delete_item(Key={"email": email})
-    try:
-        users_table.update_item(
-            Key={"email": "__meta__"},
-            UpdateExpression="ADD deleted_count :one SET last_deleted_at = :ts",
-            ExpressionAttributeValues={":one": 1, ":ts": datetime.now(timezone.utc).isoformat()},
-        )
-    except Exception as e:
-        print(f"[CW] admin_delete_user meta update: {e}")
-    return ok({"message": f"User {email} deleted."})
+    revoked = revoke_sessions(email)            # v9.5
+    count_deleted_user()
+    return ok({"message": f"User {email} deleted ({revoked} session{'s' if revoked != 1 else ''} signed out)."})
 
 
 @require_admin
@@ -215,7 +210,8 @@ def admin_reset_email(event, body, email: str):
         new_item["prefs"]     = prefs
     users_table.put_item(Item=new_item)
     users_table.delete_item(Key={"email": email})
-    return ok({"message": f"Email changed from {email} to {new_email}."})
+    revoke_sessions(email)                      # v9.5: old-email sessions must not live on
+    return ok({"message": f"Email changed from {email} to {new_email}. The user must sign in again."})
 
 
 @require_admin
@@ -326,8 +322,8 @@ def admin_stats(event):
 @require_admin
 def get_scrape_logs(event):
     try:
-        resp  = scrape_logs_tbl.scan(Limit=50)
-        items = _to_py(resp.get("Items", []))
+        # v9.5 (#13): read all rows (1-year TTL, one row per run) so "Last run" is the latest
+        items = _to_py(_scan_all(scrape_logs_tbl))
         items.sort(key=lambda x: x.get("started_at", ""), reverse=True)
         return ok({"logs": items[:15]})
     except Exception as e:
@@ -437,8 +433,7 @@ def admin_inbound_logs(event):
         fe     = Attr("action").begins_with("inbound-")
         if sender:
             fe = fe & (Attr("sender").eq(sender) | Attr("user").eq(sender))
-        resp  = app_logs_tbl.scan(FilterExpression=fe, Limit=2000)
-        items = _to_py(resp.get("Items", []))
+        items = _to_py(_scan_all(app_logs_tbl, FilterExpression=fe))   # v9.5: was the first 2,000 rows examined
         items.sort(key=lambda x: x.get("ts", ""), reverse=True)
         return ok({"logs": items[:limit], "sender_filter": sender or None})
     except Exception as e:

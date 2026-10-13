@@ -278,7 +278,7 @@ def get_deals(event):
         "counts":       counts,
         "dept_counts":  dept_counts,
         "saving_types": saving_types,
-    }, _headers={"Cache-Control": "max-age=300"})
+    }, _headers={"Cache-Control": "private, max-age=300"})   # v9.5: authenticated data; never in shared caches
 
 
 # History index cache (v9.2.1).
