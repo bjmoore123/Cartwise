@@ -103,7 +103,9 @@ if [ -z "${RESEND_API_KEY}" ]; then
   exit 1
 fi
 
+ADMIN_SECRET_GENERATED=""
 if [ -z "${ADMIN_SECRET}" ]; then
+  ADMIN_SECRET_GENERATED=1
   ADMIN_SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(24))" 2>/dev/null || cat /dev/urandom | head -c 24 | base64 | tr -d '=+/')
   echo "   ℹ️  No ADMIN_SECRET set — generated: ${ADMIN_SECRET}"
   echo "   Save this — you'll need it to access the Admin panel."
@@ -760,7 +762,8 @@ for asset in favicon.ico apple-touch-icon.png icon-192.png icon-512.png cartwise
     *.svg)  ctype="image/svg+xml" ;;
     *.json) ctype="application/manifest+json" ;;
   esac
-  MSYS_NO_PATHCONV=1 aws s3 cp "${SCRIPT_DIR}/frontend/${asset}" "s3://${S3_FRONTEND}/${asset}" \
+  # v9.7: Windows aws.exe can't read Git Bash "/c/..." paths; convert like the zip uploads do
+  MSYS_NO_PATHCONV=1 aws s3 cp "$(win_path "${SCRIPT_DIR}/frontend/${asset}")" "s3://${S3_FRONTEND}/${asset}" \
     --content-type "${ctype}" --cache-control "public, max-age=86400" --no-progress
 done
 
@@ -1467,8 +1470,14 @@ if [ -n "${API_CF_DIST_ID}" ] && [ "${API_CF_DIST_ID}" != "None" ]; then
 echo "║  CF API:      ${API_CF_DIST_ID}"
 fi
 echo "╠═══════════════════════════════════════════════════════════════════╣"
-echo "║  Admin secret (keep this safe!):                                  ║"
-printf '║  %s\n' "${ADMIN_SECRET}"
+# v9.7: only show the admin secret when this run generated it (it used to be printed
+# on every deploy, which is how it ended up in terminal logs and chat).
+if [ -n "${ADMIN_SECRET_GENERATED}" ]; then
+  echo "║  NEW admin secret (save it now; it is not shown again):           ║"
+  printf '║  %s\n' "${ADMIN_SECRET}"
+else
+  echo "║  Admin secret: unchanged (reused from the live API Lambda)        ║"
+fi
 echo "╠═══════════════════════════════════════════════════════════════════╣"
 echo "║  Test scraper now:                                                ║"
 echo "║    aws lambda invoke --function-name ${LAMBDA_SCRAPER} \\"
