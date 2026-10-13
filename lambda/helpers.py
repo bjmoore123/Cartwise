@@ -191,11 +191,12 @@ DEFAULT_PREFS = {
     "items":         [],
     "matching":      {"sensitivity": "normal"},
     "notifications": {"only_matches": True},
+    "bogo_mode":     "auto",      # v9.8: "auto" (from store state) | "half" | "two"
 }
 
 ALLOWED_PREF_KEYS = {
     "store_id", "store_name", "store_address", "notify_email",
-    "email_enabled", "items", "matching", "notifications",
+    "email_enabled", "items", "matching", "notifications", "bogo_mode",
 }
 
 # ── JSON encoder ──────────────────────────────────────────────────────────────

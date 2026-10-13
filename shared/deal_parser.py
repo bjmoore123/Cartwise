@@ -200,7 +200,7 @@ def classify_offer(saving_type: str, savings: str, save_line: str = "",
     m = _RE_BOGO.match(s)
     if m:
         b, g = _qty(m.group(1)), _qty(m.group(2))
-        o.update(kind="bogo", headline=f"Buy {b} Get {g} Free")
+        o.update(kind="bogo", headline=f"Buy {b} Get {g} Free", buy=b, get=g)
         if line_unit == "lb":
             o["unit"] = "lb"
         reg = fp if fp > 0 else (line_save / g if line_save else None)
@@ -286,6 +286,76 @@ def _finish(o: dict, coupon_ctx: bool = False):
     extra_flags = [f for f in o["flags"] if f in ("your choice", "limited time", "low price")]
     if extra_flags and not o["context"]:
         o["context"] = extra_flags[0].capitalize()
+
+
+# ── BOGO store rules (v9.8) ───────────────────────────────────────────────────
+# Publix BOGO terms differ by area. In Tennessee, North Carolina, Virginia and the
+# northern parts of Alabama, Georgia and South Carolina you can buy ONE BOGO item
+# at half price. In Florida and the southern parts of AL/GA/SC you must buy two to
+# get one free. (Clark.com "Publix BOGO policy"; Supermarket News, 2026-09-25.)
+# AL, GA and SC are split inside the state, so those return None and the user is
+# asked; until they answer, "two" is assumed because buying two works everywhere.
+# Kentucky isn't named in the sources; it follows the "most states" half-price rule.
+BOGO_HALF_STATES = {"TN", "NC", "VA", "KY"}
+BOGO_TWO_STATES  = {"FL"}
+BOGO_MODES       = ("half", "two")
+
+
+def bogo_mode_for_state(state: str):
+    st = (state or "").strip().upper()
+    if st in BOGO_HALF_STATES:
+        return "half"
+    if st in BOGO_TWO_STATES:
+        return "two"
+    return None
+
+
+def state_from_address(address: str) -> str:
+    """'123 Main St, Atlanta, GA 30303' -> 'GA' (store_address as saved in prefs)."""
+    m = re.search(r",\s*([A-Z]{2})\s+\d{5}", address or "")
+    return m.group(1) if m else ""
+
+
+def effective_bogo_mode(prefs: dict) -> str:
+    """User choice, else the store state's rule, else 'two' (true at every Publix)."""
+    prefs = prefs or {}
+    mode = prefs.get("bogo_mode")
+    if mode in BOGO_MODES:
+        return mode
+    return bogo_mode_for_state(state_from_address(prefs.get("store_address", ""))) or "two"
+
+
+def apply_bogo_mode(offer: dict, mode: str) -> dict:
+    """Context and save text for a Buy N Get N offer under the store's BOGO rule.
+
+    Same per-item price either way; what changes is how many you must buy.
+      half: 'Half price each, even if you buy 1' / 'Save up to $4.50 each'
+      two:  '≈ $4.50 ea when you buy 2'          / Publix's own 'Save up to $8.99'
+    Only equal Buy N Get N deals have a half-price rule; Buy 2 Get 1 is unchanged.
+    KEEP IN SYNC with applyBogoMode() in frontend/app.js.
+    """
+    o = dict(offer or {})
+    if o.get("kind") != "bogo":
+        return o
+    b, g = int(o.get("buy") or 1), int(o.get("get") or 1)
+    if b != g:
+        return o
+    unit = "/lb" if o.get("unit") == "lb" else " ea"
+    price, save, upto = o.get("price"), o.get("save"), o.get("save_is_max")
+    if mode == "half":
+        o["context"] = (f"Half price: {_fmt2(price)}{unit}, even if you buy 1" if price
+                        else "Half price each, even if you buy 1")
+        if save:
+            o["save_text"] = f"Save {'up to ' if upto else ''}{_fmt2(save)}{'/lb' if unit == '/lb' else ' each'}"
+    else:
+        n = b + g
+        if price:
+            o["context"] = f"≈ {_fmt2(price)}{unit} when you buy {n}"
+        # keep Publix's own total ("Save up to $8.99"); doubling the rounded per-item
+        # figure would show $9.00
+    if o.get("coupon_required") and "coupon" not in o.get("context", "").lower():
+        o["context"] += " · with digital coupon"
+    return o
 
 
 def compact_offer(o: dict) -> dict:

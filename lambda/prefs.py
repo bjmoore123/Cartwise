@@ -55,6 +55,9 @@ def save_prefs(event, body):
             sens = "normal"
         matching = {"sensitivity": sens}
     prefs["matching"] = matching
+    # v9.8: BOGO rule — "auto" follows the store's state; "half" / "two" are the user's choice
+    if prefs.get("bogo_mode") not in ("auto", "half", "two"):
+        prefs["bogo_mode"] = "auto"
     # PDC-09: cap item strings at 200 chars each, cap list at 200 items
     if isinstance(prefs.get("items"), list):
         prefs["items"] = [

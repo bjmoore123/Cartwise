@@ -176,8 +176,9 @@ def main(argv=None, tbl=None, out=print) -> int:
         return 0
     action = "dedupe" if a.dedupe else "delete"
     if not a.yes:
+        kept = len({d.get("id") or (d.get("title", ""), d.get("savings", "")) for d in week_deals(w)})
         out(f"\nDry run: would {action} week {a.week} ({s['rows']} rows"
-            + (f" -> {s['unique'] if not s['dup_ids'] else s['rows'] - s['dup_ids']} kept)" if a.dedupe else ")")
+            + (f" -> {kept} kept; duplicates are matched by deal id)" if a.dedupe else ")")
             + ". Re-run with --yes to apply.")
         return 0
     path = backup(a.store, a.week, w)

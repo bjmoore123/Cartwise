@@ -277,6 +277,11 @@ Test plan: `docs/v9.4-test-plan.md`.
 - [x] `added_items` logs the items actually added; unknown senders logged (`inbound-no-user`); admin labels for subject-rejected / rate-limited / rate-limit-error; rejection rows carry `email_id`
 - [ ] Create the full-access key and store it in SSM (Ben, optional; not a rotation of existing keys)
 
+### v9.8: BOGO store rule ✅ built 2026-10-12 — test plan `docs/v9.8-test-plan.md`
+- [x] Rule by store state (FL: buy two; TN/NC/VA/KY: one at half price; AL/GA/SC: ask, default buy two)
+- [x] `bogo_mode` preference (auto/half/two) on My Store, plus a one-time Deals banner where the state is split
+- [x] Cards, modal and email price Buy N Get N deals by the rule (`apply_bogo_mode` ⇄ `applyBogoMode`, parity-tested)
+
 ### Batch 6: Hygiene (ride-along)
 - [x] Delete `lambda/api.py` (stale duplicate parser, never deployed) and the unused `rapidfuzz` install (v9.3)
 - [x] Dead CSS/JS removed (49 CSS rules, legacy price guessing, hidden loader, `renderTpr`); duplicate test classes removed so the newer ones run (v9.7)

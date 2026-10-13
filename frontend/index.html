@@ -578,6 +578,16 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
   .deal-card-price{font-size:17px}
   .validity-bar.vis{display:block;font-size:12.5px}
 }
+/* v9.8 BOGO store rule */
+.bogo-card{background:var(--white);border:1px solid var(--border);border-radius:var(--rad);padding:14px 16px;box-shadow:var(--sh-sm)}
+.bogo-card.needs-answer{border:2px solid var(--deal-amber);background:#fffaf2}
+.bogo-card-hd{font-weight:700;font-size:14px;margin-bottom:4px}
+.bogo-card-sub{font-size:12.5px;color:var(--ink-mid);margin-bottom:10px;line-height:1.45}
+.bogo-opt{display:flex;align-items:center;gap:8px;font-size:13.5px;padding:7px 0;min-height:36px;cursor:pointer}
+.bogo-opt input{accent-color:var(--green);width:16px;height:16px}
+.bogo-banner{background:#fffaf2;border:1.5px solid var(--deal-amber-bg);border-left:4px solid var(--deal-amber);border-radius:8px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:13.5px}
+.bogo-banner-a{display:flex;gap:8px;flex-wrap:wrap}
+.bogo-banner-a button{padding:7px 12px;font-size:12.5px}
 .filter-sheet-title{font-family:var(--serif);font-size:20px}
 .filter-sheet-x{background:none;border:none;font-size:22px;color:var(--ink-mid);width:44px;height:44px;cursor:pointer;text-align:left}
 .filter-sheet-reset{background:none;border:none;font:700 13px var(--body);color:var(--green);cursor:pointer;width:44px;text-align:right}
@@ -668,6 +678,7 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
   <div id="store-card-wrap" style="display:none;margin-bottom:16px">
     <div class="store-card" id="store-card-el"></div>
   </div>
+  <div id="bogo-card-wrap" style="display:none;margin-bottom:16px"></div>
 
   <!-- Search UI (shown when no store set) -->
   <div id="store-search-ui">
@@ -722,6 +733,7 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
 
   <div id="deals-browser" style="display:none">
     <div class="validity-bar" id="deals-vbar"></div>
+    <div class="bogo-banner" id="bogo-banner" style="display:none"></div>
     <div class="deals-layout">
       <div class="filter-sheet-backdrop" id="filter-sheet-backdrop" data-action="close-filter-sheet"></div>
       <div class="filter-col" id="deals-filter-col" role="dialog" aria-label="Filters">

@@ -38,6 +38,7 @@
 | v9.4 | Sorts by savings / % off / price; history stores price per week, "Lowest in N wks" chip, price chart; JS and Python matchers give identical scores (parity fixture); UI refresh (one tag per card, price-color rule, mobile filter sheet); staging and production frontends unified; admin nav behind `/#admin` |
 | v9.5 | Sessions of deleted accounts / changed emails rejected and revoked; open tabs return to sign-in when the session ends; admin sessions bound to `ADMIN_SECRET`; `UNSUB_SECRET` fails closed; verification link encoding; enumeration-safe registration copy |
 | v9.6 | Ad week parsed from Publix "M/D" dates; Refresh bypasses the browser cache; schedule shown in the viewer's time zone; history audit tool (`tools/history_audit.py`); copy fixes |
+| v9.8 | BOGO store rule: half price on one (TN/NC/VA/KY) vs buy two (FL); AL/GA/SC ask the user; `bogo_mode` pref; cards, modal and email price Buy N Get N deals accordingly |
 | v9.7 | Inbound import reads received email with a separate full-access key (`RESEND_RECEIVING_KEY`); inbound logging fixes; dead CSS/JS and duplicate tests removed; this document |
 
 ## 1. System Overview

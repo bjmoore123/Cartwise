@@ -626,6 +626,7 @@ function collectPrefs(ctx){
     store_id:      prefs?.store_id||'',
     store_name:    prefs?.store_name||'',
     store_address: prefs?.store_address||'',
+    bogo_mode:     prefs?.bogo_mode||'auto',      // v9.8
     notify_email:  userEmail,
     email_enabled: document.getElementById('email-enabled').checked,
     items:         prefs?.items||[],
@@ -740,9 +741,82 @@ function setStoreSel(s){
   _storeData = s;
   if(s.id){
     document.getElementById('store-card-el').innerHTML = storeCardHtml(s);
+    const bw = document.getElementById('bogo-card-wrap');
+    if (bw) { bw.innerHTML = bogoCardHtml(); bw.style.display = ''; }
+    renderBogoBanner();
     document.getElementById('store-card-wrap').style.display = '';
     document.getElementById('store-search-ui').style.display = 'none';
   }
+}
+
+// ── v9.8: BOGO store rule ────────────────────────────────────────────────────
+// KEEP IN SYNC with bogo_mode_for_state / apply_bogo_mode in shared/deal_parser.py.
+// Most Publix areas let you buy ONE BOGO item at half price; Florida and the southern
+// parts of AL/GA/SC require buying two. AL/GA/SC are split, so we ask there.
+const BOGO_HALF_STATES = new Set(['TN','NC','VA','KY']);
+const BOGO_TWO_STATES  = new Set(['FL']);
+const BOGO_ASK_STATES  = new Set(['AL','GA','SC']);
+function stateFromAddress(addr){ const m = /,\s*([A-Z]{2})\s+\d{5}/.exec(addr||''); return m ? m[1] : ''; }
+function bogoModeForState(st){ return BOGO_HALF_STATES.has(st) ? 'half' : BOGO_TWO_STATES.has(st) ? 'two' : null; }
+function effectiveBogoMode(p){
+  if (p && (p.bogo_mode === 'half' || p.bogo_mode === 'two')) return p.bogo_mode;
+  return bogoModeForState(stateFromAddress(p && p.store_address)) || 'two';
+}
+function bogoNeedsAnswer(p){
+  return !!(p && p.store_id && (!p.bogo_mode || p.bogo_mode === 'auto') && !bogoModeForState(stateFromAddress(p.store_address)));
+}
+function fmtMoney2(x){ return '$' + Number(x).toFixed(2); }
+function applyBogoMode(offer, mode){
+  if (!offer || offer.kind !== 'bogo') return offer;
+  const b = parseInt(offer.buy || 1, 10), g = parseInt(offer.get || 1, 10);
+  if (b !== g) return offer;                       // Buy 2 Get 1 etc.: no half-price rule
+  const o = Object.assign({}, offer);
+  const lb = o.unit === 'lb', unit = lb ? '/lb' : ' ea', upto = o.save_is_max ? 'up to ' : '';
+  if (mode === 'half') {
+    o.context = o.price ? `Half price: ${fmtMoney2(o.price)}${unit}, even if you buy 1` : 'Half price each, even if you buy 1';
+    if (o.save) o.save_text = `Save ${upto}${fmtMoney2(o.save)}${lb ? '/lb' : ' each'}`;
+  } else {
+    const n = b + g;
+    if (o.price) o.context = `≈ ${fmtMoney2(o.price)}${unit} when you buy ${n}`;
+    // keep Publix's own total save text (doubling the rounded per-item figure drifts by a cent)
+  }
+  if (o.coupon_required && !/coupon/i.test(o.context || '')) o.context += ' · with digital coupon';
+  return o;
+}
+function bogoCardHtml(){
+  const st = stateFromAddress(prefs && prefs.store_address);
+  const auto = bogoModeForState(st);
+  const cur = (prefs && prefs.bogo_mode) || 'auto';
+  const autoLabel = auto === 'half' ? `Automatic: ${escH(st)} stores sell one BOGO item at half price`
+                  : auto === 'two'  ? `Automatic: ${escH(st)} stores require buying two`
+                  : `Automatic: not sure for ${escH(st || 'this store')}, so we assume you must buy two`;
+  const opt = (v, label) => `<label class="bogo-opt"><input type="radio" name="bogo-mode" value="${v}" data-action="bogo-mode"${cur===v?' checked':''}> ${label}</label>`;
+  return `<div class="bogo-card${bogoNeedsAnswer(prefs) ? ' needs-answer' : ''}" id="bogo-card">
+    <div class="bogo-card-hd">How do BOGO deals work at your store?</div>
+    <div class="bogo-card-sub">Some Publix areas let you buy one BOGO item at half price; others (Florida and parts of Alabama, Georgia and South Carolina) require buying two. Prices on cards and in emails follow this setting.</div>
+    ${opt('auto', autoLabel)}
+    ${opt('half', 'I can buy one at half price')}
+    ${opt('two', 'I must buy two to get one free')}
+  </div>`;
+}
+function setBogoMode(mode){
+  if (!prefs) return;
+  prefs.bogo_mode = mode;
+  savePrefs('bogo').catch(()=>{});
+  const card = document.getElementById('bogo-card');
+  if (card) card.outerHTML = bogoCardHtml();
+  renderBogoBanner();
+  if (_allDeals.length) renderDeals(true);
+}
+function renderBogoBanner(){
+  const el = document.getElementById('bogo-banner');
+  if (!el) return;
+  if (!bogoNeedsAnswer(prefs)) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const st = stateFromAddress(prefs.store_address);
+  el.innerHTML = `<div class="bogo-banner-q"><strong>Quick question:</strong> at your ${escH(st)} Publix, can you buy one BOGO item at half price?</div>
+    <div class="bogo-banner-a"><button class="btn-load" data-action="bogo-answer" data-mode="half">Yes, one at half price</button>
+    <button class="btn-sec" data-action="bogo-answer" data-mode="two">No, I must buy two</button></div>`;
+  el.style.display = '';
 }
 
 function clearStore(){
@@ -750,8 +824,10 @@ function clearStore(){
   document.getElementById('store-search-ui').style.display = '';
   document.getElementById('store-id-input').value = '';
   document.getElementById('store-results').innerHTML = '';
-  if(prefs){prefs.store_id='';prefs.store_name='';prefs.store_address='';}
+  if(prefs){prefs.store_id='';prefs.store_name='';prefs.store_address='';prefs.bogo_mode='auto';}
   _storeData = null;
+  const _bw=document.getElementById('bogo-card-wrap'); if(_bw){_bw.innerHTML='';_bw.style.display='none';}
+  renderBogoBanner();
   _dealsStoreId='';_allDeals=[];_allMatches=[];_dealTokenCache=new Map();_badgeCache=new Map();_tprLoaded=false;_totalAllDeals=0;_dealsGen++;_coreGen=0;_pendingTpr=null;
   document.getElementById('deals-browser').style.display='none';
   const _ms=document.getElementById('matches-section');if(_ms)_ms.style.display='none';
@@ -1520,7 +1596,7 @@ function dealTypeTag(d) {
 //   green  = what you pay (price, multi-buy)
 //   amber  = a mechanic or an amount off (BOGO, $2 off, 20% off)
 function savingsDisplay(d) {
-  const o = d.offer;
+  const o = d.offer ? applyBogoMode(d.offer, effectiveBogoMode(prefs)) : d.offer;   // v9.8
   if (o && o.headline) {
     const kind = o.kind || 'other';
     let save = o.save_text || null;
@@ -2988,6 +3064,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!el) return;
     const action = el.dataset.action;
 
+    // -- v9.8 BOGO rule --
+    if (action === 'bogo-answer') return setBogoMode(el.dataset.mode);
+
     // -- v9.4 mobile filter sheet --
     if (action === 'open-filter-sheet')  return toggleFilterSheet(true);
     if (action === 'close-filter-sheet') return toggleFilterSheet(false);
@@ -3099,6 +3178,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const action = el.dataset.action;
 
     if (action === 'matches-toggle')    return onMatchesToggle();
+    if (action === 'bogo-mode')         return setBogoMode(el.value);
     if (action === 'threshold-slider')  return onThresholdChange();
     if (action === 'savings-filter')    return onSavingsFilter(el.dataset.filter);
     if (action === 'deals-sort')        return renderDeals();

@@ -24,6 +24,7 @@ import secrets as _secrets
 
 from scraper import get_deals_with_status
 from shared import email_render
+from shared.deal_parser import effective_bogo_mode
 from shared.matcher import match_deals_for_user
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -358,23 +359,25 @@ def _unsub_url(account_email: str) -> str:
     params = urllib.parse.urlencode({"email": account_email, "token": token})
     return f"{API_URL}/user/unsubscribe?{params}"
 
-def build_html(matches, store_id, store_name, frontend_url="", account_email=""):
+def build_html(matches, store_id, store_name, frontend_url="", account_email="", bogo_mode="two"):
     """v9.3: rendered by shared/email_render.py from the normalized offer."""
     unsub_url = _unsub_url(account_email) if account_email else ""
     return email_render.build_html(matches, store_id, store_name, frontend_url,
-                                   unsub_url=unsub_url, account_email=account_email)
+                                   unsub_url=unsub_url, account_email=account_email,
+                                   bogo_mode=bogo_mode)
 
 
 def send_alert(notify_email: str, matches: list[dict], store_id: str, store_name: str,
-               account_email: str = ""):
+               account_email: str = "", bogo_mode: str = "two"):
     subject   = email_render.subject_line(matches)
     unsub_url = _unsub_url(account_email) if account_email else ""
     msg = {
         "from":    RESEND_FROM,
         "to":      [notify_email],
         "subject": subject,
-        "html":    build_html(matches, store_id, store_name, FRONTEND_URL, account_email=account_email),
-        "text":    email_render.build_text(matches, store_name, unsub_url),
+        "html":    build_html(matches, store_id, store_name, FRONTEND_URL, account_email=account_email,
+                              bogo_mode=bogo_mode),
+        "text":    email_render.build_text(matches, store_name, unsub_url, bogo_mode=bogo_mode),
     }
     if unsub_url:
         # v9.3: one-click unsubscribe (RFC 8058); POST /user/unsubscribe accepts the same query
@@ -647,7 +650,8 @@ def _store_worker(event):
             print(f"    {len(matches)} match(es) for {account_email} — skipping (opted out)")
         else:
             try:
-                send_alert(notify_email, matches, store_id, store_name, account_email=account_email)
+                send_alert(notify_email, matches, store_id, store_name, account_email=account_email,
+                           bogo_mode=effective_bogo_mode(prefs))   # v9.8: store's BOGO rule
                 emails_sent += 1
             except Exception as e:
                 print(f"    ERROR sending email to {notify_email}: {e}")

@@ -13,6 +13,11 @@ Pure functions only (no AWS, no Resend) so it is unit-tested directly.
 from datetime import date
 from html import escape
 
+try:
+    from shared.deal_parser import apply_bogo_mode
+except ImportError:                                  # pragma: no cover
+    from deal_parser import apply_bogo_mode
+
 GREEN, GREEN_BG = "#1a6b3c", "#e0efe7"
 AMBER, AMBER_BG = "#8a4106", "#fdf0dc"
 PURPLE, PURPLE_BG = "#6b21a8", "#f3e8fb"
@@ -64,9 +69,10 @@ def headline_color(o: dict) -> str:
     return INK
 
 
-def offer_lines(m: dict) -> dict:
-    """headline / context / save for one match; falls back to raw text for pre-v9.3 data."""
-    o = m.get("offer") or {}
+def offer_lines(m: dict, bogo_mode: str = "two") -> dict:
+    """headline / context / save for one match; falls back to raw text for pre-v9.3 data.
+    v9.8: BOGO lines follow the user's store rule (half price on one, or buy two)."""
+    o = apply_bogo_mode(m.get("offer") or {}, bogo_mode)
     if not o:
         return {"headline": m.get("savings", ""), "context": "", "save": m.get("save_line", ""),
                 "color": INK, "extra": ""}
@@ -100,8 +106,8 @@ def subject_line(matches: list, today: date | None = None) -> str:
     return f"{n} item{'s' if n != 1 else ''} on your list {'are' if n != 1 else 'is'} on sale ({when})"
 
 
-def _row(m: dict) -> str:
-    lines = offer_lines(m)
+def _row(m: dict, bogo_mode: str = "two") -> str:
+    lines = offer_lines(m, bogo_mode)
     tag_key = deal_tag(m)
     _, fg, bg = TAGS[tag_key]
     label = escape(tag_label(m, tag_key))
@@ -139,7 +145,8 @@ def _row(m: dict) -> str:
       </tr>"""
 
 
-def build_html(matches, store_id, store_name, frontend_url="", unsub_url="", account_email="") -> str:
+def build_html(matches, store_id, store_name, frontend_url="", unsub_url="", account_email="",
+               bogo_mode: str = "two") -> str:
     counts: dict = {}
     for m in matches:
         k = deal_tag(m)
@@ -155,7 +162,7 @@ def build_html(matches, store_id, store_name, frontend_url="", unsub_url="", acc
     store = escape(name if name.lower().startswith("publix") else f"Publix · {name}")
     valid = f" · Valid {escape(wk[0])} – {escape(wk[1])}" if wk else ""
     n = len(matches)
-    rows = "".join(_row(m) for m in matches[:MAX_ROWS])
+    rows = "".join(_row(m, bogo_mode) for m in matches[:MAX_ROWS])
     if n > MAX_ROWS:
         rows += (f'<tr><td colspan="3" style="padding:12px 24px;font-size:13px;color:{MUTED};border-bottom:1px solid {LINE};">'
                  f'…and {n - MAX_ROWS} more on Cartwise.</td></tr>')
@@ -180,11 +187,11 @@ def build_html(matches, store_id, store_name, frontend_url="", unsub_url="", acc
 </table></td></tr></table></body></html>"""
 
 
-def build_text(matches, store_name="", unsub_url="") -> str:
+def build_text(matches, store_name="", unsub_url="", bogo_mode: str = "two") -> str:
     """Plain-text part (improves deliverability; some clients show only this)."""
     out = [f"Cartwise: {len(matches)} item(s) on your list are on sale at {store_name or 'your Publix'}.", ""]
     for m in matches:
-        lines = offer_lines(m)
+        lines = offer_lines(m, bogo_mode)
         bits = [lines["headline"], lines["context"], lines["save"], lines["extra"]]
         out.append(f"- {m.get('deal_name') or m.get('title', '')}: " + " · ".join(b for b in bits if b))
     if unsub_url:
