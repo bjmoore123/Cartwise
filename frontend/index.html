@@ -107,10 +107,6 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
 .btn-load:hover{background:var(--green-lt)}
 .btn-load:disabled{opacity:.5;cursor:not-allowed}
 .btn-test{display:inline-flex;align-items:center;gap:8px;padding:9px 18px;background:var(--blue-bg);color:var(--blue);border:1.5px solid #bfdbfe;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;transition:var(--t)}
-.btn-add-to-list{display:inline-flex;align-items:center;gap:4px;margin-top:6px;padding:5px 10px;background:#f0fdf4;color:#16a34a;border:1.5px solid #bbf7d0;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;transition:var(--t)}
-.btn-add-to-list:hover{background:#dcfce7}
-.btn-add-to-list.on-list{background:#f1f5f9;color:var(--ink-soft);border-color:#e2e8f0;cursor:default}
-.btn-add-to-list:disabled{opacity:.7;cursor:default}
 .btn-test:hover{background:#dbeafe}
 .btn-test:disabled{opacity:.5;cursor:not-allowed}
 
@@ -162,7 +158,6 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
 .item-name{font-size:14px;flex:1;min-width:0}
 .item-row-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
 /* Match reason label on card */
-.match-reason{font-size:10px;color:var(--ink-soft);margin-top:3px}
 .btn-rm{background:none;border:none;color:var(--ink-soft);font-size:18px;cursor:pointer;padding:0 4px;line-height:1}
 .btn-rm:hover{color:var(--red)}
 .items-ct{font-size:12px;color:var(--ink-soft)}
@@ -224,16 +219,13 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
 .deal-card-img-ph{width:100%;aspect-ratio:1/1;background:#f7f7f5;display:flex;align-items:center;justify-content:center;font-size:38px}
 .deal-card-badges{position:absolute;top:8px;left:8px;display:flex;flex-wrap:wrap;gap:4px;z-index:1;max-width:calc(100% - 48px)}
 .deal-card-body{padding:12px 14px}
-.deal-card-row-tag{height:22px;margin-bottom:2px}
 .deal-card-row-dept{height:18px;margin-bottom:3px}
 .deal-card-row-title{height:44px;margin-bottom:3px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-.deal-card-row-desc{height:46px;margin-bottom:5px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .deal-card-row-price{height:46px;margin-bottom:2px}
 .deal-card-row-save{height:20px;margin-bottom:2px}
 .deal-card-row-valid{height:18px}
 .deal-card-dept{font-size:10.5px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-soft)}
 .deal-card-title{font-size:14px;font-weight:700;color:var(--ink);line-height:1.35}
-.deal-card-desc{font-size:12px;color:var(--ink-mid);line-height:1.35}
 .deal-card-price{font-family:var(--mono);font-size:18px;font-weight:700;color:var(--green)}
 .deal-card-price.is-discount{color:var(--amber)}
 .deal-card-pctx{font-size:11px;color:var(--ink-soft);display:block;margin-top:1px}
@@ -241,25 +233,11 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
 .deal-card-save.is-clip{color:var(--purple);font-weight:700;font-size:11px}
 .deal-card-save-hidden{visibility:hidden;font-size:12px}
 .deal-type-tag{display:inline-block;font-size:9px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;border-radius:4px;padding:2px 6px;margin-bottom:2px}
-.deal-type-tag.weekly{background:#e8f5e9;color:#2e7d32}
 .deal-type-tag.bogo{background:#fff3e0;color:#e65100}
 .deal-type-tag.coupon{background:#e3f2fd;color:#1565c0}
 .deal-type-tag.extra{background:#fce4ec;color:#880e4f}
-.deal-type-tag.stacked{background:#ede7f6;color:#4527a0}
-.deal-type-tag.tpr{background:#fff8e1;color:#f57f17}
 .deal-card-valid{font-size:11px;color:var(--ink-soft)}
-.deal-card-fine{font-size:10px;color:var(--ink-soft);font-style:italic}
-.badge{display:inline-block;padding:2px 6px;border-radius:4px;font-size:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}
-.badge-publix{background:var(--green-dim);color:var(--green)}
-.badge-coupon{background:var(--purple-bg);color:var(--purple)}
-.badge-extra{background:var(--blue-bg);color:var(--blue)}
-.badge-stacked{background:var(--amber-bg);color:var(--amber)}
 
-/* History quality badges */
-.badge-best    {background:#fff3cd;color:#856404}
-.badge-recent  {background:#d1ecf1;color:#0c5460}
-.badge-repeat  {background:#e2e3e5;color:#383d41}
-.badge-rare    {background:#f8d7da;color:#721c24}
 
 /* Frequency hint under list items */
 .item-freq{font-size:11px;color:var(--ink-soft);margin-top:2px;font-style:italic}
@@ -291,37 +269,12 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
 
 /* MATCH CARD */
 .matches-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px}
-.match-card{background:var(--white);border:2px solid var(--green-dim);border-radius:12px;overflow:hidden;box-shadow:var(--sh-sm);display:flex;flex-direction:column;transition:box-shadow var(--t),transform var(--t);position:relative}
-.match-card:hover{box-shadow:var(--sh-md);transform:translateY(-2px)}
-.match-card-img{width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--green-bg);padding:12px}
-.match-card-img-ph{width:100%;aspect-ratio:1/1;background:var(--green-bg);display:flex;align-items:center;justify-content:center;font-size:38px}
-.match-card-body{padding:11px 12px;flex:1;display:flex;flex-direction:column;gap:3px}
-.match-myitem{font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--green);background:var(--green-dim);border-radius:4px;padding:2px 6px;display:inline-block;margin-bottom:4px}
-.match-title{font-size:13px;font-weight:700;color:var(--ink);line-height:1.3}
-.match-desc{font-size:11px;color:var(--ink-mid)}
-.match-price{font-family:var(--mono);font-size:17px;font-weight:700;color:var(--green);margin-top:auto;padding-top:6px}
-.match-price.is-discount{color:var(--amber)}
-.match-save{font-size:11px;color:var(--ink-soft)}
-.match-save.is-discount{font-size:11px;color:var(--amber);font-weight:700}
-.match-valid{font-size:10px;color:var(--ink-soft)}
-.match-score{font-size:10px;color:var(--ink-soft);margin-top:2px}
-.match-banner{background:var(--green-bg);border:1.5px solid var(--green-dim);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;color:var(--green)}
 
 /* THRESHOLD inline on matches page */
-.sensitivity-bar{background:var(--white);border:1px solid var(--border);border-radius:var(--rad);padding:16px 20px;margin-bottom:18px;box-shadow:var(--sh-sm);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
-.sensitivity-bar label{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-soft);white-space:nowrap}
-.sensitivity-bar input[type=range]{flex:1;min-width:120px;accent-color:var(--green)}
 .threshold-val{font-family:var(--mono);font-size:15px;font-weight:700;color:var(--green);min-width:28px}
-.sensitivity-bar .hint{font-size:12px;color:var(--ink-soft);white-space:nowrap}
 /* ── Unified deals/matches panel ── */
 .deals-panel-header{margin-bottom:16px}
 .match-toggle-bar{display:flex;align-items:center;gap:12px;background:var(--green-bg);border:1.5px solid var(--green-dim);border-radius:10px;padding:10px 16px;margin-bottom:14px;flex-wrap:wrap}
-.toggle-switch{position:relative;width:36px;height:20px;flex-shrink:0}
-.toggle-switch input{opacity:0;width:0;height:0;position:absolute}
-.toggle-track{position:absolute;inset:0;background:#ccc;border-radius:10px;cursor:pointer;transition:background .2s}
-.toggle-track::after{content:'';position:absolute;width:14px;height:14px;background:white;border-radius:50%;top:3px;left:3px;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.25)}
-.toggle-switch input:checked+.toggle-track{background:var(--green)}
-.toggle-switch input:checked+.toggle-track::after{transform:translateX(16px)}
 .toggle-bar-label{font-size:13px;font-weight:700;color:var(--green);flex:1;min-width:80px}
 .toggle-bar-label.off{color:var(--ink-soft)}
 .match-count-pill{background:var(--green);color:white;font-size:11px;font-weight:700;padding:2px 9px;border-radius:10px;font-family:var(--mono);white-space:nowrap}
@@ -334,8 +287,6 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
 .section-divider-matches{color:var(--green)}
 .section-divider-matches::before,.section-divider-matches::after{background:var(--green-dim)}
 .deal-card.is-match{border:2px solid var(--green-dim)}
-.deal-card .match-reason{font-size:10px;color:var(--ink-soft);margin-top:3px}
-.deal-card .match-score{font-size:10px;color:var(--ink-soft)}
 
 /* SCRAPE LOGS */
 .scrape-bar{background:var(--green-bg);border:1px solid var(--green-dim);border-radius:8px;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:18px;font-size:13px;color:var(--green)}
@@ -570,7 +521,6 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
 .deal-type-tag.coupon,.deal-type-tag.plus{background:var(--coupon-bg);color:var(--coupon)}
 .deal-type-tag.extra{background:var(--extra-bg);color:var(--extra)}
 .deal-card-badges{gap:4px}
-.deal-card-row-tag,.deal-card-row-desc{display:none}
 .deal-card-row-dept{height:16px;margin-bottom:2px}
 .deal-card-row-title{font-size:13.5px;line-height:1.3;height:2.6em}
 .deal-card-title{font-size:inherit;line-height:inherit}
@@ -711,7 +661,7 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
 
 <!-- ══ STORE ══════════════════════════════════════════════════════════════ -->
 <div class="panel active" id="panel-store">
-  <div class="panel-title">Store Settings</div>
+  <div class="panel-title">My Store</div>
   <div class="panel-sub">Find and set your Publix location to see the right deals.</div>
 
   <!-- Selected store card (shown when store is set) -->
@@ -769,7 +719,6 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
     <div style="font-size:14px;color:var(--ink-soft)">Loading deals…</div>
   </div>
   <div id="deals-err" style="display:none;color:var(--red);font-size:13px;padding:8px 0"></div>
-  <div id="matches-loading-inline" style="display:none;font-size:13px;color:var(--ink-soft);padding:4px 0 8px">Finding your matches…</div>
 
   <div id="deals-browser" style="display:none">
     <div class="validity-bar" id="deals-vbar"></div>
@@ -932,7 +881,7 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
       </div>
       <div class="row" style="margin-top:4px">
         <label>Schedule</label>
-        <div style="font-size:13px;color:var(--ink-mid);padding:4px 0">Every Wednesday at 8:00 AM ET</div>
+        <div style="font-size:13px;color:var(--ink-mid);padding:4px 0" id="sched-time">Every Wednesday morning</div>
         <div class="hint">Deals refresh every Wednesday when Publix updates their weekly ad.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;margin-top:8px;flex-wrap:wrap">
@@ -1080,7 +1029,7 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
 
           <!-- Retention note -->
           <div style="background:var(--green-bg);border:1px solid var(--green-dim);border-radius:8px;padding:10px 14px;font-size:12px;color:var(--ink-mid);margin-bottom:16px">
-            📦 <strong>Data retention:</strong> Auth logs · App logs · Scrape logs expire after <strong>1 year</strong>. Deal cache expires after <strong>10 days</strong>. Sessions expire after <strong>72 hours</strong>. All enforced via DynamoDB TTL on <code>expires_at</code>.
+            📦 <strong>Data retention:</strong> App logs <strong>30 days</strong> (account-cleanup logs 90) · Auth logs <strong>90 days</strong> · Scrape logs <strong>1 year</strong> · Deal history <strong>52 weeks</strong> · Deal cache <strong>10 days</strong> · Sessions <strong>72 hours</strong> · Admin sessions <strong>12 hours</strong>. All enforced via DynamoDB TTL on <code>expires_at</code>.
           </div>
 
           <!-- Scrape jobs -->
@@ -1195,7 +1144,7 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
         </div>
         <div class="wlc-feature">
           <div class="wlc-icon">📧</div>
-          <div><h4>Weekly email alerts</h4><p>Get notified every Wednesday when your items go on sale. You control the email address.</p></div>
+          <div><h4>Weekly email alerts</h4><p>Get notified every Wednesday when your items go on sale, at the email you sign in with.</p></div>
         </div>
       </div>
       <!-- Step 2: How to use -->
@@ -1212,7 +1161,7 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
         </div>
         <div class="wlc-instruction">
           <div class="wlc-num">3</div>
-          <p><strong>Turn on email alerts</strong> — visit <strong>Notifications</strong> to set your notification email and enable weekly alerts. New deals drop every Wednesday.</p>
+          <p><strong>Turn on email alerts</strong> — visit <strong>Notifications</strong> and make sure weekly alerts are on. They go to the email you sign in with. New deals drop every Wednesday.</p>
         </div>
       </div>
       <!-- Step 3: Ready -->

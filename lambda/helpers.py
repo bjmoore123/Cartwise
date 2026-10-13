@@ -303,7 +303,7 @@ def get_session(event):
         try:
             user = users_table.get_item(Key={"email": email}).get("Item")
             # v9.5: a session whose account no longer exists (deleted, or the email was
-            # changed by an admin) is dead. Before, it kept working for its full 30 days.
+            # changed by an admin) is dead. Before, it kept working until it expired (72 h).
             if not user:
                 return None
             valid_after      = int(user.get("valid_after", 0))

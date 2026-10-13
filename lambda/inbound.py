@@ -217,14 +217,14 @@ def inbound_email_list(event):
     subject = (data.get("subject") or "").lower()
     if not any(kw in subject for kw in SUBJECT_KEYWORDS):
         _log_app_event("api", "warn", action="inbound-subject-rejected",
-                       sender=sender_email, subject=subject[:120],
+                       sender=sender_email, email_id=email_id, subject=subject[:120],
                        message="Inbound email rejected — subject did not match allowlist")
         return ok({"skipped": True, "reason": "subject not recognized"})
 
     # ── Spam filter 2: per-sender rate limit ──────────────────────────────────
     if not _check_rate_limit(sender_email):
         _log_app_event("api", "warn", action="inbound-rate-limited",
-                       sender=sender_email,
+                       sender=sender_email, email_id=email_id,
                        message=f"Inbound rate limit exceeded ({RATE_LIMIT_PER_HOUR}/hr)")
         return ok({"skipped": True, "reason": "rate limit exceeded"})
 
@@ -245,9 +245,17 @@ def inbound_email_list(event):
     # prefs.notify_email was dead code that would never match.
 
     if not user:
+        # v9.7: log it (sender only) so Admin → Inbound shows why nothing was imported
+        _log_app_event("api", "info", action="inbound-no-user", sender=sender_email, email_id=email_id,
+                       message="No Cartwise account for this sender; email ignored")
         return ok({"skipped": True})
 
-    resend_key = os.environ.get("RESEND_API_KEY", "")
+    # v9.7: reading a received email needs a Resend key that can read, not just send.
+    # Resend's "sending access" keys "can only send emails", which is why this call
+    # returned 403 since v9.1. Use RESEND_RECEIVING_KEY (a full-access key, from SSM
+    # /publix/resend-receiving-key) when set; fall back to the sending key.
+    resend_key = os.environ.get("RESEND_RECEIVING_KEY", "") or os.environ.get("RESEND_API_KEY", "")
+    key_kind   = "receiving" if os.environ.get("RESEND_RECEIVING_KEY") else "sending"
     if not resend_key or not email_id:
         _log_app_event("api", "error", action="inbound-config-error",
                        has_key=bool(resend_key), has_email_id=bool(email_id))
@@ -268,12 +276,15 @@ def inbound_email_list(event):
             error_body = e.read().decode("utf-8")[:500]
         except Exception:
             pass
+        hint = ("Resend refused to let this key read received email. Create a Full access API key in "
+                "Resend, store it in SSM /publix/resend-receiving-key, and redeploy."
+                if e.code in (401, 403) and key_kind == "sending" else
+                "Check the receiving key is valid and the email_id exists in Resend")
         _log_app_event("api", "error", action="inbound-fetch-failed",
                        email_id=email_id, user=user["email"],
                        message=f"HTTP Error {e.code}: {e.reason}",
-                       resend_error=error_body,
-                       has_key=bool(resend_key),
-                       hint="Check RESEND_API_KEY is valid and email_id exists in Resend")
+                       resend_error=error_body, key_kind=key_kind,
+                       has_key=bool(resend_key), hint=hint)
         return {"statusCode": 502, "headers": CORS,
                 "body": json.dumps({"error": "Failed to fetch email content"})}
     except Exception as e:
@@ -303,12 +314,13 @@ def inbound_email_list(event):
 
     prefs    = _to_py(user.get("prefs", DEFAULT_PREFS))
     existing = {itemName(i).lower() for i in (prefs.get("items") or [])}
-    added, skipped_names = 0, []
+    added, added_names, skipped_names = 0, [], []
     for name in parsed_names:
         if name.lower() not in existing:
             prefs.setdefault("items", []).append(name)
             existing.add(name.lower())
             added += 1
+            added_names.append(name)
         else:
             skipped_names.append(name)
 
@@ -320,6 +332,6 @@ def inbound_email_list(event):
     _log_app_event("api", "info", action="inbound-list-imported",
                    user=user["email"], added=added, total_parsed=len(parsed_names),
                    skipped_duplicates=len(skipped_names),
-                   added_items=str(parsed_names[:added]),
+                   added_items=str(added_names[:20]),   # v9.7: the ones actually added
                    skipped_items=str(skipped_names[:10]))
     return ok({"imported": added, "total_parsed": len(parsed_names)})

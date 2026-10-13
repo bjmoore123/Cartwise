@@ -116,22 +116,7 @@ function parseSavingsAmount(str) {
   return m ? parseFloat(m[1]) : null;
 }
 
-// Parse "N for $X" or "N/$X". Returns {qty, total, perUnit} or null.
-function parseMultiBuy(str) {
-  if (!str) return null;
-  const m = str.match(/(\d+)\s*(?:for|\/)\s*\$(\d+(?:\.\d+)?)/i);
-  if (!m) return null;
-  const qty = parseInt(m[1], 10);
-  const total = parseFloat(m[2]);
-  return qty > 0 ? { qty, total, perUnit: Math.round((total / qty) * 100) / 100 } : null;
-}
 
-// Extract "SAVE $X" amount from save_line. Returns numeric dollar amount or null.
-function parseSaveAmount(str) {
-  if (!str) return null;
-  const m = str.match(/save\s+(?:up\s+to\s+)?\$(\d+(?:\.\d+)?)/i);
-  return m ? parseFloat(m[1]) : null;
-}
 
 // ── Sort by actual savings amount, NOT by price ─────────────────────────────
 // Uses savingsDisplay() output so BOGO, multi-buy, and standard deals all
@@ -535,6 +520,21 @@ function _checkAdminHash() {
   }
 }
 window.addEventListener('hashchange', _checkAdminHash);
+
+// v9.6: the weekly run is cron(0 12 ? * WED *) in UTC, which is 8 AM ET in summer
+// and 7 AM ET in winter. Show it in the viewer's own time zone instead of a fixed "8:00 AM ET".
+function weeklyRunLabel(now) {
+  now = now || new Date();
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 12, 0, 0));
+  d.setUTCDate(d.getUTCDate() + ((3 - d.getUTCDay() + 7) % 7));   // next (or this) Wednesday
+  const t = d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit', timeZoneName:'short'});
+  const day = d.toLocaleDateString([], {weekday:'long'});
+  return `Every ${day} at about ${t}`;
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const el = document.getElementById('sched-time');
+  if (el) el.textContent = weeklyRunLabel();
+});
 async function doLogout(opts){
   // PDC-05: browser sends HttpOnly cookie automatically with credentials:'include'
   // v9.5: {local:true} when the server already ended the session (sessionEnded)
@@ -1038,9 +1038,11 @@ async function loadDeals(forceRefresh=false){
     const gen = ++_dealsGen;
     // Fire TPR fetch in parallel — don't await it, let it resolve in background
     // while core deals load, render, and paint. Either response may arrive first.
-    loadTprDeals(sid, gen);
+    // v9.6: "↻ Refresh" bypasses the browser's 5-minute cache (it used to re-show the cached copy)
+    const cacheMode = forceRefresh ? 'reload' : 'default';
+    loadTprDeals(sid, gen, cacheMode);
 
-    const res=await fetch(API+'/deals?store_id='+encodeURIComponent(sid)+'&types=core', {credentials:'include',headers:authHeaders()});
+    const res=await fetch(API+'/deals?store_id='+encodeURIComponent(sid)+'&types=core', {credentials:'include',headers:authHeaders(),cache:cacheMode});
     const data=await res.json();
     if(!res.ok) throw new Error(data.error||'Failed to load deals');
 
@@ -1536,89 +1538,11 @@ function savingsDisplay(d) {
   return savingsDisplayLegacy(d);
 }
 
+// Pre-v9.3 responses had no `offer`; the API now always sends one. Minimal fallback.
 function savingsDisplayLegacy(d) {
-  const sv  = decodeEntities(d.savings  || '');
-  const ai  = decodeEntities(d.save_line || '');
-  const fp  = d.final_price || 0;
-  const saveAmt = parseSaveAmount(ai);
-
-  // BOGO — show per-unit effective price if we can determine the item price
-  if (d.is_bogo || /buy\s*\d|get\s*\d\s*free/i.test(sv)) {
-    const bogoLabel = sv || 'Buy 1 Get 1 Free';
-    // Try to determine the item's regular price from available data
-    const itemPrice = fp > 0 ? fp : parseSavingsAmount(ai);
-    if (itemPrice && itemPrice > 0) {
-      // B1G1 → 2 items for the price of 1; B2G1 → 3 items for the price of 2
-      const isB2G1 = /buy\s*2|b2g1/i.test(sv);
-      const units  = isB2G1 ? 3 : 2;
-      const payFor = isB2G1 ? 2 : 1;
-      const perUnit = Math.round((itemPrice * payFor / units) * 100) / 100;
-      return {
-        text: `$${perUnit.toFixed(2)} ea`,
-        pctx: bogoLabel,
-        save: `Save $${(itemPrice * (units - payFor) / units).toFixed(2)} ea`,
-        isDiscount: false,
-        isClip: false,
-      };
-    }
-    // No price available — show deal text in amber
-    return { text: bogoLabel, pctx: null, save: null, isDiscount: true, isClip: false };
-  }
-
-  // Multi-buy: "2 for $25.99" → per-unit price + context + save
-  const mb = parseMultiBuy(sv);
-  if (mb) {
-    // Validate save amount: must be less than the multi-buy total to be real savings.
-    // If save >= total, it's the price being misread from save_line — suppress it.
-    const validSave = (saveAmt && saveAmt < mb.total) ? saveAmt : null;
-    return {
-      text: `$${mb.perUnit.toFixed(2)} ea`,
-      pctx: `${mb.qty} for $${mb.total.toFixed(2)}`,
-      save: validSave ? `Save $${validSave.toFixed(2)}` : null,
-      isDiscount: false,
-      isClip: false,
-    };
-  }
-
-  // TPR — sale price in green + save from savings field
-  if ((d.saving_type || '').toLowerCase() === 'tpr') {
-    if (fp > 0 && sv && /^\$[\d.]+$/.test(sv.trim())) {
-      return { text: `$${fp.toFixed(2)}`, pctx: null, save: `Save ${sv}`, isDiscount: false, isClip: false };
-    }
-    if (sv) return { text: 'Save ' + sv, pctx: null, save: null, isDiscount: true, isClip: false };
-  }
-
-  // Extra/Stacked — savings field is a discount amount, not a price
-  const isDiscountType = d.is_extra || d.saving_type === 'ExtraSavings' || isStacked(d);
-  if (isDiscountType && sv) {
-    const prefix = /^save/i.test(sv) ? '' : 'Save ';
-    return { text: prefix + sv, pctx: null, save: null, isDiscount: true, isClip: false };
-  }
-
-  // Coupon — save amount in amber + clip link
-  if (isCoupon(d)) {
-    const amt = saveAmt || parseSavingsAmount(sv);
-    const label = amt ? `Save $${amt.toFixed(2)}` : (sv || ai || 'Coupon');
-    return { text: label, pctx: null, save: null, isDiscount: true, isClip: d.has_coupon };
-  }
-
-  // Standard deal with a price — show price + save from save_line
-  if (sv) {
-    return {
-      text: sv,
-      pctx: null,
-      save: saveAmt ? `Save $${saveAmt.toFixed(2)}` : null,
-      isDiscount: false,
-      isClip: false,
-    };
-  }
-
-  // Text-only deals — show save_line as main text
-  if (ai && !/surprisingly low/i.test(ai) && !/^save\s+up\s+to/i.test(ai)) {
-    return { text: ai, pctx: null, save: null, isDiscount: true, isClip: false };
-  }
-
-  return { text: '', pctx: null, save: null, isDiscount: false, isClip: false };
+  const sv = decodeEntities(d.savings || '');
+  return { text: sv, pctx: null, save: decodeEntities(d.save_line || '') || null, extra: null,
+           isDiscount: !/^\$\d/.test(sv), isClip: !!d.has_coupon, kind: null };
 }
 
 // Generate deal card HTML (checkbox overlay)
@@ -2040,13 +1964,13 @@ function loadMoreDeals(){
 // TPR deals (63% of all deals) are fetched in parallel with core deals.
 // The fetch fires alongside the core request; by the time the TPR response
 // arrives (~900ms), core has already rendered (~650ms). Matches update silently.
-async function loadTprDeals(sid, gen){
+async function loadTprDeals(sid, gen, cacheMode){
   if(!sid) sid = prefs?.store_id;
   if(!sid) return;
   if(gen === undefined) gen = _dealsGen;
   _tprLoading=true;
   try{
-    const res=await fetch(API+'/deals?store_id='+encodeURIComponent(sid)+'&types=tpr', {credentials:'include',headers:authHeaders()});
+    const res=await fetch(API+'/deals?store_id='+encodeURIComponent(sid)+'&types=tpr', {credentials:'include',headers:authHeaders(),cache:cacheMode||'default'});
     const data=await res.json();
     if(!res.ok) throw new Error(data.error||'Failed to load TPR deals');
     if(gen !== _dealsGen) return;                     // a newer load, store change or logout superseded this
@@ -2182,6 +2106,9 @@ const INBOUND_ACTION_LABELS = {
   'inbound-html-parsed':       {icon:'🔍', label:'HTML parsed',          color:'var(--ink)'},
   'inbound-no-items':          {icon:'📭', label:'No items found',       color:'var(--amber)'},
   'inbound-list-imported':     {icon:'🛒', label:'Items imported',       color:'var(--green)'},
+  'inbound-subject-rejected':  {icon:'🚫', label:'Subject not recognized', color:'var(--amber)'},
+  'inbound-rate-limited':      {icon:'⏱️', label:'Rate limited',         color:'var(--amber)'},
+  'inbound-rate-limit-error':  {icon:'💥', label:'Rate-limit error',     color:'var(--red)'},
 };
 
 async function adminLoadInboundLogs(){
@@ -3084,7 +3011,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (action === 'select-store')      return selectStore(parseInt(el.dataset.index));
 
     // -- Deals --
-    if (action === 'refresh-deals')     return loadDeals(true);
+    if (action === 'refresh-deals')     { _matchesDirty = true; return loadDeals(true); }
     if (action === 'load-more-deals')   return loadMoreDeals();
     if (action === 'clear-dept-chip')   { clearDeptCB(el.dataset.container, el.dataset.dept); renderDeals(); return; }
     if (action === 'open-deal-modal') {
@@ -3183,7 +3110,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (action === 'dept-filter') {
       const fn = el.dataset.renderFn;
       if (fn === 'renderDeals')       renderDeals();
-      else if (fn === 'renderTpr')    { if (typeof renderTpr === 'function') renderTpr(); }
       return;
     }
     if (action === 'admin-render-auth-logs') return adminRenderAuthLogs();

@@ -190,7 +190,7 @@ Each batch is meant to be built, deployed to **staging**, verified, and then pro
 - [x] `.gitattributes` (`* text=auto eol=lf`, binary images)
 - [x] `docs/promotion-checklist.md`: develop/test on staging, promote, hotfix back-port, rollback
 - [ ] SSM secrets stay shared under `/publix/*` (acceptable for now; split only if staging ever needs different keys)
-- [ ] **Decision needed:** production fonts (DM Serif/Lato) or staging fonts (Fraunces/Outfit). The design canvas assumes production.
+- [x] Fonts: production's DM Serif/Lato (v9.4 default; staging's theme archived in `staging/archive/frontend-2026-03/`)
 
 ### Batch 1: Performance hotfix (P0-B) ✅ in production 2026-10-12 (v9.2 + v9.2.1)
 - [x] New `lambda/history.py` (pure, unit-tested) builds a per-title index; `/deals/history` returns `{badges: {repeat:[…], rare:[…]}, freq: {item: weeks}}`. The index is cached in the warm Lambda and invalidated by a keys-only signature query when a new weekly snapshot lands.
@@ -219,10 +219,10 @@ Test plan: `docs/v9.2.2-test-plan.md`. 18 new pytest tests (110 total) and 12 br
 ### Batch 3: Data integrity and ops
 - [x] #6 scraper safety (v9.2.2): each store fetch retries once (20 s, `FETCH_RETRY_DELAY_S`). If a source still fails or 0 deals come back, the store is skipped: no cache, history or corpus write and no emails, plus an error row in app logs (`source=scraper`, new "Weekly scrape" filter in Admin → Logs). Cache writes are generation-keyed (`store#<gen>#N`): new chunks, then the index row, then delete the old generation, so readers never see a half-written cache. Readers handle legacy `store#N` rows and retry once if a generation swap happens mid-read.
 - [x] #4 TPR race: **pulled into the Batch 1 deploy.** Each load gets a generation number, and a TPR response that beats the core response is parked and merged when core lands. Browser-tested in all orderings: old code dropped 973 of 1,888 deals in 4 of 6 cases; new code keeps all 1,888.
-- [ ] #13 admin logs newest-first (GSI on `source`+`ts`, or paginate and sort); stop scanning the whole app-logs table
-- [ ] TTL on every log writer (scraper email and cleanup logs have none); stop writing a log row on every cache hit
-- [ ] Investigate the 2026-03-30 history snapshot (3,257 deals)
-- [ ] Fix the retention, throttling and schedule copy (admin note, `deploy.sh` message, "8 AM ET")
+- [x] #13 admin logs newest-first: auth logs (v9.3), scrape and inbound logs (v9.5) read fully and sorted; app-logs no longer flooded by cache hits
+- [x] TTL on every log writer; daily cache counters instead of a row per hit (v9.3)
+- [x] Investigate the 2026-03-30 history snapshot (3,257 deals): audit tool built (v9.6); run it after deploy
+- [x] Fix the retention, throttling and schedule copy (v9.6)
 
 ### Batch 4: Offer model and price display ✅ built 2026-10-12 as v9.3 (staging next, together with v9.4)
 Test plan: `docs/v9.4-test-plan.md`.
@@ -240,8 +240,8 @@ Test plan: `docs/v9.4-test-plan.md`.
 - [x] #13 admin auth logs: read the whole (TTL-bounded) table and sort newest-first; the old `Scan(Limit=100)` returned an arbitrary 100 rows
 - [x] TTL on every log writer (scraper email logs: 30 days; cleanup logs: 90 days)
 - [x] Stop writing a log row on every `/deals` request: one counter row per day (`cachestats#YYYY-MM-DD`, `hits_<store>` / `misses_<store>`); Admin → Cache sums them
-- [ ] Investigate the 2026-03-30 history snapshot (3,257 deals)
-- [ ] Fix the retention, throttling and schedule copy (admin note, `deploy.sh` message, "8 AM ET")
+- [x] Investigate the 2026-03-30 history snapshot (3,257 deals): audit tool built (v9.6); run it after deploy
+- [x] Fix the retention, throttling and schedule copy (v9.6)
 
 ### Batch 5: UI refresh ✅ built 2026-10-12 as v9.4 (production fonts DM Serif/Lato; Ben can still switch)
 - [x] **Staging and production frontends are now the same files.** Staging's March theme (Fraunces/Outfit, gradients, `tag-*` classes, default threshold 80) is replaced; the old staging files are kept in `staging/archive/frontend-2026-03/`. Staging's hidden Admin nav + `#admin` route is adopted in both (go to `/#admin`).
@@ -252,9 +252,9 @@ Test plan: `docs/v9.4-test-plan.md`.
 - [x] Mobile: Filters button opens the same filters as a bottom sheet (44 px rows, Reset, "Show N deals"); two-column cards ≤680px
 - [x] Copy: "Deal Checker" → Cartwise; badge legend rewritten. Icons and `manifest.json` linked and now uploaded by `deploy.sh`
 - [x] `--ink-soft` #8a8a8a → #6b6b6b (4.5:1); Load-more hover no longer turns pale green on white text
-- [ ] Copy pass on "set your notification email" and panel titles vs nav labels (not touched)
+- [x] Copy pass: alerts go to the sign-in email; "Store Settings" → "My Store" (v9.7)
 
-### v9.5: Accounts and security ✅ staging-tested 2026-10-12, production deploy next — test plan `docs/v9.5-test-plan.md`
+### v9.5: Accounts and security ✅ in production 2026-10-12 — test plan `docs/v9.5-test-plan.md`
 - [x] Sessions of deleted accounts or changed emails are rejected; account delete, admin delete and admin email change revoke every session for that email
 - [x] `UNSUB_SECRET` fails closed (no `changeme` default)
 - [x] Verification link URL-encodes the email (plus addresses) and the email HTML is escaped
@@ -265,29 +265,31 @@ Test plan: `docs/v9.4-test-plan.md`.
 - [x] Admin sessions are bound to the current `ADMIN_SECRET`; rotating it ends them
 - [ ] Rotate the Resend API key and admin secrets (exposed in chat 2026-10-12): **not doing this; Ben accepted the risk 2026-10-12.** Steps remain in the v9.5 test plan if that changes. Never rotate `UNSUB_SECRET`.
 
-### v9.6: Data accuracy and ops (next)
-- [ ] `_week_start()` doesn't parse Publix "M/D" dates; a manual Mon/Tue scrape labels last week's ad as the new week
-- [ ] Investigate and clean the 2026-03-30 history snapshot (3,257 deals; likely staging writing to production tables)
-- [ ] "↻ Refresh" doesn't refresh (`forceRefresh` unused; responses cached 5 min)
-- [ ] Schedule copy "8:00 AM ET" vs the fixed-UTC cron (7 AM Nov–Mar): fix the copy or use an EventBridge Scheduler time zone
-- [ ] Admin retention note and the `deploy.sh` throttling message don't match the code
+### v9.6: Data accuracy and ops ✅ built 2026-10-12 (with v9.7) — test plan `docs/v9.7-test-plan.md`
+- [x] `_week_start()` parses Publix "M/D" dates (majority vote over weekly-ad deals, "1/1" placeholders ignored, year rollover); a Mon/Tue manual scrape no longer files last week's ad as the new week
+- [x] `tools/history_audit.py`: per-week counts, outlier and duplicate-id flags, de-duplicate or delete a week with a JSON backup; run against 2026-03-30 after deploy (and any stray 2026-10-12 week from manual runs)
+- [x] "↻ Refresh" bypasses the browser cache (`cache: 'reload'`) and recomputes matches
+- [x] Schedule shown in the viewer's time zone (cron stays 12:00 UTC: 8 AM EDT / 7 AM EST)
+- [x] Admin retention note and `deploy.sh` throttling message match the code
 
-### v9.7: Inbound email import
-- [ ] Resend `/emails/receiving/{id}` returns 403 (open since v9.1): key permissions and endpoint version
-- [ ] `added_items` log lists the first N parsed, not the ones added; two inbound events have no admin label; unknown senders aren't logged
+### v9.7: Inbound email import ✅ built 2026-10-12
+- [x] 403 root cause: Resend sending-access keys "can only send emails". Import reads with `RESEND_RECEIVING_KEY` (full-access key, SSM `/publix/resend-receiving-key`, optional), falls back to the sending key with an actionable hint
+- [x] `added_items` logs the items actually added; unknown senders logged (`inbound-no-user`); admin labels for subject-rejected / rate-limited / rate-limit-error; rejection rows carry `email_id`
+- [ ] Create the full-access key and store it in SSM (Ben, optional; not a rotation of existing keys)
 
 ### Batch 6: Hygiene (ride-along)
 - [x] Delete `lambda/api.py` (stale duplicate parser, never deployed) and the unused `rapidfuzz` install (v9.3)
-- [ ] Dead CSS/JS (old `.badge-*`, `savingsDisplayLegacy` once no pre-v9.3 cache rows remain) and duplicate test classes
-- [ ] URL-encode the verification email link; inbound log fixes; session cleanup on account delete or email reset
-- [ ] Update the design doc (history key format, environments, release process)
+- [x] Dead CSS/JS removed (49 CSS rules, legacy price guessing, hidden loader, `renderTpr`); duplicate test classes removed so the newer ones run (v9.7)
+- [x] URL-encode the verification email link (v9.5); inbound log fixes (v9.7); session cleanup on account delete or email reset (v9.5)
+- [x] Design doc updated: `cartwise-design-document-v9.7.md` (history keys, cache generations, offer model, email, environments, release process) (v9.7)
+- [x] `GET /user/matches` kept as the server-side email preview; reports the threshold actually used (v9.7)
 
 ## 5. Verification checklist
 
 - [x] Fixture table: every distinct `savings`/`save_line` shape → expected `offer` (pytest `test_offer.py`).
-- [ ] The same fixture rendered by card and email shows identical headline, context, and save text.
+- [x] Card, modal and email all render the same `offer` fields (v9.3; `test_offer.py`, browser checks).
 - [x] Matcher parity fixture passes in pytest **and** Node.
-- [ ] HAR: TPR merged on the first load and on a same-store refresh (deal count = `total_all`).
+- [x] TPR merged on first load and refresh in every response order (race harness, 1,888/1,888).
 - [x] Simulate a Publix fetch failure in the scraper: the previous week's cache is retained (pytest `TestStoreWorkerSafety`).
-- [ ] Admin auth log's newest row equals the latest login (fixed in v9.3; check on staging, T-ops-1).
+- [x] Admin auth log's newest row equals the latest login (v9.3).
 - [x] Mobile (≤ 600px): filters reachable (v9.4 sheet), autocomplete tap works, Enter in store search works (v9.2.2).

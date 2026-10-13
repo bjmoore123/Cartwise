@@ -1,6 +1,6 @@
 # CartWise — Technical Design Document
 
-> **Version:** 9.1 (March 2026 — Post-Security Hardening)
+> **Version:** 9.7 (October 2026). Supersedes v9.1; see §0 for what changed.
 > **Status:** Production
 > **Stack:** AWS Serverless (Lambda, DynamoDB, API Gateway, S3, CloudFront, EventBridge)
 > **Domain:** cartwise.shopping
@@ -24,8 +24,21 @@
 12. [Deployment & Operations](#12-deployment--operations)
 13. [Constraints & Limits Reference](#13-constraints--limits-reference)
 14. [Security Changelog (v9.0 → v9.1)](#14-security-changelog-v90--v91)
+15. [Environments & Release Process](#15-environments--release-process)
 
 ---
+
+## 0. What changed since v9.1 (October 2026)
+
+| Release | Highlights |
+|---|---|
+| v9.2 / v9.2.1 | History summary computed on the server and persisted (`/deals/history` 4.7 MB → 60 KB, browser CPU ~190 s → 3 ms); per-environment cookie names; staging separated from production data; secrets reused on deploy; TPR load race fixed |
+| v9.2.2 | Login recovers after validation errors; Enter in store search; CSP-safe autocomplete; corpus reads `terms`; "Stacked" saving type; Price drops filter; threshold slider shows the effective value; admin PIN reset clears lockout; scraper keeps the last good cache (retry, skip on failure, generation-keyed chunks) |
+| v9.3 | **Offer model**: `classify_offer()` normalizes every deal (TPR `savings` is the discount; the price is `finalPrice`); cards, modal and email render the same offer; email rebuilt (`shared/email_render.py`); Extra Savings = promotion type 4; ops log fixes; `lambda/api.py` removed |
+| v9.4 | Sorts by savings / % off / price; history stores price per week, "Lowest in N wks" chip, price chart; JS and Python matchers give identical scores (parity fixture); UI refresh (one tag per card, price-color rule, mobile filter sheet); staging and production frontends unified; admin nav behind `/#admin` |
+| v9.5 | Sessions of deleted accounts / changed emails rejected and revoked; open tabs return to sign-in when the session ends; admin sessions bound to `ADMIN_SECRET`; `UNSUB_SECRET` fails closed; verification link encoding; enumeration-safe registration copy |
+| v9.6 | Ad week parsed from Publix "M/D" dates; Refresh bypasses the browser cache; schedule shown in the viewer's time zone; history audit tool (`tools/history_audit.py`); copy fixes |
+| v9.7 | Inbound import reads received email with a separate full-access key (`RESEND_RECEIVING_KEY`); inbound logging fixes; dead CSS/JS and duplicate tests removed; this document |
 
 ## 1. System Overview
 
@@ -43,7 +56,7 @@ The application operates on a fully serverless AWS architecture, requiring zero 
 
 **Email Import:** Users forward their Publix "My List" email to a Resend inbound address; a webhook parses the HTML table and merges items into their shopping list automatically.
 
-**Deal History:** Weekly snapshots are written to a deal-history table (52-week TTL) with a global deal-corpus for persistent autocomplete suggestions. The frontend surfaces quality badges ("Best price this year", "Repeat from last week") based on historical comparison.
+**Deal History:** Weekly snapshots are written to a deal-history table (52-week TTL) with a global deal-corpus for persistent autocomplete suggestions. The server builds a per-store index from the snapshots (persisted under `sk="_summary"`) and returns small summaries: history chips ("Lowest in N wks", "Repeat deal", "Rarely on sale"), list-item frequency, and per-title price points for the modal chart.
 
 **Admin Dashboard:** Full user management, scraper controls, log viewers (auth, app, inbound, CloudWatch tail), and platform statistics.
 
@@ -54,7 +67,7 @@ The application operates on a fully serverless AWS architecture, requiring zero 
 3. For each user, the shared matcher scores their shopping list items against cached deals using their chosen match threshold.
 4. If matches are found and the user has email enabled and their email is verified, an HTML alert email is sent via Resend.
 5. History snapshots and corpus updates are written for long-term analytics and autocomplete.
-6. When users visit the web UI, they can browse all deals, view computed matches (via the same shared matcher called on-the-fly through the API), manage their shopping list, and adjust their match threshold.
+6. When users visit the web UI, they can browse all deals, view matches (computed in the browser by a JS port of the shared matcher; a parity fixture keeps both identical), manage their shopping list, and adjust their match threshold.
 
 ---
 
@@ -190,11 +203,11 @@ Allowed keys are enforced by `ALLOWED_PREF_KEYS`: `store_id`, `store_name`, `sto
 
 ### 3.4 cartwise-deals
 
-**Primary key:** `store_id` (S). **TTL:** 10 days. Chunked storage pattern — an index row at `store_id` (metadata) plus chunk rows at `store_id#0`, `store_id#1`, etc. Each chunk holds up to 200 deals as a JSON-encoded string.
+**Primary key:** `store_id` (S). **TTL:** 10 days. Chunked storage pattern: an index row at `store_id` (metadata: `count`, `num_chunks`, `fetched_at`, `gen`) plus chunk rows at `store_id#<gen>#0`, `store_id#<gen>#1`, … (legacy rows: `store_id#N`). Each chunk holds up to 200 parsed deals as a JSON string. Writes create the new generation's chunks, then switch the index, then delete the old generation, so readers never see a partial set.
 
 ### 3.5 cartwise-deal-history
 
-**Primary key:** `store_id` (S). **TTL:** 52 weeks. Same chunked pattern. Key format: `store_id#YYYY-MM-DD` (index) + `store_id#YYYY-MM-DD#N` (chunks). Stores slim deal records: `id`, `title`, `savings`, `saving_type`, `is_bogo`, `department`, `brand`.
+**Keys:** `store_id` (PK, S) + `sk` (sort key, S). **TTL:** 52 weeks. Index row `sk="YYYY-MM-DD"` (Monday of the ad week) plus chunk rows `sk="YYYY-MM-DD#N"`. Slim deal records: `id`, `title`, `savings`, `saving_type`, `is_bogo`, `department`, `brand`, and since v9.4 `final_price`, `save_line`, `regular_price`. The persisted history index lives at `sk="_summary"` (meta, `fmt=3`) + `sk="_summary#N"` (gzip chunks ≤350 KB); the scraper deletes it after each weekly write and it is rebuilt on demand.
 
 ### 3.6 cartwise-deal-corpus
 
@@ -205,8 +218,8 @@ Allowed keys are enforced by `ALLOWED_PREF_KEYS`: `store_id`, `store_name`, `sto
 | Table | PK | TTL | Purpose |
 |---|---|---|---|
 | `cartwise-auth-logs` | `log_id` (S) | 90 days | Login attempts: timestamp, email, success/failure, IP, user agent, reason, CloudFront geo (country, city) |
-| `cartwise-app-logs` | `log_id` (S) | 30 days | Structured application events: source (frontend/api/email/cache/inbound-rate), level (info/warn/error), event-specific fields. Also used for rate limit counters. |
-| `cartwise-scrape-logs` | `job_id` (S) | — | Scraper run summaries: stores examined, total deals, emails sent, errors, per-store details, timing |
+| `cartwise-app-logs` | `log_id` (S) | 30 days (cleanup logs 90) | Structured events: source (frontend/api/email/cache/scraper/inbound-rate/rate-limit), level, event fields. Also rate-limit counters and daily cache counters (`cachestats#YYYY-MM-DD`, `hits_<store>`/`misses_<store>`). |
+| `cartwise-scrape-logs` | `job_id` (S) | 1 year | Scraper run summaries: stores examined, total deals, emails sent, errors, per-store details, timing |
 
 ---
 
@@ -237,7 +250,7 @@ All routes are served by the API Lambda via a `$default` catch-all API Gateway r
 | GET/POST | `/user/unsubscribe` | Token | HMAC-verified unsubscribe (no session needed) |
 | POST | `/user/test-email` | Session | Send test alert (rate-limited: 6/user/hour) |
 | POST | `/user/resend-weekly` | Session | Re-trigger weekly email (rate-limited: 3/user/hour) |
-| GET | `/user/matches` | Session | Compute matches on-the-fly from cached deals |
+| GET | `/user/matches` | Session | Server-side matches ("what would this week's email contain"); the web page matches in the browser |
 
 ### 4.3 Deal Routes
 
@@ -245,7 +258,7 @@ All routes are served by the API Lambda via a `$default` catch-all API Gateway r
 |---|---|---|---|
 | GET | `/stores/search?q=...` | Session | Search Publix stores by city, ZIP, or store number |
 | GET | `/deals?store_id=...&types=...` | Session | Get deals for store (cache-first, live fallback) |
-| GET | `/deals/history?store_id=...` | Session | Weekly snapshots for price history badges |
+| GET | `/deals/history?store_id=...[&title=...]` | Session | History summary (badges, list-item frequency), or price points for one title |
 | GET | `/deals/corpus` | Session | Global deal title set for autocomplete (24h cache) |
 
 ### 4.4 Admin Routes
@@ -297,13 +310,17 @@ Deals are deduplicated by their `id` field. The WeeklyAd pool is processed first
 
 ### 5.3 Caching Strategy
 
-After fetching, deals are cached in DynamoDB using a chunked storage pattern (200 deals per row) to stay within DynamoDB's 400KB item size limit. Old chunks are deleted before writing new ones to prevent stale data accumulation. A separate index row stores metadata (total count, number of chunks, `fetched_at` timestamp). Cache TTL is 10 days.
+Each store fetch retries once (20 s). If a source fails or 0 deals come back, the store is skipped: no cache, history or corpus write and no emails, plus an `app_logs` error (`source=scraper`). Otherwise deals are cached with generation-keyed chunks (§3.4). Every deal is parsed by `shared/deal_parser.parse_deal()`, which adds the normalized `offer` (§5.5). Cache TTL is 10 days.
 
 ### 5.4 History & Corpus
 
-**Deal History:** A slim snapshot of each deal is written to `deal-history` keyed by `store_id#YYYY-MM-DD`. The Monday of the ad week is derived from the first deal's `valid_from` date. 52-week TTL.
+**Deal History:** A slim snapshot of each deal is written to `deal-history` under `sk="YYYY-MM-DD"`. The week is the Monday of the most common real `valid_from` among weekly-ad deals (Publix sends "M/D"; TPR and coupons carry a "1/1" placeholder). 52-week TTL. `tools/history_audit.py` lists weeks, flags outliers and can de-duplicate or delete a week (with a JSON backup).
 
-**Deal Corpus:** All deal titles and brands are merged into a DynamoDB string set at `corpus_id="global"`. This set grows over time and powers autocomplete suggestions that persist even after weekly cache rotation.
+**Deal Corpus:** All deal titles and brands are merged into the DynamoDB string set `terms` at `corpus_id="global"` (the API also reads the legacy `titles`). This set grows over time and powers autocomplete suggestions that persist even after weekly cache rotation.
+
+### 5.5 Offer Model (v9.3)
+
+`classify_offer()` turns Publix's overloaded `savings` text into one structure: `kind` (price, multi, bogo, amount_off, pct_off, coupon, free), `headline` (what you pay or the mechanic), `context`, `save_text`, `price` (per unit you pay), `regular`, `save`, `pct`, `unit`, `coupon_required`, `extra`. Key facts from the raw feed: for `Tpr` deals `savings` is the **discount** and `finalPrice` the price; Extra Savings is `wa_promotionTypeId=4`; Stacked deals carry `additionalSavings`. `tests/fixtures/publix_offers.json` holds one real deal per distinct shape (55).
 
 ---
 
@@ -350,7 +367,7 @@ Each deal can only appear once in results (deduplicated by deal id). Results are
 
 ### 7.1 Weekly Alert Emails
 
-When the scraper finds matches for a user with `email_verified=True` and `email_enabled=True`, it sends an HTML email via Resend with matched deals, images, prices, and an HMAC-signed unsubscribe link. Sender address: `alerts@cartwise.shopping`.
+When the scraper finds matches for a user with `email_verified=True` and `email_enabled=True`, it sends an email via Resend rendered by `shared/email_render.py`: the same headline/context/save as the web cards, one type tag per row, product images, clip-coupon links, real validity dates, HTML-escaped content, a plain-text part, and `List-Unsubscribe` + `List-Unsubscribe-Post` headers (one-click). Capped at 30 rows. Sender address: `alerts@cartwise.shopping`.
 
 ### 7.2 Unsubscribe Flow
 
@@ -372,12 +389,12 @@ Users forward their Publix "My List" email to `cartwise@minaushii.resend.app`.
 2. **To-address check** — must be addressed to the configured `INBOUND_EMAIL_ADDR`.
 3. **Subject allowlist** — subject must contain one of: "my list", "publix", "shopping list", "grocery list".
 4. **Per-sender rate limit** — max 5 emails per sender per hour (DynamoDB atomic counter with hourly reset and 2-hour TTL).
-5. **User lookup** — silently drops emails from unregistered senders (checked against both login email and `notify_email`).
+5. **User lookup** — drops emails from unregistered senders (login email; `notify_email` is locked to it) and logs `inbound-no-user`.
 
 ### 8.2 Processing Pipeline
 
 1. Webhook received → signature verified → subject checked → rate limit checked → user matched.
-2. Full HTML body fetched from Resend API (`GET /emails/receiving/{email_id}`).
+2. Full HTML body fetched from Resend (`GET /emails/receiving/{email_id}`). Webhooks carry only metadata. Resend "sending access" keys can only send, so this call uses `RESEND_RECEIVING_KEY` (a full-access key from SSM `/publix/resend-receiving-key`), falling back to the sending key with a 403 hint in the logs.
 3. Custom `HTMLParser` extracts item names from the Publix My List table (looks for `Name`/`Quantity` headers, takes column 1 from data rows).
 4. Parsed items merged into user's `prefs.items`, skipping case-insensitive duplicates.
 
@@ -395,7 +412,7 @@ The frontend is a single-page application built with vanilla HTML, CSS, and Java
 
 | Panel | Description |
 |---|---|
-| Deals | Browse all deals with department, savings type, and text search filters. Paginated (50/page). |
+| Deals | Browse all deals with savings-type (Weekly ad, Price drops, BOGO, Coupons, Extra) and department filters, search, and sorts (biggest savings, % off, lowest price, name). Matches first. Paginated (50/page). Mobile: filters in a bottom sheet. |
 | My List | Add/remove items with autocomplete from deals + corpus. Bulk import. Inbound email import instructions. Export to text/clipboard. |
 | Notifications | Email on/off toggle, test email, resend weekly, schedule preferences. |
 | My Store | Store finder by city/ZIP/store number. Store card with hours, address, phone. |
@@ -414,7 +431,11 @@ Login and registration use a 4-digit PIN input with custom auto-advance behavior
 
 ### 9.4 Mobile Responsiveness
 
-Sidebar navigation on desktop (>768px), bottom tab bar + slide-out hamburger menu on mobile. Deal cards reflow to single-column on narrow viewports.
+Sidebar navigation on desktop, slide-out hamburger menu on mobile (≤680px). Filters open as a bottom sheet below 900px. Deal cards use two columns on phones.
+
+### 9.5 Rendering rules (v9.4)
+
+One type tag per card over the image (Sale, BOGO, "N for", Coupon, Extra) plus "+ Coupon"; headline green for what you pay, red for an amount off, ink for a mechanic; save line red; history chips neutral grey in the card footer. Tag logic: `dealTypeKey()` in `app.js` ⇄ `deal_tag()` in `shared/email_render.py` (KEEP IN SYNC). Any 401 from a user endpoint returns the tab to sign-in; the session is re-checked on focus and every 5 minutes.
 
 ---
 
@@ -779,3 +800,19 @@ Session 21 security hardening. All items deployed and verified via live vulnerab
 | 18 | LOW | Removed Resend API key prefix from error logs (was leaking first 8 chars) |
 | 19 | LOW | Removed wildcard `Access-Control-Allow-Origin: *` from unsubscribe HTML pages |
 | 20 | LOW | Added `Referrer-Policy` and `Permissions-Policy` security headers |
+
+---
+
+## 15. Environments & Release Process
+
+| | Production | Staging |
+|---|---|---|
+| Folder | `C:\Projects\Cartwise\production` (git, `origin` = github.com/bjmoore123/Cartwise) | `C:\Projects\Cartwise\staging` (no git) |
+| Resource prefix | `cartwise-*` | `cartwise-staging-*` |
+| Hosts | `cartwise.shopping`, `api.cartwise.shopping` | `staging.cartwise.shopping`, `api-staging.cartwise.shopping` |
+| Cookies | `session` / `admin_session` | `session_stg` / `admin_session_stg` |
+
+The source files are identical in both folders; `deploy.sh` reads `ENV=staging` and injects the API URL at upload. Secrets (`ADMIN_SECRET`, `UNSUB_SECRET`, `RESEND_WEBHOOK_SECRET`) are reused from the live API Lambda when not passed; the Resend keys come from SSM (`/publix/resend-api-key`, optional `/publix/resend-receiving-key`).
+
+**Release flow:** build and test (pytest, browser checks) → deploy staging → manual checks from the release's `docs/vX.Y-test-plan.md` → approval → copy into production, commit, deploy, push. See `docs/promotion-checklist.md` for the commands, hotfix back-porting and rollback.
+

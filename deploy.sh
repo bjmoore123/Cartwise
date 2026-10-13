@@ -376,6 +376,14 @@ print('API zip: '+dst)
 RESEND_KEY_VAL=$(aws ssm get-parameter --name "/publix/resend-api-key" \
   --with-decryption --query Parameter.Value --output text --region "${AWS_REGION}" 2>/dev/null || echo "${RESEND_API_KEY}")
 
+# v9.7: optional full-access Resend key used only to READ received emails (inbound
+# list import). Sending-only keys get 403 from /emails/receiving/{id}.
+RESEND_RECEIVING_KEY_VAL=$(aws ssm get-parameter --name "/publix/resend-receiving-key" \
+  --with-decryption --query Parameter.Value --output text --region "${AWS_REGION}" 2>/dev/null || true)
+[ "${RESEND_RECEIVING_KEY_VAL}" = "None" ] && RESEND_RECEIVING_KEY_VAL=""
+if [ -n "${RESEND_RECEIVING_KEY_VAL}" ]; then ok "Resend receiving key found (inbound import enabled)"
+else info "No /publix/resend-receiving-key in SSM: inbound list import will log a 403 hint"; fi
+
 # env applied via apply_env (supports special chars in ADMIN_SECRET)
 
 if ! exists aws lambda get-function --function-name "${LAMBDA_API}" --region "${AWS_REGION}"; then
@@ -410,6 +418,7 @@ if ! exists aws lambda get-function --function-name "${LAMBDA_API}" --region "${
     "UNSUB_SECRET" "${UNSUB_SECRET}" \
     "INBOUND_EMAIL_ADDR" "${INBOUND_EMAIL_ADDR}" \
     "RESEND_WEBHOOK_SECRET" "${RESEND_WEBHOOK_SECRET}" \
+    "RESEND_RECEIVING_KEY" "${RESEND_RECEIVING_KEY_VAL}" \
     "ACM_CERT_ARN" "${ACM_CERT_ARN}" \
     "CF_LOG_BUCKET" "${CF_LOG_BUCKET}" \
     "CF_LOG_PREFIX" "${CF_LOG_PREFIX}" \
@@ -451,6 +460,7 @@ else
     "UNSUB_SECRET" "${UNSUB_SECRET}" \
     "INBOUND_EMAIL_ADDR" "${INBOUND_EMAIL_ADDR}" \
     "RESEND_WEBHOOK_SECRET" "${RESEND_WEBHOOK_SECRET}" \
+    "RESEND_RECEIVING_KEY" "${RESEND_RECEIVING_KEY_VAL}" \
     "ACM_CERT_ARN" "${ACM_CERT_ARN}" \
     "CF_LOG_BUCKET" "${CF_LOG_BUCKET}" \
     "CF_LOG_PREFIX" "${CF_LOG_PREFIX}" \
@@ -706,7 +716,7 @@ aws apigatewayv2 update-stage \
   --stage-name '$default' \
   --default-route-settings '{"ThrottlingBurstLimit":200,"ThrottlingRateLimit":100}' \
   --region "${AWS_REGION}" > /dev/null 2>&1 \
-  && ok "API Gateway throttling set (20 rps, burst 50)" \
+  && ok "API Gateway throttling set (100 rps, burst 200)" \
   || echo "   ⚠️  Could not set API Gateway throttling — set manually if needed"
 
 # ── STEP 7: Frontend ──────────────────────────────────────────────────────────
@@ -863,6 +873,7 @@ apply_env "${LAMBDA_API}" \
     "UNSUB_SECRET" "${UNSUB_SECRET}" \
     "INBOUND_EMAIL_ADDR" "${INBOUND_EMAIL_ADDR}" \
     "RESEND_WEBHOOK_SECRET" "${RESEND_WEBHOOK_SECRET}" \
+    "RESEND_RECEIVING_KEY" "${RESEND_RECEIVING_KEY_VAL}" \
     "ACM_CERT_ARN" "${ACM_CERT_ARN}" \
     "CF_LOG_BUCKET" "${CF_LOG_BUCKET}" \
     "CF_LOG_PREFIX" "${CF_LOG_PREFIX}" \

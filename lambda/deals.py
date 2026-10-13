@@ -16,7 +16,7 @@ from helpers import (
 )
 from logging_utils import _log_app_event, count_cache_event
 from shared.deal_parser import parse_deal
-from shared.matcher import match_deals_for_user
+from shared.matcher import match_deals_for_user, _get_threshold
 from history import (build_index, compute_badges, item_frequency, title_points,
                      serialize_index, deserialize_index, SUMMARY_FMT)
 
@@ -461,6 +461,10 @@ def get_deal_corpus(event):
 def get_matches(event):
     """GET /user/matches — compute matches on-the-fly from cached deals + user items.
 
+    v9.7 decision: kept. The web page matches in the browser (same algorithm,
+    parity-tested), so the page no longer calls this; it stays as the server-side
+    "what would this week's email contain" check, used by support and tests.
+
     Returns the same shape as the scraper's match output, ensuring web UI
     and email alerts produce identical results from the shared matcher.
     """
@@ -533,5 +537,6 @@ def get_matches(event):
         "matches":     matches,
         "total":       len(matches),
         "store_id":    store_id,
-        "sensitivity": matching.get("sensitivity", "normal"),
+        # v9.7: report what the matcher actually used (was "normal" even with a slider value)
+        "threshold":   _get_threshold(matching),
     })

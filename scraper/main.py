@@ -158,29 +158,56 @@ def cache_deals(store_id: str, deals: list[dict]):
                 print(f"  WARNING: could not delete old chunk {i} for {store_id}: {e}")
 
 
-def _week_start(deals: list[dict]) -> str:
-    """
-    Derive the Monday of the current ad week from the first deal's valid_from date.
-    Falls back to the Monday of today if no valid_from is present or parseable.
-    """
-    for d in deals:
-        vf = d.get("valid_from", "")
-        if vf:
+def _parse_valid_date(vf: str, today: date):
+    """Publix valid dates: "10/7" (no year) or older "Oct 7, 2026" / "2026-10-07" / "10/7/2026".
+    For "M/D" the year is the one that puts the date nearest to today (handles Dec→Jan)."""
+    vf = (vf or "").strip()
+    if not vf or vf in ("1/1", "01/01"):           # TPR / coupon placeholder
+        return None
+    for fmt in ("%b %d, %Y", "%Y-%m-%d", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(vf, fmt).date()
+        except ValueError:
+            pass
+    try:
+        m, d = (int(x) for x in vf.split("/")[:2])
+        best = None
+        for y in (today.year - 1, today.year, today.year + 1):
             try:
-                # valid_from may be "Jan 23, 2026" or "2026-01-23" — try both
-                for fmt in ("%b %d, %Y", "%Y-%m-%d", "%m/%d/%Y"):
-                    try:
-                        dt = datetime.strptime(vf.strip(), fmt)
-                        # Roll back to Monday
-                        monday = dt - timedelta(days=dt.weekday())
-                        return monday.strftime("%Y-%m-%d")
-                    except ValueError:
-                        continue
-            except Exception:
-                pass
-    # Fallback: Monday of current week
-    today = date.today()
-    monday = today - timedelta(days=today.weekday())
+                cand = date(y, m, d)
+            except ValueError:
+                continue
+            if best is None or abs((cand - today).days) < abs((best - today).days):
+                best = cand
+        return best
+    except (ValueError, TypeError):
+        return None
+
+
+def _week_start(deals: list[dict], today: date | None = None) -> str:
+    """Monday of the ad week, from the weekly ad's valid_from dates (v9.6).
+
+    The old version only parsed formats Publix no longer sends, looked at the first
+    deal (often a TPR with a "1/1" placeholder) and fell back to "this Monday". A
+    manual scrape on Monday or Tuesday therefore filed LAST week's ad under the new
+    week. Now: the most common real valid_from among weekly-ad deals decides.
+    """
+    from collections import Counter
+    today = today or date.today()
+    votes = Counter()
+    for d in deals:
+        if (d.get("saving_type") or "WeeklyAd") not in ("WeeklyAd", "Stacked", "StackedDeals", "ExtraSavings"):
+            continue
+        dt = _parse_valid_date(d.get("valid_from", ""), today)
+        if dt:
+            votes[dt] += 1
+    if not votes:                               # nothing usable: any deal with a real date
+        for d in deals:
+            dt = _parse_valid_date(d.get("valid_from", ""), today)
+            if dt:
+                votes[dt] += 1
+    start = votes.most_common(1)[0][0] if votes else today
+    monday = start - timedelta(days=start.weekday())
     return monday.strftime("%Y-%m-%d")
 
 
