@@ -534,6 +534,7 @@ if ! exists aws lambda get-function --function-name "${LAMBDA_SCRAPER}" --region
     --region "${AWS_REGION}" > /dev/null
   aws lambda wait function-active --function-name "${LAMBDA_SCRAPER}" --region "${AWS_REGION}"
   apply_env "${LAMBDA_SCRAPER}" \
+    "SCRAPER_FUNCTION" "${LAMBDA_SCRAPER}" \
     "FRONTEND_URL" "${FRONTEND_URL}" \
     "API_URL" "${API_URL}" \
     "UNSUB_SECRET" "${UNSUB_SECRET}" \
@@ -556,6 +557,7 @@ else
     --region "${AWS_REGION}" > /dev/null
   aws lambda wait function-updated --function-name "${LAMBDA_SCRAPER}" --region "${AWS_REGION}" 2>/dev/null || sleep 5
   apply_env "${LAMBDA_SCRAPER}" \
+    "SCRAPER_FUNCTION" "${LAMBDA_SCRAPER}" \
     "FRONTEND_URL" "${FRONTEND_URL}" \
     "API_URL" "${API_URL}" \
     "UNSUB_SECRET" "${UNSUB_SECRET}" \
@@ -885,6 +887,7 @@ apply_env "${LAMBDA_API}" \
     "COOKIE_DOMAIN" "${COOKIE_DOMAIN}"
 aws lambda wait function-updated --function-name "${LAMBDA_API}" --region "${AWS_REGION}" 2>/dev/null || sleep 5
 apply_env "${LAMBDA_SCRAPER}" \
+    "SCRAPER_FUNCTION" "${LAMBDA_SCRAPER}" \
     "FRONTEND_URL" "${FRONTEND_URL}" \
     "API_URL" "${API_URL}" \
     "UNSUB_SECRET" "${UNSUB_SECRET}" \
@@ -1481,7 +1484,7 @@ fi
 echo "╠═══════════════════════════════════════════════════════════════════╣"
 echo "║  Test scraper now:                                                ║"
 echo "║    aws lambda invoke --function-name ${LAMBDA_SCRAPER} \\"
-echo "║      --region ${AWS_REGION} /tmp/out.json && cat /tmp/out.json"
+echo "║      --region ${AWS_REGION} out.json && cat out.json"
 echo "║  Tail logs:                                                       ║"
 echo "║    aws logs tail /aws/lambda/${LAMBDA_SCRAPER} --follow"
 echo "╚═══════════════════════════════════════════════════════════════════╝"

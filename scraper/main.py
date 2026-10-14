@@ -701,7 +701,11 @@ def _orchestrator(send_emails: bool = False):
     job["total_users"]     = sum(len(v) for v in by_store.values())
     print(f"Fanning out to {len(by_store)} store worker(s) for {job['total_users']} user(s)...\n")
 
-    scraper_fn = os.environ.get("SCRAPER_FUNCTION", "cartwise-scraper")
+    # v9.8.1: workers run on THIS function. The scraper Lambda never had
+    # SCRAPER_FUNCTION set, so staging fell back to "cartwise-scraper" (production)
+    # and IAM refused it. AWS_LAMBDA_FUNCTION_NAME is always set by Lambda.
+    scraper_fn = (os.environ.get("SCRAPER_FUNCTION") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+                  or "cartwise-scraper")
     lambda_cli = boto3.client("lambda", region_name=AWS_REGION)
 
     for store_id, store_users in by_store.items():
@@ -745,4 +749,5 @@ def _orchestrator(send_emails: bool = False):
     job["finished_at"] = datetime.now(timezone.utc).isoformat()
     write_scrape_log(job)
     mode = "scheduled (emails enabled)" if send_emails else "manual (no emails)"
-    print(f"\nOrchestrator done. Mode: {mode}. {len(by_store)} workers dispatched.")
+    sent = sum(1 for d in job["store_details"] if d.get("status") == "dispatched")
+    print(f"\nOrchestrator done. Mode: {mode}. {sent} of {len(by_store)} workers dispatched.")

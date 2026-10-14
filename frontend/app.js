@@ -2853,15 +2853,36 @@ async function adminLoadCacheStats(){
 }
 
 // ── Frontend error reporting ───────────────────────────────────────────────────
-window.onerror = function(msg, src, line, col, err){
+// v9.8.1: only report errors from Cartwise's own code. Browser extensions
+// (Safari shows their scripts as webkit-masked-url://hidden/), cross-origin
+// "Script error." with no source, and the benign ResizeObserver notice were
+// filling the log with entries nobody can act on.
+const _ERR_NOISE = [/^Script error\.?$/i, /ResizeObserver loop/i];
+const _EXT_SRC = /(webkit-masked-url|safari-(web-)?extension|chrome-extension|moz-extension|ms-browser-extension):\/\//i;
+const _errSeen = new Map();
+function _reportableError(msg, src, stack){
+  msg = String(msg || '');
+  if (_ERR_NOISE.some(r => r.test(msg))) return false;
+  if (_EXT_SRC.test(String(src || '')) || _EXT_SRC.test(String(stack || ''))) return false;
+  const key = msg.slice(0, 200), now = Date.now();                 // same error at most once a minute
+  if (now - (_errSeen.get(key) || 0) < 60000) return false;
+  _errSeen.set(key, now);
+  return _errSeen.size <= 50;                                      // and no more than 50 kinds per page load
+}
+function _sendError(message, stack, url){
   if(!userEmail) return; // skip silently — /log/error requires auth (PDC-11)
   try{fetch(API+'/log/error',{method:'POST',credentials:'include',headers:{...authHeaders(),'Content-Type':'application/json'},
-    body:JSON.stringify({level:'error',message:String(msg),stack:err&&err.stack||'',url:src+'#L'+line+':'+col})});}catch(_){}
+    body:JSON.stringify({level:'error',message,stack,url})});}catch(_){}
+}
+window.onerror = function(msg, src, line, col, err){
+  const stack = err && err.stack || '';
+  if (!_reportableError(msg, src, stack)) return;
+  _sendError(String(msg), stack, src+'#L'+line+':'+col);
 };
 window.onunhandledrejection = function(e){
-  if(!userEmail) return; // skip silently — /log/error requires auth (PDC-11)
-  try{fetch(API+'/log/error',{method:'POST',credentials:'include',headers:{...authHeaders(),'Content-Type':'application/json'},
-    body:JSON.stringify({level:'error',message:'Unhandled rejection: '+String(e.reason),stack:e.reason&&e.reason.stack||'',url:window.location.href})});}catch(_){}
+  const stack = e.reason && e.reason.stack || '';
+  if (!_reportableError(e.reason && e.reason.message || e.reason, '', stack)) return;
+  _sendError('Unhandled rejection: '+String(e.reason), stack, window.location.href);
 };
 
 // ═══════════════════════════════════════════════════════════════════
