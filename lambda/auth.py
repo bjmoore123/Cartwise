@@ -289,9 +289,11 @@ def login(event, body):
         return err("Invalid email or PIN.", 401)
 
     # -- Success -- clear lockout state -------------------------------------
+    # v9.8.3: record last_login for the Admin user table
     users_table.update_item(
         Key={"email": email},
-        UpdateExpression="REMOVE failed_attempts, lockout_until, last_failed_at",
+        UpdateExpression="SET last_login = :t REMOVE failed_attempts, lockout_until, last_failed_at",
+        ExpressionAttributeValues={":t": now.isoformat()},
     )
     token      = secrets.token_hex(32)
     expires_at = int((now + timedelta(hours=SESSION_TTL_HOURS)).timestamp())

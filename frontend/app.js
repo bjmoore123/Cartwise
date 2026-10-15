@@ -2580,6 +2580,41 @@ async function adminLoadTail(){
 }
 let _allAdminUsers=[];
 let _adminUserPage=0;
+// v9.8.3: click a header to sort; click again to reverse. Blank values always sort last.
+let _adminUserSort={key:'last_login',dir:-1};
+const ADMIN_USER_SORT={
+  email:      u=>(u.email||'').toLowerCase(),
+  notify:     u=>(u.notify_email||u.email||'').toLowerCase(),
+  store:      u=>u.store_id?Number(u.store_id)||u.store_id:'',
+  items:      u=>u.item_count||0,
+  joined:     u=>u.created_at||'',
+  last_login: u=>u.last_login||'',
+};
+const ADMIN_SORT_FIRST_DIR={email:1,notify:1,store:1,items:-1,joined:-1,last_login:-1};
+function adminSortUsers(key){
+  if(!ADMIN_USER_SORT[key]) return;
+  _adminUserSort = _adminUserSort.key===key ? {key,dir:-_adminUserSort.dir} : {key,dir:ADMIN_SORT_FIRST_DIR[key]||1};
+  _adminUserPage=0;
+  adminRenderUsers();
+}
+function adminSortedUsers(list){
+  const {key,dir}=_adminUserSort, get=ADMIN_USER_SORT[key];
+  if(!get) return list;
+  const blank=v=>v===''||v==null;
+  return list.slice().sort((a,b)=>{
+    const x=get(a), y=get(b);
+    if(blank(x)||blank(y)) return blank(x)===blank(y) ? 0 : blank(x) ? 1 : -1;
+    return (x<y?-1:x>y?1:0)*dir || (a.email||'').localeCompare(b.email||'');
+  });
+}
+function adminLastLoginHtml(ts){
+  if(!ts) return '<span style="color:var(--ink-soft)" title="No sign-in recorded (the auth log keeps 90 days)">—</span>';
+  const d=new Date(ts); if(isNaN(d)) return '—';
+  const days=Math.floor((Date.now()-d.getTime())/86400000);
+  const ago=days<=0?'today':days===1?'yesterday':days<60?`${days} days ago`:`${Math.round(days/30)} months ago`;
+  const full=d.toLocaleString([], {dateStyle:'medium', timeStyle:'short'});
+  return `<span title="${escH(full)}">${escH(d.toLocaleDateString([], {month:'short',day:'numeric',year:'numeric'}))}</span><br><span style="color:var(--ink-soft)">${ago}</span>`;
+}
 const ADMIN_PAGE_SIZE=25;
 
 async function adminLoadUsers(){
@@ -2601,7 +2636,7 @@ async function adminLoadUsers(){
     document.getElementById('admin-user-ct').textContent=`(${_allAdminUsers.length})`;
     document.getElementById('admin-user-search').value='';
     adminRenderUsers();
-  }catch(e){document.getElementById('admin-tbody').innerHTML=`<tr><td colspan="6" style="color:var(--red);font-size:13px">Error: ${escH(e.message)}</td></tr>`;}
+  }catch(e){document.getElementById('admin-tbody').innerHTML=`<tr><td colspan="7" style="color:var(--red);font-size:13px">Error: ${escH(e.message)}</td></tr>`;}
 }
 
 function adminFilterUsers(){
@@ -2611,7 +2646,12 @@ function adminFilterUsers(){
 
 function adminRenderUsers(){
   const q=(document.getElementById('admin-user-search').value||'').toLowerCase();
-  const filtered=_allAdminUsers.filter(u=>
+  document.querySelectorAll('#admin-users-head th.sortable').forEach(th=>{
+    const on=th.dataset.sort===_adminUserSort.key;
+    th.classList.toggle('sorted',on); th.classList.toggle('asc',on&&_adminUserSort.dir>0); th.classList.toggle('desc',on&&_adminUserSort.dir<0);
+    th.setAttribute('aria-sort', on?(_adminUserSort.dir>0?'ascending':'descending'):'none');
+  });
+  const filtered=adminSortedUsers(_allAdminUsers).filter(u=>
     !q ||
     (u.email||'').toLowerCase().includes(q) ||
     (u.notify_email||'').toLowerCase().includes(q) ||
@@ -2638,6 +2678,7 @@ function adminRenderUsers(){
         <td>${u.store_id?`<span style="font-family:var(--mono);font-size:12px">#${escH(u.store_id)}</span><br><span style="font-size:11px;color:var(--ink-soft)">${escH(u.store_name||'')}</span>`:'<span style="color:var(--ink-soft);font-size:12px">—</span>'}</td>
         <td><button class="abn a" data-email="${escH(u.email)}" data-items="${escH(JSON.stringify(u.items))}" data-action="admin-show-items">${u.item_count} item${u.item_count!==1?'s':''}</button></td>
         <td style="font-size:11px;color:var(--ink-soft)">${escH(u.created_at?.slice(0,10)||'—')}</td>
+        <td style="font-size:11px;white-space:nowrap">${adminLastLoginHtml(u.last_login)}</td>
         <td><div style="display:flex;gap:5px;flex-wrap:wrap">
           <button class="abn g" data-email="${escH(u.email)}" data-action="admin-show-pin">Reset PIN</button>
           <button class="abn a" data-email="${escH(u.email)}" data-action="admin-show-email">Reset Email</button>
@@ -2645,7 +2686,7 @@ function adminRenderUsers(){
           <button class="abn r" data-email="${escH(u.email)}" data-action="admin-del-user">Delete</button>
         </div></td>
       </tr>`}).join('')
-    : `<tr><td colspan="6" style="color:var(--ink-soft);font-size:13px;padding:16px">${q?'No users match your search.':'No users found.'}</td></tr>`;
+    : `<tr><td colspan="7" style="color:var(--ink-soft);font-size:13px;padding:16px">${q?'No users match your search.':'No users found.'}</td></tr>`;
 
   // Pagination controls
   const pages=document.getElementById('admin-user-pages');
@@ -3215,6 +3256,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (action === 'admin-nav')         return adminNav(el.dataset.tab);
     if (action === 'show-create-user')  return showCreateUser();
     if (action === 'admin-refresh-users') return adminLoadUsers();
+    if (action === 'admin-sort-users')    return adminSortUsers(el.dataset.sort);
 
     // -- Admin actions --
     if (action === 'admin-load-auth-logs')  return adminLoadAuthLogs();

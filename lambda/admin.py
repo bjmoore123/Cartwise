@@ -103,6 +103,19 @@ def require_admin(f):
 
 # ── User management ───────────────────────────────────────────────────────────
 
+def _last_logins_from_auth_log() -> dict:
+    """{email: newest successful login ts} from the auth log (90-day TTL) (v9.8.3).
+    Backfills last_login for users who haven't signed in since it started being recorded."""
+    from boto3.dynamodb.conditions import Attr
+    out: dict = {}
+    for row in _scan_all(auth_logs_tbl, FilterExpression=Attr("success").eq(True),
+                         ProjectionExpression="email, ts"):
+        em, ts = row.get("email"), str(row.get("ts") or "")
+        if em and ts > out.get(em, ""):
+            out[em] = ts
+    return out
+
+
 @require_admin
 def admin_list_users(event):
     """GET /admin/users?cursor=...&limit=50 — paginated user list."""
@@ -132,7 +145,26 @@ def admin_list_users(event):
                 "items":          p.get("items") or [],
                 "sensitivity":    (p.get("matching") or {}).get("sensitivity", "normal"),
                 "email_verified": u.get("email_verified", True),
+                "last_login":     u.get("last_login", ""),
             })
+
+        # v9.8.3: users with no last_login yet get it from the auth log, saved once
+        missing = [u for u in users if not u["last_login"]]
+        if missing:
+            try:
+                seen = _last_logins_from_auth_log()
+                for u in missing:
+                    ts = seen.get(u["email"])
+                    if ts:
+                        u["last_login"] = ts
+                        users_table.update_item(
+                            Key={"email": u["email"]},
+                            UpdateExpression="SET last_login = :t",
+                            ConditionExpression="attribute_exists(email) AND attribute_not_exists(last_login)",
+                            ExpressionAttributeValues={":t": ts},
+                        )
+            except Exception as e:
+                print(f"[CW] last_login backfill: {e}")   # never block the user list
 
         # Determine next cursor
         next_cursor = None

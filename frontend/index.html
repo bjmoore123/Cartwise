@@ -310,6 +310,14 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
 .admin-tbl td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top}
 .admin-tbl tr:hover td{background:var(--green-bg)}
 .admin-tbl tr:last-child td{border-bottom:none}
+.admin-tbl th.sortable{padding:0}
+.admin-tbl th.sortable button{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:5px;width:100%;padding:10px 12px;cursor:pointer;font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit}
+.admin-tbl th.sortable button:hover,.admin-tbl th.sortable button:focus-visible{background:rgba(255,255,255,.14)}
+.admin-tbl th.sortable .sort-ind{font-size:9px;opacity:.45;min-width:8px}
+.admin-tbl th.sortable .sort-ind::after{content:"\25B4\25BE"}
+.admin-tbl th.sorted .sort-ind{opacity:1}
+.admin-tbl th.sorted.asc .sort-ind::after{content:"\25B2"}
+.admin-tbl th.sorted.desc .sort-ind::after{content:"\25BC"}
 .abn{padding:4px 10px;border-radius:5px;font-size:11px;font-weight:700;cursor:pointer;border:1.5px solid;transition:var(--t);white-space:nowrap}
 .abn.g{border-color:var(--green);color:var(--green);background:var(--green-bg)}.abn.g:hover{background:var(--green-dim)}
 .abn.r{border-color:var(--red);color:var(--red);background:var(--red-bg)}.abn.r:hover{background:#fae0de}
@@ -1017,8 +1025,8 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
               data-action="admin-filter-users">
             <div style="overflow-x:auto">
               <table class="admin-tbl">
-                <thead><tr><th>Email</th><th>Notify To</th><th>Store</th><th>Items</th><th>Joined</th><th>Actions</th></tr></thead>
-                <tbody id="admin-tbody"><tr><td colspan="6" style="color:var(--ink-soft);font-size:13px;padding:16px">Loading…</td></tr></tbody>
+                <thead id="admin-users-head"><tr><th class="sortable" data-sort="email"><button type="button" data-action="admin-sort-users" data-sort="email">Email<span class="sort-ind"></span></button></th><th class="sortable" data-sort="notify"><button type="button" data-action="admin-sort-users" data-sort="notify">Notify To<span class="sort-ind"></span></button></th><th class="sortable" data-sort="store"><button type="button" data-action="admin-sort-users" data-sort="store">Store<span class="sort-ind"></span></button></th><th class="sortable" data-sort="items"><button type="button" data-action="admin-sort-users" data-sort="items">Items<span class="sort-ind"></span></button></th><th class="sortable" data-sort="joined"><button type="button" data-action="admin-sort-users" data-sort="joined">Joined<span class="sort-ind"></span></button></th><th class="sortable" data-sort="last_login"><button type="button" data-action="admin-sort-users" data-sort="last_login">Last Login<span class="sort-ind"></span></button></th><th>Actions</th></tr></thead>
+                <tbody id="admin-tbody"><tr><td colspan="7" style="color:var(--ink-soft);font-size:13px;padding:16px">Loading…</td></tr></tbody>
               </table>
             </div>
             <div id="admin-user-pages" style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;font-size:13px;color:var(--ink-soft)"></div>

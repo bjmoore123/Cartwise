@@ -293,6 +293,11 @@ Test plan: `docs/v9.4-test-plan.md`.
 - Badge: "Lowest in N wks" → "Biggest discount in N wks". Multi-buy tag is teal on cards and in email; amber means BOGO only.
 - History summary format 5 (rebuilds on first load per store).
 
+### v9.8.3: Admin user table ✅ built 2026-10-15
+- `last_login` saved on each successful sign-in; users without one are backfilled once from the auth log (90-day window), otherwise shown as "—".
+- New Last Login column (date, plus "today" / "3 days ago"; full time on hover).
+- Every column header except Actions sorts on click; click again to reverse. Default: last login, newest first. Blank values always sort last. Sorting applies to the whole list, before search and paging.
+
 ### Batch 6: Hygiene (ride-along)
 - [x] Delete `lambda/api.py` (stale duplicate parser, never deployed) and the unused `rapidfuzz` install (v9.3)
 - [x] Dead CSS/JS removed (49 CSS rules, legacy price guessing, hidden loader, `renderTpr`); duplicate test classes removed so the newer ones run (v9.7)
