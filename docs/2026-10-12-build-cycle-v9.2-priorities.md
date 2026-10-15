@@ -282,6 +282,17 @@ Test plan: `docs/v9.4-test-plan.md`.
 - [x] `bogo_mode` preference (auto/half/two) on My Store, plus a one-time Deals banner where the state is split
 - [x] Cards, modal and email price Buy N Get N deals by the rule (`apply_bogo_mode` ⇄ `applyBogoMode`, parity-tested)
 
+### v9.8.1: Fan-out and log noise ✅ in production 2026-10-14
+- Scraper fan-out invokes its own function (`AWS_LAMBDA_FUNCTION_NAME`); `deploy.sh` sets `SCRAPER_FUNCTION` on the scraper. Staging had been invoking the production scraper (IAM refused it).
+- Frontend error reporter ignores browser-extension scripts, sourceless "Script error." and the ResizeObserver notice; rate-limited.
+
+### v9.8.2: Savings history ✅ built 2026-10-15 — test plan `docs/v9.8.2-test-plan.md`
+- The modal chart tracks the **discount per item each week** (Publix's own "Save $X" / "Save up to $X"; BOGO halved), not prices. No estimates: a deal with no stated saving is a hollow dot on the baseline.
+- Dots colored by deal type, same as the card tags; lines join only consecutive on-sale weeks; off-sale weeks get a baseline tick. Hover, tap or keyboard focus shows week, amount, type and Publix's text.
+- Larger, darker chart text (11.5–14 px).
+- Badge: "Lowest in N wks" → "Biggest discount in N wks". Multi-buy tag is teal on cards and in email; amber means BOGO only.
+- History summary format 5 (rebuilds on first load per store).
+
 ### Batch 6: Hygiene (ride-along)
 - [x] Delete `lambda/api.py` (stale duplicate parser, never deployed) and the unused `rapidfuzz` install (v9.3)
 - [x] Dead CSS/JS removed (49 CSS rules, legacy price guessing, hidden loader, `renderTpr`); duplicate test classes removed so the newer ones run (v9.7)

@@ -22,6 +22,7 @@ GREEN, GREEN_BG = "#1a6b3c", "#e0efe7"
 AMBER, AMBER_BG = "#8a4106", "#fdf0dc"
 PURPLE, PURPLE_BG = "#6b21a8", "#f3e8fb"
 BLUE, BLUE_BG = "#1e40af", "#e6edfb"
+TEAL, TEAL_BG = "#0e6372", "#ddf1f4"     # v9.8.2: Multi-buy, so amber means BOGO only
 RED, INK, MUTED, LINE = "#c0392b", "#1c1c1c", "#6b6b6b", "#ece8df"
 
 # Same tag set and order as dealTypeKey() in frontend/app.js (v9.4 design):
@@ -29,7 +30,7 @@ RED, INK, MUTED, LINE = "#c0392b", "#1c1c1c", "#6b6b6b", "#ece8df"
 TAGS = {
     "sale":   ("Sale",   GREEN,  GREEN_BG),
     "bogo":   ("BOGO",   AMBER,  AMBER_BG),
-    "multi":  ("Multi-buy", AMBER, AMBER_BG),
+    "multi":  ("Multi-buy", TEAL,   TEAL_BG),
     "coupon": ("Coupon", PURPLE, PURPLE_BG),
     "extra":  ("Extra",  BLUE,   BLUE_BG),
 }

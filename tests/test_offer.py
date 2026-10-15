@@ -133,36 +133,4 @@ class TestEmail:
         assert "$3.99" in html
 
 
-class TestHistoryPrices:
-    def test_price_from_history_rows(self):
-        import history as H
-        assert H.deal_price({"saving_type": "WeeklyAd", "savings": "2 for $7.00"}) == 3.5
-        assert H.deal_price({"saving_type": "Tpr", "savings": "$0.24"}) is None            # old TPR row
-        assert H.deal_price({"saving_type": "Tpr", "savings": "$0.24", "final_price": 2.15}) == 2.15
-        assert H.deal_price({"saving_type": "WeeklyAd", "savings": "Buy 1 Get 1 FREE"}) is None
-
-    def test_lowest_price_badge(self):
-        import history as H
-        weeks = [f"2026-{m:02d}-01" for m in range(10, 2, -1)]          # 8 weeks, newest first
-        prices = ["$2.99"] + ["$3.49", "$3.99"] * 3 + ["$3.49"]
-        snaps = [{"week": w, "deals": [{"title": "Chips", "savings": p, "saving_type": "WeeklyAd"}]}
-                 for w, p in zip(weeks, prices)]
-        b = H.compute_badges(H.build_index(snaps))
-        assert b["best"] == ["chips"] and "chips" not in b["repeat"]
-
-    def test_not_lowest_when_price_never_changes(self):
-        import history as H
-        weeks = [f"2026-{m:02d}-01" for m in range(10, 2, -1)]
-        snaps = [{"week": w, "deals": [{"title": "Chips", "savings": "$2.99", "saving_type": "WeeklyAd"}]} for w in weeks]
-        assert H.compute_badges(H.build_index(snaps))["best"] == []
-
-    def test_old_summary_format_still_loads(self):
-        import gzip, history as H
-        old = gzip.compress(json.dumps({"weeks": ["2026-10-05"], "titles": {"chips": ["Chips", [[0, "$2.99"]]]}}).encode())
-        idx = H.deserialize_index(old)
-        assert idx["titles"]["chips"][0] == ("Chips", "$2.99", None)
-
-    def test_points_carry_price(self):
-        import history as H
-        idx = H.build_index([{"week": "2026-10-05", "deals": [{"title": "Chips", "savings": "$2.99", "saving_type": "WeeklyAd"}]}])
-        assert H.title_points(idx, "Chips") == [{"week": "2026-10-05", "savings": "$2.99", "price": 2.99}]
+# v9.8.2: history tracks savings, not prices. See tests/test_v982.py.

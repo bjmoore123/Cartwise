@@ -465,7 +465,23 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
 /* ── Deal modal: price history chart ── */
 .dm-timeline{border-top:1px solid var(--border);padding-top:14px;margin-top:18px}
 .dm-timeline-hd{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:10px}
-.dm-chart{display:block;width:100%;height:90px}
+.dm-timeline{position:relative}
+.dm-chart{display:block;width:100%;height:132px}
+.dm-chart .dm-hit{cursor:pointer;outline:none}
+.dm-chart-foot{margin-top:8px;font-size:13px;line-height:1.5;color:#55514a}
+.dm-chart-foot b{color:var(--ink);font-weight:800}
+.dm-best{color:#b45309;font-weight:800}
+.dm-keys{display:flex;gap:6px 16px;flex-wrap:wrap;margin-top:8px;font-size:12.5px;color:#55514a}
+.dm-key{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.dm-dot{display:inline-block;width:10px;height:10px;border-radius:50%}
+.dm-dot.unk{background:#fff;border:1.6px solid #a39b8c;width:8px;height:8px}
+.dm-tick{display:inline-block;width:2px;height:10px;background:#c4bdb0;border-radius:1px}
+.dm-tip{position:absolute;z-index:5;pointer-events:none;opacity:0;transition:opacity .12s;background:#1f1d1a;color:#fff;border-radius:8px;padding:8px 11px;font-size:12.5px;line-height:1.4;box-shadow:0 4px 14px rgba(0,0,0,.18);max-width:240px}
+.dm-tip.vis{opacity:1}
+.dm-tip-wk{color:#d8d3ca;font-size:11.5px}
+.dm-tip-amt{font-weight:800;font-size:14px}
+.dm-tip-kind{display:flex;align-items:center;gap:6px;color:#e9e5dd}
+.dm-tip-kind i{display:inline-block;width:9px;height:9px;border-radius:50%;flex-shrink:0;border:1px solid rgba(255,255,255,.6)}
 .dm-timeline-caption{font-size:11px;color:var(--ink-soft);margin-top:10px}
 .deal-card{cursor:pointer}
 .deal-card:active{transform:scale(.98)}
@@ -514,10 +530,11 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
    Same nav, fonts and colors; one tag palette, price-color rule, neutral history
    chips, mobile filter sheet, 4.5:1 secondary text. */
 :root{--ink-soft:#6b6b6b;--sale:#1a6b3c;--sale-bg:#e0efe7;--deal-amber:#8a4106;--deal-amber-bg:#fdf0dc;
-  --coupon:#6b21a8;--coupon-bg:#f3e8fb;--extra:#1e40af;--extra-bg:#e6edfb;--chip-bg:#f1efe9}
+  --multi:#0e6372;--multi-bg:#ddf1f4;--coupon:#6b21a8;--coupon-bg:#f3e8fb;--extra:#1e40af;--extra-bg:#e6edfb;--chip-bg:#f1efe9}
 .deal-type-tag{font-size:10px;font-weight:900;letter-spacing:.06em;padding:3px 7px;margin:0}
 .deal-type-tag.sale{background:var(--sale-bg);color:var(--sale)}
-.deal-type-tag.bogo,.deal-type-tag.multi{background:var(--deal-amber-bg);color:var(--deal-amber)}
+.deal-type-tag.bogo{background:var(--deal-amber-bg);color:var(--deal-amber)}
+.deal-type-tag.multi{background:var(--multi-bg);color:var(--multi)}
 .deal-type-tag.coupon,.deal-type-tag.plus{background:var(--coupon-bg);color:var(--coupon)}
 .deal-type-tag.extra{background:var(--extra-bg);color:var(--extra)}
 .deal-card-badges{gap:4px}

@@ -24,8 +24,8 @@ except ImportError:                     # pragma: no cover
 MIN_WEEKS_REPEAT = 2
 MIN_WEEKS_RARE   = 12
 RARE_MAX_PAST    = 3      # fewer past weeks than this on sale = "rarely on sale"
-MIN_PRICE_POINTS = 6      # v9.4: past weeks with a known price before "lowest price" shows
-SUMMARY_FMT      = 3      # v9.4: index entries carry a price; bump to force a rebuild
+MIN_SAVE_POINTS  = 6      # v9.8.2: past weeks with a stated saving before "biggest discount" shows
+SUMMARY_FMT      = 5      # v9.8.2: slot = deal_saving() dict; bump forces a rebuild
 FREQ_MATCH_SCORE = 70     # same threshold the old client-side frequency hint used
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
@@ -58,25 +58,52 @@ def fuzzy_score(item: str, title: str) -> int:
     return round(matched / len(toks) * 100)
 
 
-def deal_price(d: dict):
-    """Price per unit you pay, from a history row, or None (v9.4).
+DEAL_KINDS = ("sale", "bogo", "multi", "coupon", "extra")
 
-    Only real prices count (a sale price or a multi-buy's price each); BOGO
-    estimates and "$X off" have no reliable price. Old rows only have
-    `savings`, which still yields a price for "$3.99", "$4.99 lb", "2 for $7".
-    TPR rows written before v9.4 hold the DISCOUNT in `savings` and no
-    final_price, so they give no price rather than a wrong one.
+
+def deal_kind(d: dict, o: dict | None = None) -> str:
+    """Deal type for one history row. KEEP IN SYNC with deal_tag() (email) and dealTypeKey() (app.js)."""
+    st = (d.get("saving_type") or "").lower()
+    if o is None:
+        o = classify_offer(d.get("saving_type") or "", d.get("savings", ""), d.get("save_line", "")) \
+            if classify_offer else {}
+    if o.get("kind") == "bogo" or d.get("is_bogo"):
+        return "bogo"
+    if st == "digitalcoupon":
+        return "coupon"
+    if st in ("extrasavings", "stacked", "stackeddeals") or d.get("is_extra"):
+        return "extra"
+    if o.get("kind") == "multi":
+        return "multi"
+    return "sale"
+
+
+def deal_saving(d: dict) -> dict:
+    """What one week's deal saved, per item (per lb for weighed items) (v9.8.2).
+
+    {"s": dollars or None, "k": deal kind, "m": 1 when Publix said "up to", "u": "lb" when per lb,
+     "p": percent when only a % was stated}.
+    Uses Publix's own figures only: "Save $1.50", "Save up to $5.49" on a BOGO
+    (halved, since that is for the pair), the TPR discount. No estimates; a deal
+    with no stated saving gets s=None ("on sale, amount not listed").
     """
     if classify_offer is None:
-        return None
-    st = d.get("saving_type") or ""
-    fp = d.get("final_price") or 0
-    if st.lower() == "tpr" and not fp:
-        return None
-    o = classify_offer(st, d.get("savings", ""), d.get("save_line", ""), fp, d.get("regular_price") or 0)
-    if o.get("kind") in ("price", "multi") and o.get("price"):
-        return round(float(o["price"]), 2)
-    return None
+        return {"s": None, "k": "sale"}
+    o = classify_offer(d.get("saving_type") or "", d.get("savings", ""), d.get("save_line", ""),
+                       d.get("final_price") or 0, d.get("regular_price") or 0)
+    out = {"s": round(float(o["save"]), 2) if o.get("save") else None, "k": deal_kind(d, o)}
+    if o.get("save_is_max"):
+        out["m"] = 1
+    if o.get("unit") == "lb":
+        out["u"] = "lb"
+    if out["s"] is None and o.get("pct"):
+        out["p"] = o["pct"]                     # "40% off": shown in the tooltip, not plotted
+    return out
+
+
+def saved(slot):
+    """Dollars saved from an index slot, or None."""
+    return slot.get("s") if isinstance(slot, dict) else None
 
 
 def build_index(snapshots: list[dict]) -> dict:
@@ -97,9 +124,9 @@ def build_index(snapshots: list[dict]) -> dict:
             if not key:
                 continue
             per = titles.setdefault(key, {})
-            entry = (title, d.get("savings", ""), deal_price(d))
-            # Same title twice in a week (sizes/flavors): keep the lowest known price
-            if idx not in per or (entry[2] is not None and (per[idx][2] is None or entry[2] < per[idx][2])):
+            entry = (title, d.get("savings", ""), deal_saving(d))
+            # Same title twice in a week (sizes/flavors): keep the biggest stated saving
+            if idx not in per or _better_slot(entry[2], per[idx][2]):
                 per[idx] = entry
     # Derived from `titles` (not the raw rows) so a freshly built index and one
     # restored by deserialize_index() are identical.
@@ -110,13 +137,21 @@ def build_index(snapshots: list[dict]) -> dict:
     return {"weeks": weeks, "titles": titles, "lower_titles": lower_titles}
 
 
+def _better_slot(new, old) -> bool:
+    n, o = saved(new), saved(old)
+    if n is None:
+        return False
+    return o is None or n > o
+
+
 def compute_badges(index: dict) -> dict:
     """Badge lists for titles in the newest week: {"repeat": [norm...], "rare": [norm...]}.
 
     Only signals that don't depend on parsing the overloaded `savings` text:
       - repeat: also on sale the previous week
       - rare:   12+ weeks of history and on sale in fewer than 3 of the past weeks
-    Price-based badges ("best price") return once deals carry a parsed price (Batch 4).
+      - best:   v9.8.2: this week's stated saving is the biggest in the history
+                (6+ past weeks with a saving, and they vary)
     Lists of keys (labels added client-side) keep the payload small.
     """
     num_weeks = len(index["weeks"])
@@ -125,10 +160,10 @@ def compute_badges(index: dict) -> dict:
         if 0 not in weeks_on:
             continue
         past = len(weeks_on) - 1
-        # v9.4 (#9): lowest price seen in the whole history (needs 6+ past prices that vary)
-        now_p = weeks_on[0][2] if len(weeks_on[0]) > 2 else None
-        past_p = [e[2] for i, e in weeks_on.items() if i != 0 and len(e) > 2 and e[2] is not None]
-        if now_p is not None and len(past_p) >= MIN_PRICE_POINTS and now_p <= min(past_p) and now_p < max(past_p):
+        # v9.8.2: biggest discount seen in the whole history (needs 6+ past savings that vary)
+        now_s = saved(weeks_on[0][2]) if len(weeks_on[0]) > 2 else None
+        past_s = [saved(e[2]) for i, e in weeks_on.items() if i != 0 and len(e) > 2 and saved(e[2]) is not None]
+        if now_s is not None and len(past_s) >= MIN_SAVE_POINTS and now_s >= max(past_s) and now_s > min(past_s):
             out["best"].append(key)
         elif num_weeks >= MIN_WEEKS_REPEAT and 1 in weeks_on:
             out["repeat"].append(key)
@@ -229,8 +264,10 @@ def deserialize_index(blob: bytes) -> dict:
     for key, (base, entries) in data["titles"].items():
         per = {}
         for e in entries:
-            if fmt >= 3:                    # [i, savings, price(, title)]
+            if fmt >= 5:                    # [i, savings, saving-dict(, title)]
                 t, p = (e[3] if len(e) > 3 else base), e[2]
+            elif fmt >= 3:                  # v9.4 price slot: not a saving, drop it
+                t, p = (e[3] if len(e) > 3 else base), None
             else:                           # v9.2.1: [i, savings(, title)]
                 t, p = (e[2] if len(e) > 2 else base), None
             per[e[0]] = (t, e[1], p)
@@ -240,14 +277,19 @@ def deserialize_index(blob: bytes) -> dict:
 
 
 def title_points(index: dict, title: str) -> list[dict]:
-    """Chart points for one deal title, oldest first: [{"week", "savings", "price"?}]."""
+    """Chart points for one deal title, oldest first (v9.8.2):
+    [{"week", "savings" (Publix text), "kind", "save"?, "max"?, "unit"?, "pct"?}]."""
     weeks_on = index["titles"].get(norm_title(title), {})
     weeks = index["weeks"]
     out = []
     for i in sorted(weeks_on, reverse=True):
         e = weeks_on[i]
-        pt = {"week": weeks[i], "savings": e[1]}
-        if len(e) > 2 and e[2] is not None:
-            pt["price"] = e[2]
+        slot = e[2] if len(e) > 2 and isinstance(e[2], dict) else {}
+        pt = {"week": weeks[i], "savings": e[1], "kind": slot.get("k", "sale")}
+        if slot.get("s") is not None:
+            pt["save"] = slot["s"]
+        for src, dst in (("m", "max"), ("u", "unit"), ("p", "pct")):
+            if slot.get(src):
+                pt[dst] = slot[src]
         out.append(pt)
     return out

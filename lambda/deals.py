@@ -416,7 +416,9 @@ def get_deal_history(event):
             "weeks_of_history": max(num_weeks - 1, 1),
         }
         if title:
-            return ok({**base, "title": title, "points": title_points(index, title)},
+            # v9.8.2: store weeks oldest first, so the chart can mark weeks it was NOT on sale
+            return ok({**base, "title": title, "points": title_points(index, title),
+                       "weeks": sorted(index["weeks"]), "newest_week": max(index["weeks"], default="")},
                       _headers={"Cache-Control": "private, max-age=300"})
 
         items = []

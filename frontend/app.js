@@ -142,7 +142,7 @@ function cwHistKey(title) {
   return (title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-const HIST_BADGE_LABEL = { best: 'Lowest price', repeat: 'Repeat deal', rare: 'Rarely on sale' };
+const HIST_BADGE_LABEL = { best: 'Biggest discount', repeat: 'Repeat deal', rare: 'Rarely on sale' };
 let _badgeIndex = null;   // Map: cwHistKey(title) → badge, built once per history load
 
 function buildBadgeIndex(history) {
@@ -150,8 +150,8 @@ function buildBadgeIndex(history) {
   const b = (history && history.badges) || {};
   const weeks = (history && history.num_weeks) || 0;
   for (const type of Object.keys(HIST_BADGE_LABEL)) {
-    // v9.4 (#9): "best" = this week's price is the lowest seen in the loaded history
-    const label = type === 'best' && weeks ? `Lowest in ${weeks} wks` : HIST_BADGE_LABEL[type];
+    // v9.8.2: "best" = this week's stated saving is the biggest in the loaded history
+    const label = type === 'best' && weeks ? `Biggest discount in ${weeks} wks` : HIST_BADGE_LABEL[type];
     for (const key of (b[type] || [])) if (!m.has(key)) m.set(key, { type, label });
   }
   return m;
@@ -208,7 +208,7 @@ function buildQualityBanner(matches, history) {
   repeatItems.splice(0, repeatItems.length, ...uniq(repeatItems));
   if (!bestItems.length && !repeatItems.length) return null;
   const parts = [];
-  if (bestItems.length)   parts.push(`🔥 <strong>${bestItems.slice(0,3).map(escH).join(' &amp; ')}</strong> ${bestItems.length===1?'is':'are'} at the lowest price in ${escH(String(history.num_weeks))} weeks.`);
+  if (bestItems.length)   parts.push(`🔥 <strong>${bestItems.slice(0,3).map(escH).join(' &amp; ')}</strong> ${bestItems.length===1?'is':'are'} at the biggest discount in ${escH(String(history.num_weeks))} weeks.`);
   if (repeatItems.length) parts.push(`🔁 <strong>${repeatItems.slice(0,2).map(escH).join(' &amp; ')}</strong> ${repeatItems.length===1?'is a repeat':'are repeats'} from last week.`);
   return parts.join(' ');
 }
@@ -1636,107 +1636,161 @@ const SAVING_TYPE_LABEL = {
   Tpr:             'Price drop',
 };
 
-// Build an inline SVG price history chart inside svgEl for the given deal + history.
-// History dots are plotted as a scatter with a connecting polyline.
-// Current week (newest) dot is highlighted green with a glow ring.
-// A dashed amber line marks the best (lowest) price point.
-function buildDealChart(svgEl, points) {
-  // points: [{week, savings, price?}] oldest first, from GET /deals/history?title=…
-  // v9.4 (#9): chart the real price (server-derived) when 2+ weeks have one. The old
-  // fallback read the first "$" in the savings text, which mixed prices with
-  // discounts ("$0.24" off a price drop, "Save $2.00" coupons).
-  const pts = [];
-  const priced = (points || []).filter(p => typeof p.price === 'number');
-  if (priced.length >= 2) {
-    priced.forEach(p => pts.push({ week: p.week, amt: p.price, savings: p.savings }));
-  } else {
-    (points || []).forEach(p => {
-      if (/off|save/i.test(p.savings || '')) return;   // discounts are not prices
-      const amt = parseSavingsAmount(p.savings);
-      if (amt !== null) pts.push({ week: p.week, amt, savings: p.savings });
-    });
-  }
+// v9.8.2: SAVINGS history chart for the deal modal.
+// - One dot per week the item was on sale, at what Publix said it saved per item
+//   (per lb for weighed items). Higher = bigger discount. No prices, no estimates.
+// - Dot color = deal type, same colors as the card tags (KEEP IN SYNC with
+//   .deal-type-tag in index.html and TAGS in shared/email_render.py).
+// - The line only joins CONSECUTIVE on-sale weeks; off-sale weeks get a tick on
+//   the baseline. A hollow dot on the baseline = on sale, amount not listed.
+// - Hover, tap or focus a dot for the week, the amount and Publix's own text.
+// points: [{week, savings, kind, save?, max?, unit?, pct?}] oldest first;
+// weeks: the store's snapshot weeks oldest first; newest: this week.
+const DEAL_KIND_STYLE = {
+  sale:   { c: '#1a6b3c', l: 'Sale' },
+  bogo:   { c: '#c2650a', l: 'BOGO' },
+  multi:  { c: '#0e7490', l: 'Multi-buy' },
+  coupon: { c: '#7e22ce', l: 'Coupon' },
+  extra:  { c: '#1d4ed8', l: 'Extra Savings' },
+};
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const fmtMoney = v => '$' + (Math.round(v * 100) % 100 ? v.toFixed(2) : v.toFixed(0));
+const kindStyle = k => DEAL_KIND_STYLE[k] || DEAL_KIND_STYLE.sale;
 
-  // Deduplicate by week (keep first match per week)
+function chartPoints(points) {
   const seen = new Set();
-  const uniq = pts.filter(p => { if (seen.has(p.week)) return false; seen.add(p.week); return true; });
+  return (points || []).filter(p => !seen.has(p.week) && seen.add(p.week));
+}
 
-  const W   = Math.max(svgEl.getBoundingClientRect().width || 0, 240);
-  const H   = 90;
-  const PAD = { l: 36, r: 14, t: 12, b: 26 };
+function chartAxis(pts, weeks, newest) {
+  const first = pts[0].week;
+  const axis = (weeks || []).filter(w => w >= first && (!newest || w <= newest));
+  return axis.length >= pts.length ? axis : pts.map(p => p.week);
+}
 
-  if (uniq.length < 2) {
+function saveText(p) {
+  const u = p.unit === 'lb' ? '/lb' : ' ea';
+  if (typeof p.save === 'number') return `Save ${p.max ? 'up to ' : ''}${fmtMoney(p.save)}${u}`;
+  return p.pct ? `${p.pct}% off` : 'Amount not listed';
+}
+
+function weekLabel(w) {
+  const d = new Date(w + 'T12:00:00');
+  return `Week of ${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+function buildDealChart(svgEl, points, weeks, newest) {
+  const pts = chartPoints(points);
+  const W = Math.max(svgEl.getBoundingClientRect().width || 0, 260);
+  const H = 132, PAD = { l: 44, r: 16, t: 14, b: 30 };
+  const known = pts.filter(p => typeof p.save === 'number');
+  if (pts.length < 2 || !known.length) {
     svgEl.setAttribute('viewBox', `0 0 ${W} ${H}`);
-    svgEl.innerHTML = `<text x="${W/2}" y="${H/2}" text-anchor="middle" font-size="11" fill="#aaa" dy=".35em">Not enough history yet</text>`;
-    return;
+    svgEl.innerHTML = `<text x="${W/2}" y="${H/2}" text-anchor="middle" font-size="13" fill="#6b6b6b" dy=".35em">Not enough savings history yet</text>`;
+    return [];
   }
-
-  const amts   = uniq.map(p => p.amt);
-  const minAmt = Math.min(...amts);
-  const maxAmt = Math.max(...amts);
-  const aRange = maxAmt - minAmt || 1;
-
-  // Parse week strings to timestamps for linear x positioning
-  const dates  = uniq.map(p => new Date(p.week).getTime());
-  const minD   = Math.min(...dates);
-  const maxD   = Math.max(...dates);
-  const dRange = maxD - minD || 1;
-
-  const cx = d => PAD.l + ((new Date(d).getTime() - minD) / dRange) * (W - PAD.l - PAD.r);
-  // Lower price = better deal = higher on chart (inverted y)
-  const cy = a => PAD.t + (1 - (a - minAmt) / aRange) * (H - PAD.t - PAD.b);
-
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const axis = chartAxis(pts, weeks, newest);
+  const pos = new Map(axis.map((w, i) => [w, i]));
+  const byWeek = new Map(pts.map(p => [p.week, p]));
+  const cx = w => PAD.l + (pos.get(w) / Math.max(axis.length - 1, 1)) * (W - PAD.l - PAD.r);
+  const base = H - PAD.b;
+  const max = Math.max(...known.map(p => p.save));
+  const cy = v => base - (v / (max * 1.15)) * (base - PAD.t);     // bigger discount = higher
+  const AX = '#6f6a60', GRID = '#d9d3c7';
   let svg = '';
 
-  // Axes
-  svg += `<line x1="${PAD.l}" y1="${PAD.t}" x2="${PAD.l}" y2="${H-PAD.b}" stroke="#ddd8ce" stroke-width="1"/>`;
-  svg += `<line x1="${PAD.l}" y1="${H-PAD.b}" x2="${W-PAD.r}" y2="${H-PAD.b}" stroke="#ddd8ce" stroke-width="1"/>`;
+  svg += `<line x1="${PAD.l}" y1="${base}" x2="${W-PAD.r}" y2="${base}" stroke="${GRID}" stroke-width="1.2"/>`;
+  svg += `<text x="${PAD.l-7}" y="${base}" text-anchor="end" font-size="11.5" fill="${AX}" dy=".35em">$0</text>`;
+  svg += `<text x="${PAD.l-7}" y="${cy(max)}" text-anchor="end" font-size="11.5" fill="${AX}" font-weight="700" dy=".35em">${fmtMoney(max)}</text>`;
+  svg += `<line x1="${PAD.l}" y1="${cy(max)}" x2="${W-PAD.r}" y2="${cy(max)}" stroke="rgba(180,83,9,.4)" stroke-width="1" stroke-dasharray="3,4"/>`;
 
-  // Y axis labels: best and worst price
-  svg += `<text x="${PAD.l-4}" y="${cy(minAmt)}" text-anchor="end" font-size="8" fill="#aaa" dy=".35em">$${minAmt.toFixed(2)}</text>`;
-  if (maxAmt !== minAmt)
-    svg += `<text x="${PAD.l-4}" y="${cy(maxAmt)}" text-anchor="end" font-size="8" fill="#aaa" dy=".35em">$${maxAmt.toFixed(2)}</text>`;
-
-  // Best-price dashed reference line (amber, subtle)
-  const bestY = cy(minAmt);
-  svg += `<line x1="${PAD.l}" y1="${bestY}" x2="${W-PAD.r}" y2="${bestY}" stroke="rgba(180,83,9,.25)" stroke-width="1" stroke-dasharray="3,4"/>`;
-
-  // Month labels on x axis — one label per unique month, avoid crowding
   const seenM = new Set();
-  uniq.forEach(p => {
-    const d   = new Date(p.week);
-    const mk  = `${d.getFullYear()}-${d.getMonth()}`;
-    const x   = cx(p.week);
-    if (!seenM.has(mk) && x > PAD.l + 10 && x < W - PAD.r - 10) {
-      seenM.add(mk);
-      svg += `<text x="${x}" y="${H-PAD.b+11}" text-anchor="middle" font-size="8" fill="#aaa">${months[d.getMonth()]}</text>`;
+  let lastLbl = -99;
+  axis.forEach(w => {
+    const d = new Date(w + 'T12:00:00'), x = cx(w), mk = `${d.getFullYear()}-${d.getMonth()}`;
+    if (!seenM.has(mk) && x > PAD.l + 6 && x - lastLbl >= 34) {
+      seenM.add(mk); lastLbl = x;
+      svg += `<text x="${x}" y="${base+19}" text-anchor="middle" font-size="11.5" fill="${AX}">${MONTHS[d.getMonth()]}</text>`;
     }
+    if (!byWeek.has(w)) svg += `<line x1="${x}" y1="${base-4}" x2="${x}" y2="${base+4}" stroke="#c4bdb0" stroke-width="1.6"/>`;
   });
 
-  // Connecting polyline (very subtle)
-  const linePts = uniq.map(p => `${cx(p.week).toFixed(1)},${cy(p.amt).toFixed(1)}`).join(' ');
-  svg += `<polyline points="${linePts}" fill="none" stroke="rgba(26,107,60,.15)" stroke-width="1.5" stroke-linejoin="round"/>`;
+  for (let i = 1; i < axis.length; i++) {
+    const a = byWeek.get(axis[i-1]), b = byWeek.get(axis[i]);
+    if (!a || !b || typeof a.save !== 'number' || typeof b.save !== 'number') continue;
+    svg += `<line x1="${cx(a.week)}" y1="${cy(a.save)}" x2="${cx(b.week)}" y2="${cy(b.save)}" stroke="#bdb6a8" stroke-width="2"/>`;
+  }
 
-  // Historical dots
-  uniq.forEach((p, i) => {
-    const x        = cx(p.week).toFixed(1);
-    const y        = cy(p.amt).toFixed(1);
-    const isCur    = i === uniq.length - 1;
-    if (isCur) {
-      // Glow ring
-      svg += `<circle cx="${x}" cy="${y}" r="9" fill="#1a6b3c" opacity=".13"/>`;
-      // Filled dot
-      svg += `<circle cx="${x}" cy="${y}" r="5.5" fill="#1a6b3c"/>`;
-      // Price label above
-      svg += `<text x="${x}" y="${parseFloat(y)-10}" text-anchor="middle" font-size="8.5" fill="#1a6b3c" font-weight="700">$${p.amt.toFixed(2)}</text>`;
-    } else {
-      svg += `<circle cx="${x}" cy="${y}" r="3.5" fill="var(--green-dim)" stroke="#1a6b3c" stroke-width="1.5"/>`;
-    }
+  const hits = [];
+  pts.forEach((p, i) => {
+    const x = cx(p.week), has = typeof p.save === 'number', y = has ? cy(p.save) : base - 5;
+    const col = kindStyle(p.kind).c, cur = newest && p.week === newest;
+    if (!has) svg += `<circle cx="${x}" cy="${y}" r="4" fill="#fff" stroke="#a39b8c" stroke-width="1.6"/>`;
+    else if (cur) svg += `<circle cx="${x}" cy="${y}" r="11" fill="${col}" opacity=".16"/><circle cx="${x}" cy="${y}" r="7" fill="${col}" stroke="#fff" stroke-width="1.8"/>`;
+    else svg += `<circle cx="${x}" cy="${y}" r="5.2" fill="${col}" stroke="#fff" stroke-width="1.4"/>`;
+    // Invisible, larger hit target for hover / tap / keyboard focus
+    svg += `<circle class="dm-hit" data-i="${i}" cx="${x}" cy="${y}" r="12" fill="transparent" tabindex="0" role="img"
+      aria-label="${escH(weekLabel(p.week) + ': ' + saveText(p) + ', ' + kindStyle(p.kind).l)}"/>`;
+    hits.push({ p, x, y });
   });
 
   svgEl.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svgEl.innerHTML = svg;
+  wireChartTips(svgEl, hits, W, H);
+  return hits;
+}
+
+// Tooltip: hover on desktop, tap on phones, focus with the keyboard
+function wireChartTips(svgEl, hits, W, H) {
+  const wrap = svgEl.parentElement;
+  let tip = wrap.querySelector('.dm-tip');
+  if (!tip) { tip = document.createElement('div'); tip.className = 'dm-tip'; tip.setAttribute('role', 'tooltip'); wrap.appendChild(tip); }
+  const hide = () => tip.classList.remove('vis');
+  const show = el => {
+    const h = hits[+el.dataset.i]; if (!h) return;
+    const { p } = h, k = kindStyle(p.kind), txt = decodeEntities(p.savings || '').trim();
+    tip.innerHTML = `<div class="dm-tip-wk">${escH(weekLabel(p.week))}</div>
+      <div class="dm-tip-amt">${escH(saveText(p))}</div>
+      <div class="dm-tip-kind"><i style="background:${k.c}"></i>${escH(k.l)}${txt && txt.toLowerCase() !== k.l.toLowerCase() ? ' · ' + escH(txt) : ''}</div>`;
+    const sr = svgEl.getBoundingClientRect(), wr = wrap.getBoundingClientRect();
+    const px = sr.left - wr.left + h.x * (sr.width / W), py = sr.top - wr.top + h.y * (sr.height / H);
+    tip.classList.add('vis');
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    tip.style.left = Math.min(Math.max(px - tw / 2, 0), wrap.clientWidth - tw) + 'px';
+    tip.style.top = (py - th - 12 >= 0 ? py - th - 12 : py + 14) + 'px';
+  };
+  svgEl.querySelectorAll('.dm-hit').forEach(el => {
+    el.addEventListener('mouseenter', () => show(el));
+    el.addEventListener('focus', () => show(el));
+    el.addEventListener('click', e => { e.stopPropagation(); show(el); });
+    el.addEventListener('mouseleave', hide);
+    el.addEventListener('blur', hide);
+  });
+  svgEl.addEventListener('click', e => { if (!e.target.classList.contains('dm-hit')) hide(); });
+}
+
+// "This week: save $1.70 ea · best in 26 weeks · on sale 9 of 26 weeks" + a key of what's shown
+function chartFooterHtml(points, weeks, newest) {
+  const pts = chartPoints(points);
+  const known = pts.filter(p => typeof p.save === 'number');
+  if (pts.length < 2 || !known.length) return '';
+  const span = chartAxis(pts, weeks, newest).length;
+  const cur = newest && pts.find(p => p.week === newest);
+  const best = known.reduce((a, b) => b.save > a.save ? b : a);
+  const parts = [];
+  if (cur) parts.push(`<b>This week: ${escH(saveText(cur).replace(/^Save/, 'save'))}</b>`);
+  if (cur && typeof cur.save === 'number' && cur.save >= best.save)
+    parts.push(`<span class="dm-best">${best.week === cur.week ? 'best' : 'ties the best'} in ${span} weeks</span>`);
+  else {
+    const d = new Date(best.week + 'T12:00:00');
+    parts.push(`best: ${escH(saveText(best).replace(/^Save /, ''))} (${MONTHS[d.getMonth()]})`);
+  }
+  parts.push(`on sale ${pts.length} of ${span} weeks`);
+  const kinds = Object.keys(DEAL_KIND_STYLE).filter(k => known.some(p => p.kind === k));
+  const keys = kinds.map(k => `<span class="dm-key"><i class="dm-dot" style="background:${kindStyle(k).c}"></i>${kindStyle(k).l}</span>`);
+  if (pts.some(p => typeof p.save !== 'number')) keys.push(`<span class="dm-key"><i class="dm-dot unk"></i>Amount not listed</span>`);
+  if (span > pts.length) keys.push(`<span class="dm-key"><i class="dm-tick"></i>Not on sale</span>`);
+  return `<div class="dm-chart-foot">${parts.join(' · ')}</div><div class="dm-keys">${keys.join('')}</div>`;
 }
 
 let _modalDeal = null;
@@ -1807,8 +1861,9 @@ function openDealModal(dealId) {
 
   const timelineHtml = _dealHistory
     ? `<div class="dm-timeline">
-        <div class="dm-timeline-hd">Price history · last ${escH(String(_dealHistory.num_weeks || 0))} weeks</div>
+        <div class="dm-timeline-hd">Savings history</div>
         <svg id="dm-chart-svg" class="dm-chart"></svg>
+        <div id="dm-chart-foot"></div>
         ${validCaption ? `<div class="dm-timeline-caption">${validCaption}</div>` : ''}
       </div>`
     : '';
@@ -1846,7 +1901,10 @@ function openDealModal(dealId) {
         }
         requestAnimationFrame(() => {
           const svgEl = document.getElementById('dm-chart-svg');
-          if (svgEl) buildDealChart(svgEl, data.points);
+          const newest = data.newest_week || _dealHistory.newest_week;
+          if (svgEl) buildDealChart(svgEl, data.points, data.weeks, newest);
+          const foot = document.getElementById('dm-chart-foot');
+          if (foot && chartPoints(data.points).length >= 2) foot.innerHTML = chartFooterHtml(data.points, data.weeks, newest);
         });
       })
       .catch(() => {});
