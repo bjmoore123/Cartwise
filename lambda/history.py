@@ -25,7 +25,7 @@ MIN_WEEKS_REPEAT = 2
 MIN_WEEKS_RARE   = 12
 RARE_MAX_PAST    = 3      # fewer past weeks than this on sale = "rarely on sale"
 MIN_SAVE_POINTS  = 6      # v9.8.2: past weeks with a stated saving before "biggest discount" shows
-SUMMARY_FMT      = 5      # v9.8.2: slot = deal_saving() dict; bump forces a rebuild
+SUMMARY_FMT      = 6      # v9.8.4: + brands for autocomplete; bump forces a rebuild
 FREQ_MATCH_SCORE = 70     # same threshold the old client-side frequency hint used
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
@@ -117,8 +117,12 @@ def build_index(snapshots: list[dict]) -> dict:
     snaps = sorted(snapshots, key=lambda s: s.get("week", ""), reverse=True)
     weeks = [s.get("week", "") for s in snaps]
     titles: dict[str, dict[int, tuple]] = {}
+    brands: set = set()
     for idx, snap in enumerate(snaps):
         for d in snap.get("deals") or []:
+            brand = (d.get("brand") or "").strip()
+            if brand:
+                brands.add(brand)
             title = d.get("title") or ""
             key = norm_title(title)
             if not key:
@@ -134,7 +138,7 @@ def build_index(snapshots: list[dict]) -> dict:
     for per in titles.values():
         for idx, (title, _sv, _p) in per.items():
             lower_titles.setdefault(title.lower(), set()).add(idx)
-    return {"weeks": weeks, "titles": titles, "lower_titles": lower_titles}
+    return {"weeks": weeks, "titles": titles, "lower_titles": lower_titles, "brands": sorted(brands)}
 
 
 def _better_slot(new, old) -> bool:
@@ -252,7 +256,7 @@ def serialize_index(index: dict) -> bytes:
         entries = sorted(v.items())
         base = entries[0][1][0]
         titles[k] = [base, [[i, sv, p] if t == base else [i, sv, p, t] for i, (t, sv, p) in entries]]
-    data = {"fmt": SUMMARY_FMT, "weeks": index["weeks"], "titles": titles}
+    data = {"fmt": SUMMARY_FMT, "weeks": index["weeks"], "titles": titles, "brands": index.get("brands", [])}
     return gzip.compress(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"), 6)
 
 
@@ -273,7 +277,24 @@ def deserialize_index(blob: bytes) -> dict:
             per[e[0]] = (t, e[1], p)
             lower_titles.setdefault(t.lower(), set()).add(e[0])
         titles[key] = per
-    return {"weeks": data["weeks"], "titles": titles, "lower_titles": lower_titles}
+    return {"weeks": data["weeks"], "titles": titles, "lower_titles": lower_titles,
+            "brands": data.get("brands", [])}
+
+
+def autocomplete_terms(index: dict) -> list[str]:
+    """v9.8.4: autocomplete list = every deal title and brand this store ran in the
+    history window (52 weeks, the history TTL). Replaces the global corpus row, which
+    only ever grew and stopped updating at DynamoDB's 400 KB item limit.
+    One spelling per case-insensitive term, sorted."""
+    out: dict[str, str] = {}
+    for per in index["titles"].values():
+        for (t, _sv, _p) in per.values():
+            t = (t or "").strip()
+            if t:
+                out.setdefault(t.lower(), t)
+    for b in index.get("brands") or []:
+        out.setdefault(b.lower(), b)
+    return sorted(out.values(), key=str.lower)
 
 
 def title_points(index: dict, title: str) -> list[dict]:

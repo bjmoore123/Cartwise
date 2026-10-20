@@ -74,7 +74,7 @@ class TestIndex:
         idx = H.build_index(self._snaps(["SAVE $2.00", "SAVE $1.00"]))
         back = H.deserialize_index(H.serialize_index(idx))
         assert H.title_points(back, "Chips") == H.title_points(idx, "Chips")
-        assert H.SUMMARY_FMT == 5
+        assert H.SUMMARY_FMT >= 5
         v94 = gzip.compress(json.dumps({"fmt": 3, "weeks": ["2026-10-05"],
                                         "titles": {"chips": ["Chips", [[0, "$2.99", 2.99]]]}}).encode())
         assert H.deserialize_index(v94)["titles"]["chips"][0] == ("Chips", "$2.99", None)    # a price is not a saving

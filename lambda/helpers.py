@@ -167,12 +167,22 @@ def ok(body, status=200, _event=None, _headers=None):
         hdrs = {**hdrs, **_headers}
     return {"statusCode": status, "headers": hdrs, "body": json.dumps(body, cls=_Enc)}
 
+# v9.8.4: the request being handled, so err() can log which endpoint failed.
+# A Lambda container handles one request at a time, so a module-level dict is safe.
+_REQUEST = {"method": "", "path": ""}
+
+
+def set_request_context(method: str, path: str):
+    _REQUEST["method"], _REQUEST["path"] = (method or "")[:10], (path or "")[:200]
+
+
 def err(msg, status=400, _extra=None, _event=None):
     if status >= 400 and status not in (401, 404, 429):
         try:
             from logging_utils import _log_app_event
             _log_app_event("api", "error" if status >= 500 else "warn",
-                           status=status, message=str(msg)[:300])
+                           status=status, message=str(msg)[:300],
+                           method=_REQUEST["method"] or None, path=_REQUEST["path"] or None)
         except Exception as e:
             print(f"[CW] err logging failed: {e}")
     body = {"error": msg}

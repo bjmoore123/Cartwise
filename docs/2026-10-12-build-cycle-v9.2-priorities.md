@@ -298,6 +298,12 @@ Test plan: `docs/v9.4-test-plan.md`.
 - New Last Login column (date, plus "today" / "3 days ago"; full time on hover).
 - Every column header except Actions sorts on click; click again to reverse. Default: last login, newest first. Blank values always sort last. Sorting applies to the whole list, before search and paging.
 
+### v9.8.4: Autocomplete from 52-week history; log fixes ✅ built 2026-10-20
+- The global corpus row hit DynamoDB's 400 KB item limit; it last updated 2026-04-08, so autocomplete missed six months of products. It only ever grew.
+- `GET /deals/corpus?store_id=X` now returns every deal title and brand the store ran in the history window (52 weeks), from the history index. Bounded; per store; gzipped when the browser accepts it; cached per store in the session. The global row is a read-only fallback for a store with no history; the scraper no longer writes it.
+- History summary format 6 (adds brands; rebuilds once per store).
+- Admin log: "resend requested" rows show as "↻ resend queued", not a failed send; API errors record method and path.
+
 ### Batch 6: Hygiene (ride-along)
 - [x] Delete `lambda/api.py` (stale duplicate parser, never deployed) and the unused `rapidfuzz` install (v9.3)
 - [x] Dead CSS/JS removed (49 CSS rules, legacy price guessing, hidden loader, `renderTpr`); duplicate test classes removed so the newer ones run (v9.7)

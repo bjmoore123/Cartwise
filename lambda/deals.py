@@ -17,7 +17,7 @@ from helpers import (
 from logging_utils import _log_app_event, count_cache_event
 from shared.deal_parser import parse_deal
 from shared.matcher import match_deals_for_user, _get_threshold
-from history import (build_index, compute_badges, item_frequency, title_points,
+from history import (build_index, compute_badges, item_frequency, title_points, autocomplete_terms,
                      serialize_index, deserialize_index, SUMMARY_FMT)
 
 # ── Publix API URLs ───────────────────────────────────────────────────────────
@@ -440,19 +440,47 @@ def get_deal_history(event):
         return err("Could not fetch deal history.", 500)
 
 
+def _gzip_ok(event, body: dict, headers: dict) -> dict:
+    """200 JSON response, gzipped when the browser accepts it (v9.8.4).
+    The API's CloudFront behavior has caching (and so compression) disabled."""
+    import base64, gzip as _gz
+    resp = ok(body, _event=event, _headers=headers)
+    accept = {k.lower(): v for k, v in (event.get("headers") or {}).items()}.get("accept-encoding", "")
+    if "gzip" in accept.lower():
+        resp["body"] = base64.b64encode(_gz.compress(resp["body"].encode("utf-8"), 6)).decode("ascii")
+        resp["isBase64Encoded"] = True
+        resp["headers"] = {**resp["headers"], "Content-Encoding": "gzip", "Vary": "Accept-Encoding"}
+    return resp
+
+
 def get_deal_corpus(event):
-    """GET /deals/corpus — global deduplicated deal title set for autocomplete."""
+    """GET /deals/corpus?store_id=X — autocomplete terms.
+
+    v9.8.4: every deal title and brand this store ran in the last 52 weeks, from
+    the history index (already cached per store). Bounded by the history window,
+    so it no longer grows forever. The old global corpus row stopped updating on
+    2026-04-08 (DynamoDB 400 KB item limit); it is now only a read-only fallback
+    for a store with no history yet.
+    """
     sess = get_session(event)
     if not sess: return err("Not authenticated.", 401)
+    store_id = ((event.get("queryStringParameters") or {}).get("store_id") or "").strip()
     try:
-        row    = corpus_tbl.get_item(Key={"corpus_id": "global"}).get("Item")
-        # v9.2.2 (#5): the scraper writes the `terms` string set; `titles` is the
-        # legacy attribute name. Read both so autocomplete gets the real corpus.
-        row    = row or {}
-        raw    = set(row.get("terms") or set()) | set(row.get("titles") or set())
-        titles = sorted(raw)
-        return ok({"titles": titles, "count": len(titles)},
-                  _headers={"Cache-Control": "max-age=86400"})
+        titles, source = [], "global"
+        if store_id:
+            try:
+                index = _history_index(store_id)
+                if index["weeks"]:
+                    titles, source = autocomplete_terms(index), "history"
+            except Exception as e:
+                print(f"[CW] corpus from history ({store_id}): {e}")
+        if source == "global":
+            row = corpus_tbl.get_item(Key={"corpus_id": "global"}).get("Item") or {}
+            # v9.2.2 (#5): `terms` is the scraper's attribute, `titles` the legacy name
+            titles = sorted(set(row.get("terms") or set()) | set(row.get("titles") or set()))
+        return _gzip_ok(event, {"titles": titles, "count": len(titles), "source": source,
+                                "store_id": store_id},
+                        {"Cache-Control": "private, max-age=21600"})
     except Exception as e:
         print(f"[CW] get_deal_corpus: {e}")
         return err("Could not fetch corpus.", 500)

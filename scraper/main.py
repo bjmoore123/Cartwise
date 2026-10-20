@@ -7,7 +7,6 @@ Uses per-user notify_email for alert delivery.
 
 v6 additions:
   - history_deals()  — writes a dated weekly snapshot to deal-history table
-  - update_corpus()  — merges deal titles/brands into global corpus for autocomplete
 """
 
 import json
@@ -290,45 +289,6 @@ def history_deals(store_id: str, deals: list[dict], week_start: str):
         print(f"  WARNING: could not invalidate history summary for {store_id}: {e}")
 
     print(f"  History snapshot written: {store_id}/{week_start} ({len(slim_deals)} deals, {num_chunks} chunk(s))")
-
-
-def update_corpus(deals: list[dict]):
-    """
-    Merge deal titles and brand strings from this week's deals into the
-    global corpus row (key="global") using DynamoDB ADD on a StringSet.
-    The corpus feeds the List tab autocomplete with cross-week deal names.
-    No TTL — corpus grows indefinitely, never shrinks.
-    """
-    if not CORPUS_TABLE:
-        return
-
-    corpus_tbl = dynamodb.Table(CORPUS_TABLE)
-
-    # Collect all non-empty titles and brands
-    new_terms = set()
-    for d in deals:
-        title = (d.get("title") or "").strip()
-        brand = (d.get("brand") or "").strip()
-        if title:
-            new_terms.add(title)
-        if brand:
-            new_terms.add(brand)
-
-    if not new_terms:
-        return
-
-    try:
-        corpus_tbl.update_item(
-            Key={"corpus_id": "global"},
-            UpdateExpression="ADD terms :t SET updated_at = :u",
-            ExpressionAttributeValues={
-                ":t": new_terms,
-                ":u": datetime.now(timezone.utc).isoformat(),
-            },
-        )
-        print(f"  Corpus updated: {len(new_terms)} term(s) merged")
-    except Exception as e:
-        print(f"  WARNING: corpus update failed: {e}")
 
 
 def write_scrape_log(log: dict):
@@ -620,10 +580,8 @@ def _store_worker(event):
     except Exception as e:
         print(f"  WARNING: history write failed: {e}")
 
-    try:
-        update_corpus(deals)
-    except Exception as e:
-        print(f"  WARNING: corpus update failed: {e}")
+    # v9.8.4: autocomplete now comes from the 52-week history index; the global
+    # corpus row is no longer written (it hit the 400 KB item limit on 2026-04-08).
 
     emails_sent = 0
     for user in store_users:

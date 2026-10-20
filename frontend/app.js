@@ -64,7 +64,7 @@ let _dealsUpdated  = '';       // WeeklyAdLatestUpdatedDateTime from last fetch
 let _dealsStoreId  = '';       // which store these deals are for
 let _allMatches    = [];       // computed matches
 let _dealHistory   = null;    // history summary { num_weeks, badges, freq, ... } for current store
-let _corpusTitles  = [];      // global autocomplete corpus
+let _corpusTitles  = [];      // autocomplete terms for the user's store (v9.8.4)
 let _matchDeptCts  = {};
 let _savingTypes   = [];       // dynamic saving_type values from API
 let _tprLoaded     = false;    // whether TPR deals have been fetched and merged
@@ -243,21 +243,30 @@ function scheduleHistoryRefresh() {
   _historyRefreshTimer = setTimeout(loadDealHistory, 1500);
 }
 
-async function loadCorpus() {
-  if (_corpusTitles.length) return;
-  // v2 key: forces all browsers to discard old &amp;-poisoned corpus cache.
-  const CORPUS_KEY = 'cw_corpus_v2';
-  const cached = sessionStorage.getItem(CORPUS_KEY);
-  // Always decode entities — safety net for any data stored before the Python fix
-  if (cached) { _corpusTitles = JSON.parse(cached).map(decodeEntities); return; }
+// v9.8.4: autocomplete terms = deal titles and brands from YOUR store's last 52
+// weeks (server: history index). Bounded, unlike the old global list. Cached per
+// store for the session; reloaded when the store changes.
+let _corpusStore = null, _corpusLoading = null;
+function loadCorpus() {
+  const sid = (prefs && prefs.store_id) || '';
+  if (_corpusStore === sid && (_corpusTitles.length || _corpusLoading)) return _corpusLoading || Promise.resolve();
+  _corpusStore = sid; _corpusTitles = [];
+  const KEY = 'cw_corpus_v3_' + (sid || 'none');
   try {
-    const res = await fetch(API + '/deals/corpus', {credentials:'include',headers:authHeaders()});
-    if (!res.ok) return;
-    const data = await res.json();
-    // Decode HTML entities as a safety net (Python fix handles new data; this covers transition)
-    _corpusTitles = (data.titles || []).map(decodeEntities);
-    sessionStorage.setItem(CORPUS_KEY, JSON.stringify(_corpusTitles));
-  } catch (e) { console.warn('Corpus load failed:', e); }
+    const cached = sessionStorage.getItem(KEY);
+    if (cached) { _corpusTitles = JSON.parse(cached); return Promise.resolve(); }
+  } catch (_) {}
+  const url = API + '/deals/corpus' + (sid ? '?store_id=' + encodeURIComponent(sid) : '');
+  _corpusLoading = fetch(url, {credentials:'include', headers:authHeaders()})
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (!data || _corpusStore !== sid) return;
+      _corpusTitles = (data.titles || []).map(decodeEntities);
+      try { sessionStorage.setItem(KEY, JSON.stringify(_corpusTitles)); } catch (_) {}
+    })
+    .catch(e => console.warn('Corpus load failed:', e))
+    .finally(() => { _corpusLoading = null; });
+  return _corpusLoading;
 }
 
 function renderFreqHints() {
@@ -2863,7 +2872,12 @@ function adminRenderAppLogs(){
     const src=l.source||'?';
     const icon=SOURCE_ICONS[src]||'•';
     let detail='';
-    if(src==='email'){
+    if(src==='email' && l.action==='resend-weekly-triggered'){
+      // v9.8.4: a request, not a send. The scraper logs the actual send a minute later.
+      detail=`↻ resend queued | ${escH(l.notify_email||l.user||'')}${l.user&&l.notify_email&&l.user!==l.notify_email?` (account ${escH(l.user)})`:''}${l.store_id?` | store ${escH(l.store_id)}`:''}`;
+    } else if(src==='email' && l.ok===undefined && l.action){
+      detail=`${escH(l.action)}${l.user?` | ${escH(l.user)}`:''}`;
+    } else if(src==='email'){
       detail=`to: ${escH(l.to||'')} | subj: ${escH((l.subject||'').slice(0,40))} | ${l.ok?'✓ sent':'✗ failed'}`;
     } else if(src==='cache'){
       detail=`store ${escH(l.store_id||'?')} | ${l.hit?'● hit':'○ miss'} | ${escH(l.endpoint||'')}`;
@@ -2877,7 +2891,9 @@ function adminRenderAppLogs(){
       if(l.added!==undefined) parts.push(`added: ${l.added}`);
       detail=parts.join(' · ');
     } else if(src==='api'){
-      detail=`${escH(l.method||'?')} ${escH(l.path||'')} → ${l.status||'?'} | ${escH((l.message||'').slice(0,80))}`;
+      // v9.8.4: method/path recorded on new rows; older rows have neither
+      const where=l.path?`${escH(l.method||'')} ${escH(l.path)}`:'(endpoint not recorded)';
+      detail=`${where} → ${l.status||'?'} | ${escH((l.message||'').slice(0,80))}`;
     } else {
       const msg=(l.message||'')+(l.stack?' │ '+l.stack.split('\n')[0]:'');
       detail=escH(msg.slice(0,200));
@@ -3087,6 +3103,7 @@ function acGetTitles() {
 }
 
 function acInput() {
+  if (_corpusStore !== ((prefs && prefs.store_id) || '')) loadCorpus();   // store changed since login
   const q = (document.getElementById('new-item').value || '').trim();
   const drop = document.getElementById('ac-drop');
   if (!q) { drop.style.display = 'none'; return; }

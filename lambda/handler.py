@@ -7,7 +7,7 @@ Architecture #1: module split complete.
 Architecture #7: login() receives explicit event (no __event__ mutation).
 """
 import urllib.parse
-from helpers import ok, err, get_body, cors_headers
+from helpers import ok, err, get_body, cors_headers, set_request_context
 
 from auth     import register, login, logout, change_pin, verify_email, resend_verification
 from prefs    import get_prefs, save_prefs, delete_account, unsubscribe, send_test_email, resend_weekly_email
@@ -31,6 +31,7 @@ def handler(event, context):
     path     = http_ctx.get("path") or event.get("rawPath") or event.get("path", "")
     body     = get_body(event)
     qs       = event.get("queryStringParameters") or {}
+    set_request_context(method, path)   # v9.8.4: err() logs which endpoint failed
 
     # OPTIONS/preflight: API Gateway's CorsConfiguration adds CORS headers
     # (including MaxAge: 86400 from deploy.sh), but when CloudFront sits in
