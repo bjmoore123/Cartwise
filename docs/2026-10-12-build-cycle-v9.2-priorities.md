@@ -308,6 +308,9 @@ Test plan: `docs/v9.4-test-plan.md`.
 - With ~20,000 terms, "contains ANY typed word, then A–Z" buried the right products ("american chees" listed every "4C … Cheese"). Now: only terms matching the most typed words; scored by whole-word / word-start matches, the typed phrase, the product noun (last word: "Whole Milk" beats "Milk Duds"), this week's sale items (+ "on sale" chip), shorter names first. 12 shown, with "12 of N matches · keep typing to narrow".
 - One spelling per product (case, accents, ®/™, punctuation ignored); stray quotes removed; store-wide promos, coupon wording and fine-print fragments dropped (store 1546: 19,907 → 18,095 terms, 847 → 690 KB before gzip).
 
+### v9.8.6: Autocomplete cleanup reaches every browser ✅ built 2026-10-20
+- Coupon titles ("Save $1.50 on any ONE …") still showed: this week's deal titles are added in the browser (never server-filtered), and browsers kept the v9.8.4 list (same session key; 6-hour HTTP cache). Now the browser applies the same not-a-product rule (parity-tested), and the cache key and URL are versioned so old lists are dropped.
+
 ### Batch 6: Hygiene (ride-along)
 - [x] Delete `lambda/api.py` (stale duplicate parser, never deployed) and the unused `rapidfuzz` install (v9.3)
 - [x] Dead CSS/JS removed (49 CSS rules, legacy price guessing, hidden loader, `renderTpr`); duplicate test classes removed so the newer ones run (v9.7)

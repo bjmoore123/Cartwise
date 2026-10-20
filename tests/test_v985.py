@@ -32,6 +32,17 @@ class TestCleanup:
         assert _terms(junk + ["Publix Large Eggs"]) == ["Publix Large Eggs"]
 
 
+def test_promo_filter_in_sync():
+    """Same not-a-product rule in the browser and on the server."""
+    js = open(os.path.join(_ROOT, "frontend", "app.js"), encoding="utf-8").read()
+    py = open(os.path.join(_ROOT, "lambda", "history.py"), encoding="utf-8").read()
+    js_re = js[js.index("const AC_NOT_PRODUCT = /") + len("const AC_NOT_PRODUCT = /"):js.index("/i;", js.index("const AC_NOT_PRODUCT"))]
+    py_re = py[py.index('_AC_PROMO = re.compile(r"') + len('_AC_PROMO = re.compile(r"'):py.index('", re.I)', py.index("_AC_PROMO = re.compile"))]
+    assert js_re == py_re
+    assert "raw.length > 100" in js and "_AC_MAX_LEN = 100" in py
+    assert "cw_corpus_v4_" in js and "/deals/corpus?v=2" in js
+
+
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_js_ranking():
     app = open(os.path.join(_ROOT, "frontend", "app.js"), encoding="utf-8").read()
@@ -39,7 +50,7 @@ def test_js_ranking():
     corpus = ["4C Grated Cheese", "4C Grated Cheese, Parmesan", "Publix American Cheese", "Kraft American Cheese Singles",
               "Milk Duds", "Milk-Bone Dog Biscuits", "Publix Whole Milk", "Lactaid Milk", "Boar's Head® Deluxe Ham",
               "Boar's Head Deluxe Ham", "Publix Large Eggs", "Eggland's Best Eggs"]
-    js = (f"let _allDeals=[{{title:\"Boar's Head American Cheese\"}}],_corpusTitles={json.dumps(corpus)},_corpusStore='1';"
+    js = (f"let _allDeals=[{{title:\"Boar's Head American Cheese\"}},{{title:\"Save $1.50 on any ONE (1) Sargento Natural American Sliced Cheese Product\"}}],_corpusTitles={json.dumps(corpus)},_corpusStore='1';"
           "const itemNames=()=>['eggland\\'s best eggs'];" + code +
           "const T=acGetTitles(),r=q=>acRank(q,T);"
           "console.log(JSON.stringify({ac:r('american chees').top.map(x=>x.t),milk:r('milk').top.map(x=>x.t),"

@@ -251,12 +251,12 @@ function loadCorpus() {
   const sid = (prefs && prefs.store_id) || '';
   if (_corpusStore === sid && (_corpusTitles.length || _corpusLoading)) return _corpusLoading || Promise.resolve();
   _corpusStore = sid; _corpusTitles = [];
-  const KEY = 'cw_corpus_v3_' + (sid || 'none');
+  const KEY = 'cw_corpus_v4_' + (sid || 'none');   // v4: v9.8.5 cleanup (drop lists cached by v9.8.4)
   try {
     const cached = sessionStorage.getItem(KEY);
     if (cached) { _corpusTitles = JSON.parse(cached); return Promise.resolve(); }
   } catch (_) {}
-  const url = API + '/deals/corpus' + (sid ? '?store_id=' + encodeURIComponent(sid) : '');
+  const url = API + '/deals/corpus?v=2' + (sid ? '&store_id=' + encodeURIComponent(sid) : '');
   _corpusLoading = fetch(url, {credentials:'include', headers:authHeaders()})
     .then(r => r.ok ? r.json() : null)
     .then(data => {
@@ -3088,6 +3088,9 @@ let _acIdx = -1;
 let _acCache = { key: '', terms: [] };
 // Same product, different spelling: "Boar's Head® Ham" = "Boar's Head Ham", "Olé" = "Ole".
 // KEEP IN SYNC with _ac_key() in lambda/history.py
+// Not products: store-wide promos, coupon wording, fine print, size ranges.
+// KEEP IN SYNC with _AC_PROMO / _AC_MAX_LEN in lambda/history.py
+const AC_NOT_PRODUCT = /^\$\d|^save \$|^[^a-z0-9]|when you spend|[\r\n]/i;
 const acKey = t => (t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 function acGetTitles() {
   // Current-week deal titles + the store's 52-week terms, once each, minus items
@@ -3099,7 +3102,9 @@ function acGetTitles() {
   const onSale = new Set();
   const terms = [];
   const add = (t, sale) => {
-    const trimmed = (t || '').replace(/"/g, '').replace(/\s+/g, ' ').trim(), k = acKey(trimmed);
+    const raw = (t || '').replace(/"/g, '').trim();
+    if (!raw || raw.length > 100 || AC_NOT_PRODUCT.test(raw)) return;   // this week's coupon titles too
+    const trimmed = raw.replace(/\s+/g, ' '), k = acKey(trimmed);
     if (!k) return;
     if (sale) onSale.add(k);
     if (seen.has(k)) return;
