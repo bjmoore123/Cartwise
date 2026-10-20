@@ -281,20 +281,51 @@ def deserialize_index(blob: bytes) -> dict:
             "brands": data.get("brands", [])}
 
 
+def _ac_key(term: str) -> str:
+    """Same product, different spelling: "Boar's Head® Ham" = "Boar's Head Ham", "Olé" = "Ole".
+    KEEP IN SYNC with acKey() in frontend/app.js."""
+    import unicodedata
+    t = unicodedata.normalize("NFD", term or "")
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    return _NON_ALNUM.sub(" ", t.lower()).strip()
+
+
+# Not products: store-wide promos, coupon wording, fine-print fragments, size ranges
+_AC_PROMO = re.compile(r"^\$\d|^save \$|^[^a-z0-9]|when you spend|[\r\n]", re.I)
+_AC_MAX_LEN = 100
+
+
+def _ac_clean(term: str) -> str:
+    """Strip stray quotes; drop store-wide promos ("$10 off When You Spend $30 on …"),
+    which are not products anyone puts on a shopping list."""
+    raw = (term or "").replace('"', "").strip()             # '"Dirty" Chips' -> 'Dirty Chips'
+    if len(raw) > _AC_MAX_LEN or _AC_PROMO.search(raw):
+        return ""
+    return " ".join(raw.split())
+
+
 def autocomplete_terms(index: dict) -> list[str]:
     """v9.8.4: autocomplete list = every deal title and brand this store ran in the
     history window (52 weeks, the history TTL). Replaces the global corpus row, which
     only ever grew and stopped updating at DynamoDB's 400 KB item limit.
-    One spelling per case-insensitive term, sorted."""
-    out: dict[str, str] = {}
+    v9.8.5: one spelling per product (ignoring case, accents, ®/™ and punctuation),
+    preferring the plainest spelling; stray surrounding quotes removed."""
+    best: dict[str, str] = {}
+    def offer(raw):
+        t = _ac_clean(raw)
+        k = _ac_key(t)
+        if not k:
+            return
+        cur = best.get(k)
+        rank = lambda x: (sum(1 for c in x if ord(c) > 127), x.isupper(), len(x), x)
+        if cur is None or rank(t) < rank(cur):
+            best[k] = t
     for per in index["titles"].values():
         for (t, _sv, _p) in per.values():
-            t = (t or "").strip()
-            if t:
-                out.setdefault(t.lower(), t)
+            offer(t)
     for b in index.get("brands") or []:
-        out.setdefault(b.lower(), b)
-    return sorted(out.values(), key=str.lower)
+        offer(b)
+    return sorted(best.values(), key=str.lower)
 
 
 def title_points(index: dict, title: str) -> list[dict]:

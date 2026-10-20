@@ -3082,24 +3082,77 @@ document.querySelectorAll('.overlay').forEach(o=>{
 // ═══════════════════════════════════════════════════════════════════
 let _acIdx = -1;
 
+// v9.8.5: autocomplete ranks by relevance instead of "contains ANY word, then A–Z".
+// With ~20,000 terms from 52 weeks, "american chees" used to list every
+// "4C … Cheese" first and never reach "Boar's Head American Cheese".
+let _acCache = { key: '', terms: [] };
+// Same product, different spelling: "Boar's Head® Ham" = "Boar's Head Ham", "Olé" = "Ole".
+// KEEP IN SYNC with _ac_key() in lambda/history.py
+const acKey = t => (t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 function acGetTitles() {
-  const seen = new Set();
-  const titles = [];
-  // Merge current-week deal titles with persistent corpus
-  const allSources = [
-    ..._allDeals.map(d => d.title || ''),
-    ..._corpusTitles,
-  ];
-  // Exclude items already on the list
-  const alreadyAdded = new Set(itemNames().map(n => n.toLowerCase()));
-  for (const t of allSources) {
-    const trimmed = t.trim(); // entities already decoded at load time in loadCorpus / _allDeals
-    if (trimmed && !seen.has(trimmed.toLowerCase()) && !alreadyAdded.has(trimmed.toLowerCase())) {
-      seen.add(trimmed.toLowerCase());
-      titles.push(trimmed);
+  // Current-week deal titles + the store's 52-week terms, once each, minus items
+  // already on the list. Rebuilt only when one of those inputs changes.
+  const names = itemNames();
+  const key = `${_allDeals.length}|${_corpusTitles.length}|${_corpusStore}|${names.length}`;
+  if (_acCache.key === key) return _acCache.terms;
+  const seen = new Set(names.map(acKey));
+  const onSale = new Set();
+  const terms = [];
+  const add = (t, sale) => {
+    const trimmed = (t || '').replace(/"/g, '').replace(/\s+/g, ' ').trim(), k = acKey(trimmed);
+    if (!k) return;
+    if (sale) onSale.add(k);
+    if (seen.has(k)) return;
+    seen.add(k);
+    const toks = k.split(' ');
+    terms.push({ t: trimmed, low: k, toks, last: toks[toks.length - 1] });
+  };
+  _allDeals.forEach(d => add(d.title, true));
+  _corpusTitles.forEach(t => add(t, false));
+  terms.forEach(x => { x.sale = onSale.has(x.low); });
+  _acCache = { key, terms };
+  return terms;
+}
+
+// How well one typed word matches a term: 3 = whole word, 2 = start of a word,
+// 1 = inside a word, 0 = no match. "eggs" also tries "egg".
+function acWordScore(w, term) {
+  const alts = w.length > 3 && w.endsWith('s') ? [w, w.slice(0, -1)] : [w];
+  let best = 0;
+  for (const a of alts) {
+    for (const tok of term.toks) {
+      if (tok === a) return 3;
+      if (tok.startsWith(a)) best = Math.max(best, 2);
     }
+    if (!best && term.low.includes(a)) best = 1;
   }
-  return titles;
+  return best;
+}
+
+const AC_SHOW = 12;
+function acRank(q, terms) {
+  const qLow = acKey(q);
+  const words = qLow.split(' ').filter(Boolean);
+  const scored = [];
+  let most = 0;
+  for (const term of terms) {
+    let hit = 0, pts = 0;
+    for (const w of words) { const s = acWordScore(w, term); if (s) { hit++; pts += s; } }
+    if (!hit) continue;
+    most = Math.max(most, hit);
+    let score = pts * 10;
+    if (term.low.includes(qLow)) score += 15;            // typed text appears as a phrase
+    // The last word is usually what the product IS: "Whole Milk" beats "Milk Duds"
+    if (words.some(w => term.last === w || term.last === w + 's' || (w.endsWith('s') && term.last === w.slice(0, -1)))) score += 25;
+    if (term.sale) score += 12;                          // on sale this week
+    score -= Math.min(term.t.length, 80) / 8;            // shorter = more general = more useful
+    scored.push({ term, hit, score });
+  }
+  // Only terms that match as many typed words as the best one does: if anything
+  // matches "american" AND "chees", drop the ones matching just one word.
+  const kept = scored.filter(x => x.hit === most);
+  kept.sort((a, b) => b.score - a.score || a.term.t.localeCompare(b.term.t));
+  return { total: kept.length, top: kept.slice(0, AC_SHOW).map(x => x.term) };
 }
 
 function acInput() {
@@ -3108,25 +3161,17 @@ function acInput() {
   const drop = document.getElementById('ac-drop');
   if (!q) { drop.style.display = 'none'; return; }
 
-  const qLow = q.toLowerCase();
-  const all = acGetTitles();
-  const words = qLow.split(/\s+/).filter(Boolean);
-  const matches = all.filter(t => words.some(w => t.toLowerCase().includes(w)));
-
-  matches.sort((a, b) => {
-    const aStart = a.toLowerCase().startsWith(qLow) ? 0 : 1;
-    const bStart = b.toLowerCase().startsWith(qLow) ? 0 : 1;
-    return aStart - bStart || a.localeCompare(b);
-  });
-
-  const suggestions = matches.slice(0, 8);
+  const { total, top } = acRank(q, acGetTitles());
   _acIdx = -1;
 
+  const more = total > top.length
+    ? `<div class="ac-more">${top.length} of ${total.toLocaleString()} matches · keep typing to narrow</div>` : '';
   drop.innerHTML = [
     `<div class="ac-item ac-item-free" data-val="${escH(q)}" data-action="ac-select">${escH(q)} <span style="font-size:10px;opacity:.55;margin-left:4px">add custom</span></div>`,
-    ...suggestions.map(s =>
-      `<div class="ac-item ac-item-deal" data-val="${escH(s)}" data-action="ac-select">${escH(s)}</div>`
-    )
+    ...top.map(s =>
+      `<div class="ac-item ac-item-deal" data-val="${escH(s.t)}" data-action="ac-select">${escH(s.t)}${s.sale ? '<span class="ac-sale">on sale</span>' : ''}</div>`
+    ),
+    more,
   ].join('');
 
   drop.style.display = q ? '' : 'none';

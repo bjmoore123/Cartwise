@@ -304,6 +304,10 @@ Test plan: `docs/v9.4-test-plan.md`.
 - History summary format 6 (adds brands; rebuilds once per store).
 - Admin log: "resend requested" rows show as "↻ resend queued", not a failed send; API errors record method and path.
 
+### v9.8.5: Autocomplete relevance ✅ built 2026-10-20
+- With ~20,000 terms, "contains ANY typed word, then A–Z" buried the right products ("american chees" listed every "4C … Cheese"). Now: only terms matching the most typed words; scored by whole-word / word-start matches, the typed phrase, the product noun (last word: "Whole Milk" beats "Milk Duds"), this week's sale items (+ "on sale" chip), shorter names first. 12 shown, with "12 of N matches · keep typing to narrow".
+- One spelling per product (case, accents, ®/™, punctuation ignored); stray quotes removed; store-wide promos, coupon wording and fine-print fragments dropped (store 1546: 19,907 → 18,095 terms, 847 → 690 KB before gzip).
+
 ### Batch 6: Hygiene (ride-along)
 - [x] Delete `lambda/api.py` (stale duplicate parser, never deployed) and the unused `rapidfuzz` install (v9.3)
 - [x] Dead CSS/JS removed (49 CSS rules, legacy price guessing, hidden loader, `renderTpr`); duplicate test classes removed so the newer ones run (v9.7)
