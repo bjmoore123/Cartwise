@@ -471,3 +471,17 @@ def admin_inbound_logs(event):
     except Exception as e:
         print(f"[CW] admin_inbound_logs: {e}")
         return err("Could not fetch inbound logs.", 500)
+
+
+# ── Feedback (v9.9) ───────────────────────────────────────────────────────────
+
+@require_admin
+def admin_feedback_list(event):
+    from feedback import admin_list_feedback
+    return admin_list_feedback(event)
+
+
+@require_admin
+def admin_feedback_update(event, body, feedback_id):
+    from feedback import admin_update_feedback
+    return admin_update_feedback(event, body, feedback_id)

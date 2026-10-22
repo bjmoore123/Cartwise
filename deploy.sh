@@ -198,6 +198,7 @@ create_table "${APP_NAME}-scrape-logs"    "job_id"
 create_table "${APP_NAME}-auth-logs"      "log_id"
 create_table "${APP_NAME}-app-logs"       "log_id"
 create_table "${APP_NAME}-deal-corpus"    "corpus_id"
+create_table "${APP_NAME}-feedback"       "feedback_id"   # v9.9: in-app feedback
 
 # deal-history uses a composite key (PK=store_id, SK=sk) so we can Query by store
 # instead of scanning the entire table. If the table exists with only a hash key,
@@ -287,6 +288,7 @@ enable_ttl "deals"
 enable_ttl "auth-logs"
 enable_ttl "app-logs"
 enable_ttl "scrape-logs"
+enable_ttl "feedback"            # v9.9: kept 1 year
 
 # ── STEP 2: IAM role ──────────────────────────────────────────────────────────
 echo "▶  2/15  IAM role"
@@ -316,7 +318,8 @@ aws iam put-role-policy --role-name "${LAMBDA_ROLE}" \
        \"arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${APP_NAME}-auth-logs\",
        \"arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${APP_NAME}-app-logs\",
        \"arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${APP_NAME}-deal-history\",
-       \"arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${APP_NAME}-deal-corpus\"
+       \"arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${APP_NAME}-deal-corpus\",
+       \"arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${APP_NAME}-feedback\"
      ]},
     {\"Effect\":\"Allow\",\"Action\":[\"lambda:InvokeFunction\"],
      \"Resource\":\"arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:${APP_NAME}-scraper\"},
@@ -343,9 +346,10 @@ PIP_CMD=$(which pip3 2>/dev/null || which pip 2>/dev/null || echo "python3 -m pi
 
 API_BUILD_TMP="${TMPDIR_PY}/api_build"
 rm -rf "${API_BUILD_TMP}"; mkdir -p "${API_BUILD_TMP}"
-# Copy all lambda modules (Architecture #1: modular split)
-for f in handler.py helpers.py auth.py prefs.py deals.py history.py admin.py inbound.py logging_utils.py; do
-  cp "${SCRIPT_DIR}/lambda/${f}" "${API_BUILD_TMP}/"
+# Copy every lambda module (v9.9.1: was a fixed list; a new module missing from it
+# crashed the API on startup, so every request returned 500)
+for f in "${SCRIPT_DIR}"/lambda/*.py; do
+  cp "${f}" "${API_BUILD_TMP}/"
 done
 # Include shared libraries (deal_parser + matcher)
 mkdir -p "${API_BUILD_TMP}/shared"
@@ -386,6 +390,13 @@ RESEND_RECEIVING_KEY_VAL=$(aws ssm get-parameter --name "/publix/resend-receivin
 if [ -n "${RESEND_RECEIVING_KEY_VAL}" ]; then ok "Resend receiving key found (inbound import enabled)"
 else info "No /publix/resend-receiving-key in SSM: inbound list import will log a 403 hint"; fi
 
+# v9.9: where in-app feedback is emailed. Kept in SSM so the address is never in the repo or the page.
+FEEDBACK_TO_VAL=$(aws ssm get-parameter --name "/publix/feedback-to" \
+  --query Parameter.Value --output text --region "${AWS_REGION}" 2>/dev/null || true)
+[ "${FEEDBACK_TO_VAL}" = "None" ] && FEEDBACK_TO_VAL=""
+if [ -n "${FEEDBACK_TO_VAL}" ]; then ok "Feedback notifications go to the /publix/feedback-to address"
+else info "No /publix/feedback-to in SSM: feedback is saved (Admin → Feedback) but not emailed"; fi
+
 # env applied via apply_env (supports special chars in ADMIN_SECRET)
 
 if ! exists aws lambda get-function --function-name "${LAMBDA_API}" --region "${AWS_REGION}"; then
@@ -421,6 +432,8 @@ if ! exists aws lambda get-function --function-name "${LAMBDA_API}" --region "${
     "INBOUND_EMAIL_ADDR" "${INBOUND_EMAIL_ADDR}" \
     "RESEND_WEBHOOK_SECRET" "${RESEND_WEBHOOK_SECRET}" \
     "RESEND_RECEIVING_KEY" "${RESEND_RECEIVING_KEY_VAL}" \
+    "FEEDBACK_TABLE" "${APP_NAME}-feedback" \
+    "FEEDBACK_TO" "${FEEDBACK_TO_VAL}" \
     "ACM_CERT_ARN" "${ACM_CERT_ARN}" \
     "CF_LOG_BUCKET" "${CF_LOG_BUCKET}" \
     "CF_LOG_PREFIX" "${CF_LOG_PREFIX}" \
@@ -463,6 +476,8 @@ else
     "INBOUND_EMAIL_ADDR" "${INBOUND_EMAIL_ADDR}" \
     "RESEND_WEBHOOK_SECRET" "${RESEND_WEBHOOK_SECRET}" \
     "RESEND_RECEIVING_KEY" "${RESEND_RECEIVING_KEY_VAL}" \
+    "FEEDBACK_TABLE" "${APP_NAME}-feedback" \
+    "FEEDBACK_TO" "${FEEDBACK_TO_VAL}" \
     "ACM_CERT_ARN" "${ACM_CERT_ARN}" \
     "CF_LOG_BUCKET" "${CF_LOG_BUCKET}" \
     "CF_LOG_PREFIX" "${CF_LOG_PREFIX}" \
@@ -470,6 +485,23 @@ else
     "ADMIN_COOKIE_NAME" "${ADMIN_COOKIE_NAME}" \
     "COOKIE_DOMAIN" "${COOKIE_DOMAIN}"
   ok "Lambda updated: ${LAMBDA_API}"
+fi
+
+# v9.9.1: smoke test. A preflight request runs the handler's imports; if the API
+# can't start, stop here instead of finishing a deploy that serves only 500s.
+aws lambda wait function-updated --function-name "${LAMBDA_API}" --region "${AWS_REGION}" 2>/dev/null || sleep 5
+SMOKE_OUT="${TMPDIR_PY}/api_smoke.json"
+SMOKE_ERR=$(MSYS_NO_PATHCONV=1 aws lambda invoke --function-name "${LAMBDA_API}" --region "${AWS_REGION}" \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"requestContext":{"http":{"method":"OPTIONS","path":"/user/prefs"}},"headers":{}}' \
+  --query FunctionError --output text "$(win_path "${SMOKE_OUT}")" 2>&1)
+if [ -n "${SMOKE_ERR}" ] && [ "${SMOKE_ERR}" != "None" ]; then
+  echo "   ❌ API smoke test failed (${SMOKE_ERR}): the API Lambda cannot start."
+  cat "${SMOKE_OUT}" 2>/dev/null | head -c 600; echo
+  echo "   Fix the error above and re-run deploy.sh."
+  exit 1
+else
+  ok "API smoke test passed (handler starts and answers)"
 fi
 
 LAMBDA_API_ARN=$(aws lambda get-function --function-name "${LAMBDA_API}" --region "${AWS_REGION}" --query 'Configuration.FunctionArn' --output text)
@@ -879,6 +911,8 @@ apply_env "${LAMBDA_API}" \
     "INBOUND_EMAIL_ADDR" "${INBOUND_EMAIL_ADDR}" \
     "RESEND_WEBHOOK_SECRET" "${RESEND_WEBHOOK_SECRET}" \
     "RESEND_RECEIVING_KEY" "${RESEND_RECEIVING_KEY_VAL}" \
+    "FEEDBACK_TABLE" "${APP_NAME}-feedback" \
+    "FEEDBACK_TO" "${FEEDBACK_TO_VAL}" \
     "ACM_CERT_ARN" "${ACM_CERT_ARN}" \
     "CF_LOG_BUCKET" "${CF_LOG_BUCKET}" \
     "CF_LOG_PREFIX" "${CF_LOG_PREFIX}" \

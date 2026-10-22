@@ -25,7 +25,10 @@ function checkSession(force) {
   const now = Date.now();
   if (!force && now - _lastSessionCheck < 60000) return;   // at most once a minute
   _lastSessionCheck = now;
-  fetch(API + '/user/prefs', {credentials:'include', cache:'no-store'}).catch(() => {});  // 401 → sessionEnded()
+  fetch(API + '/user/prefs', {credentials:'include', cache:'no-store'})   // 401 → sessionEnded()
+    .then(r => r.ok ? r.json() : null)
+    .then(d => { if (d && d.email_verified !== undefined && (d.email_verified !== false) !== _emailVerified) setEmailVerified(d.email_verified); })
+    .catch(() => {});
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkSession(); });
 window.addEventListener('focus', () => checkSession());
@@ -475,8 +478,23 @@ function showVerifyBanner(show) {
   banner.style.display = 'flex';
 }
 
-async function resendVerification() {
-  const btn = document.getElementById('btn-resend-verify');
+// v9.9: one source of truth for "is this account verified?". Drives the top banner
+// AND the card on Notifications. Re-checked when the tab regains focus, so after
+// clicking the link in another tab, coming back clears both.
+let _emailVerified = true;
+function setEmailVerified(v) {
+  _emailVerified = v !== false;
+  showVerifyBanner(!_emailVerified);
+  const card = document.getElementById('verify-card');
+  if (card) card.style.display = _emailVerified ? 'none' : '';
+  const em = document.getElementById('verify-card-email');
+  if (em) em.textContent = userEmail || '';
+}
+
+async function resendVerification(btnId) {
+  const btn = document.getElementById(btnId || 'btn-resend-verify');
+  const label = btn ? btn.textContent : '';
+  const cardMsg = btnId === 'btn-verify-card' ? document.getElementById('verify-card-msg') : null;
   if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
   try {
     const res = await fetch(API + '/auth/resend-verification', {
@@ -485,11 +503,73 @@ async function resendVerification() {
       body: JSON.stringify({email: userEmail})
     });
     const d = await res.json();
-    if (btn) { btn.textContent = d.message || 'Sent!'; }
-    setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = 'Resend email'; }}, 5000);
+    if (cardMsg) { cardMsg.textContent = (d.message || 'Sent!') + ' It can take a minute; check spam too.'; if (btn) btn.textContent = 'Sent'; }
+    else if (btn) { btn.textContent = d.message || 'Sent!'; }
+    if (/already verified/i.test(d.message || '')) setEmailVerified(true);
+    setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = label || 'Resend email'; }}, 30000);
   } catch(e) {
-    if (btn) { btn.disabled = false; btn.textContent = 'Resend email'; }
+    if (btn) { btn.disabled = false; btn.textContent = label || 'Resend email'; }
+    if (cardMsg) cardMsg.textContent = 'Could not reach the server. Please try again.';
   }
+}
+
+async function recheckVerified() {
+  const msg = document.getElementById('verify-card-msg');
+  try {
+    const res = await fetch(API + '/user/prefs', {credentials:'include', cache:'no-store', headers:authHeaders()});
+    if (!res.ok) return;
+    const d = await res.json();
+    setEmailVerified(d.email_verified);
+    if (msg) msg.textContent = d.email_verified === false ? "Not verified yet. Open the link in the email we sent, then try again." : '';
+  } catch (_) {}
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FEEDBACK (v9.9)
+// ═══════════════════════════════════════════════════════════════════
+const APP_VERSION = '9.9';
+const FB_MAX = 2000;
+function openFeedback() {
+  closeMobileNav && closeMobileNav();
+  const verified = _emailVerified;
+  document.getElementById('fb-form').style.display = verified ? '' : 'none';
+  document.getElementById('fb-verify').style.display = verified ? 'none' : '';
+  document.getElementById('fb-done').style.display = 'none';
+  document.getElementById('fb-email').textContent = userEmail || '';
+  document.getElementById('fb-status').textContent = '';
+  document.getElementById('fb-send').disabled = false;
+  fbCount();
+  document.getElementById('feedback-ov').classList.add('vis');
+  if (verified) setTimeout(() => document.getElementById('fb-msg').focus(), 50);
+}
+function fbCount() {
+  const n = (document.getElementById('fb-msg').value || '').length;
+  const el = document.getElementById('fb-count');
+  el.textContent = `${n.toLocaleString()} / ${FB_MAX.toLocaleString()}`;
+  el.classList.toggle('near', n > FB_MAX * 0.9);
+}
+async function sendFeedback() {
+  const kindEl = document.querySelector('input[name="fb-kind"]:checked');
+  const message = (document.getElementById('fb-msg').value || '').trim();
+  const status = document.getElementById('fb-status');
+  if (!kindEl) { setMsg('fb-status', 'Please choose a type.', 'err'); return; }
+  if (!message) { setMsg('fb-status', 'Please enter a message.', 'err'); return; }
+  const btn = document.getElementById('fb-send');
+  btn.disabled = true; btn.textContent = 'Sending…';
+  const panel = (document.querySelector('.panel.active') || {}).id || '';
+  try {
+    const res = await fetch(API + '/user/feedback', {method:'POST', credentials:'include',
+      headers:{...authHeaders(), 'Content-Type':'application/json'},
+      body: JSON.stringify({kind: kindEl.value, message, page: panel.replace(/^panel-/, ''), app_version: APP_VERSION})});
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) { setMsg('fb-status', d.error || 'Could not send. Please try again.', 'err'); return; }
+    document.getElementById('fb-msg').value = '';
+    document.querySelectorAll('input[name="fb-kind"]').forEach(r => { r.checked = false; });
+    document.getElementById('fb-form').style.display = 'none';
+    document.getElementById('fb-done').style.display = '';
+  } catch (_) {
+    setMsg('fb-status', 'Could not reach the server. Please try again.', 'err');
+  } finally { btn.disabled = false; btn.textContent = 'Send'; }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -499,10 +579,9 @@ function enterApp(opts) {
     (!localStorage.getItem('cw_welcomed_'+userEmail) && !(prefs && prefs.store_id));
   document.getElementById('auth-screen').style.display='none';
   document.getElementById('app-screen').classList.add('visible');
-  // Show verification banner for unverified accounts
-  const _verified = (opts && opts.emailVerified !== undefined) ? opts.emailVerified : true;
-  showVerifyBanner(!_verified);
   document.getElementById('topbar-email').textContent=userEmail;
+  // Show verification banner + Notifications card for unverified accounts
+  setEmailVerified((opts && opts.emailVerified !== undefined) ? opts.emailVerified : true);
   document.getElementById('acct-email-disp').textContent=userEmail;
   document.getElementById('acct-avatar').textContent=(userEmail[0]||'?').toUpperCase();
   loadPrefs();
@@ -2212,7 +2291,7 @@ function onMatchesToggle(){
 let _adminActivePage = 'users';
 function adminNav(name){
   _adminActivePage = name;
-  ['users','reports','logging','inbound'].forEach(t=>{
+  ['users','reports','logging','inbound','feedback'].forEach(t=>{
     document.getElementById('anav-'+t).classList.toggle('active', t===name);
     document.getElementById('apage-'+t).classList.toggle('active', t===name);
   });
@@ -2229,6 +2308,65 @@ function adminNav(name){
     const iw=document.getElementById('inbound-log-wrap');
     if(iw && iw.textContent.includes('Click Refresh')) adminLoadInboundLogs();
   }
+  if(name==='feedback') adminLoadFeedback();
+}
+
+// ── Feedback inbox (v9.9) ────────────────────────────────────────────────────
+// Messages are untrusted text: everything goes through escH, nothing becomes a link
+// except the reply button, whose address is the sender's verified account email.
+let _adminFeedback = [];
+const FB_KIND_LABEL = {bug:'Bug', idea:'Idea', question:'Question', other:'Other'};
+async function adminLoadFeedback(){
+  const el=document.getElementById('fb-admin-list');
+  try{
+    const res=await fetch(API+'/admin/feedback',{credentials:'include',headers:adminHdrs()});
+    const d=await res.json();
+    if(!res.ok) throw new Error(d.error||'Failed');
+    _adminFeedback=d.feedback||[];
+    adminSetFeedbackBadge(d.new||0);
+    adminRenderFeedback();
+  }catch(e){ el.innerHTML=`<div style="color:var(--red);font-size:13px">Error: ${escH(e.message)}</div>`; }
+}
+function adminSetFeedbackBadge(n){
+  const b=document.getElementById('fb-new-badge');
+  if(b){ b.textContent=n; b.style.display=n?'':'none'; }
+}
+function adminRenderFeedback(){
+  const el=document.getElementById('fb-admin-list');
+  const showDone=document.getElementById('fb-show-done').checked;
+  const list=_adminFeedback.filter(f=>showDone||f.status!=='done');
+  const nNew=_adminFeedback.filter(f=>f.status==='new').length;
+  document.getElementById('fb-admin-ct').textContent=`(${nNew} new · ${_adminFeedback.length} total)`;
+  if(!list.length){ el.innerHTML=`<div style="color:var(--ink-soft);font-size:13px;padding:8px 0">${_adminFeedback.length?'Nothing new. Tick "Show done" to see the rest.':'No feedback yet.'}</div>`; return; }
+  el.innerHTML=list.map(f=>{
+    const when=new Date(f.ts).toLocaleString([], {dateStyle:'medium', timeStyle:'short'});
+    const kind=FB_KIND_LABEL[f.kind]?f.kind:'other';
+    const ctx=[f.page&&`page: ${f.page}`, f.store_id&&`store #${f.store_id}${f.store_name?' '+f.store_name:''}`,
+               f.app_version&&`app ${f.app_version}`, f.user_agent].filter(Boolean).map(escH).join(' · ');
+    const reply='mailto:'+encodeURIComponent(f.email||'')+'?subject='+encodeURIComponent('Re: your Cartwise feedback');
+    const done=f.status==='done';
+    return `<div class="fb-item${done?' done':''}">
+      <div class="fb-item-hd"><span class="fb-kind ${kind}">${escH(FB_KIND_LABEL[kind])}</span>
+        <strong>${escH(f.email||'')}</strong><span>${escH(when)}</span>${done?'<span>· done</span>':''}</div>
+      <div class="fb-item-msg">${escH(f.message||'')}</div>
+      ${ctx?`<div class="fb-item-ctx">${ctx}</div>`:''}
+      <div class="fb-item-btns">
+        <a class="abn g" href="${escH(reply)}" target="_blank" rel="noopener noreferrer">✉️ Reply</a>
+        <button class="abn ${done?'a':'g'}" data-action="admin-feedback-status" data-id="${escH(f.feedback_id)}" data-status="${done?'new':'done'}">${done?'↺ Reopen':'✓ Mark done'}</button>
+      </div></div>`;
+  }).join('');
+}
+async function adminSetFeedbackStatus(id, status, btn){
+  if(btn) btn.disabled=true;
+  try{
+    const res=await fetch(API+'/admin/feedback/'+encodeURIComponent(id),{method:'POST',credentials:'include',
+      headers:{...adminHdrs(),'Content-Type':'application/json'},body:JSON.stringify({status})});
+    const d=await res.json();
+    if(!res.ok) throw new Error(d.error||'Failed');
+    const f=_adminFeedback.find(x=>x.feedback_id===id); if(f) f.status=status;
+    adminSetFeedbackBadge(_adminFeedback.filter(x=>x.status==='new').length);
+    adminRenderFeedback();
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent='Retry: '+e.message.slice(0,40); } }
 }
 
 // ── Email Import (inbound) log viewer ────────────────────────────────────────
@@ -2373,6 +2511,7 @@ async function adminPostLogin() {
   adminLoadStats();     // Reports tab
   adminLoadAuthLogs();  // Users tab: authentication log
   adminLoadAppLogs();   // Logging tab: application logs
+  adminLoadFeedback();  // Feedback tab: also sets the "new" badge in the sidebar
 }
 async function initAdmin(){
   // PDC-21: admin token is in HttpOnly cookie — validate by making an authenticated call
@@ -3069,7 +3208,8 @@ function closeOv(id){document.getElementById(id).classList.remove('vis');}
     if(!res.ok){localStorage.removeItem('cw_email');return;}
     const data=await res.json();
     prefs=data.prefs;userEmail=data.email;
-    enterApp({isFirstLogin: !localStorage.getItem('cw_welcomed_'+data.email) && !(prefs && prefs.store_id)});
+    enterApp({isFirstLogin: !localStorage.getItem('cw_welcomed_'+data.email) && !(prefs && prefs.store_id),
+              emailVerified: data.email_verified !== false});   // v9.9: reloads used to hide the banner
   }catch(_){}
 })();
 
@@ -3268,7 +3408,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (action === 'nav-panel-mobile')  { showPanel(el.dataset.panel); closeMobileNav(); return; }
 
     // -- Verify banner --
-    if (action === 'resend-verification') return resendVerification();
+    if (action === 'resend-verification') return resendVerification(el.dataset.btn);
+    if (action === 'recheck-verified')    return recheckVerified();
+    if (action === 'open-feedback')       return openFeedback();
+    if (action === 'send-feedback')       return sendFeedback();
+    if (action === 'feedback-go-verify')  { closeOv('feedback-ov'); return showPanel('schedule'); }
+    if (action === 'admin-load-feedback') return adminLoadFeedback();
+    if (action === 'admin-feedback-status') return adminSetFeedbackStatus(el.dataset.id, el.dataset.status, el);
     if (action === 'hide-verify-banner')  return showVerifyBanner(false);
 
     // -- Store --
@@ -3382,6 +3528,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (action === 'admin-render-auth-logs') return adminRenderAuthLogs();
     if (action === 'admin-render-app-logs')  return adminRenderAppLogs();
+    if (action === 'admin-feedback-filter')  return adminRenderFeedback();
   });
 
   // ── Input delegation ──────────────────────────────────────────────
@@ -3399,6 +3546,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (action === 'deals-search-input') return debouncedRenderDeals();
     if (action === 'ac-input')          return acInput();
     if (action === 'admin-filter-users') return adminFilterUsers();
+    if (action === 'fb-count')          return fbCount();
   });
 
   // ── Keydown delegation ────────────────────────────────────────────

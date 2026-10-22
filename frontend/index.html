@@ -353,6 +353,34 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
 /* MODAL */
 .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:500;align-items:center;justify-content:center;padding:24px}
 .overlay.vis{display:flex}
+/* v9.9 feedback + verify */
+.fb-dialog{max-width:520px;width:100%}
+.fb-sub{font-size:13.5px;color:var(--ink-mid,#444);line-height:1.5;margin:4px 0 12px}
+.fb-kinds{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.fb-kinds label{display:inline-flex;align-items:center;gap:6px;border:1.5px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;cursor:pointer;user-select:none}
+.fb-kinds input{margin:0;accent-color:var(--green)}
+.fb-kinds label:has(input:checked){border-color:var(--green);background:var(--green-bg);color:var(--green);font-weight:700}
+#fb-msg{font-family:inherit;font-size:14px;min-height:130px}
+.fb-foot{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:6px 0 4px;min-height:18px}
+.fb-count{font-size:11.5px;color:var(--ink-soft);white-space:nowrap}
+.fb-count.near{color:var(--amber)}
+.fb-badge{background:var(--red,#c0392b);color:#fff;border-radius:10px;font-size:10.5px;font-weight:800;padding:1px 7px;margin-left:4px}
+.fb-item{border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;background:var(--white)}
+.fb-item.done{opacity:.6}
+.fb-item-hd{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font-size:12px;color:var(--ink-soft);margin-bottom:8px}
+.fb-item-hd strong{color:var(--ink);font-size:13px}
+.fb-kind{font-size:10px;font-weight:900;letter-spacing:.05em;text-transform:uppercase;padding:2px 7px;border-radius:4px;background:var(--chip-bg,#f1efe9);color:var(--ink)}
+.fb-kind.bug{background:#fde8e6;color:#9b2c20}.fb-kind.idea{background:#e6edfb;color:#1e40af}.fb-kind.question{background:#f3e8fb;color:#6b21a8}
+.fb-item-msg{white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.5;color:var(--ink)}
+.fb-item-ctx{font-size:11.5px;color:var(--ink-soft);margin-top:8px}
+.fb-item-btns{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+.fb-item-btns a{text-decoration:none}
+.verify-card{border:1.5px solid #fde68a;background:#fffbeb}
+.verify-card-row{display:flex;gap:12px;align-items:flex-start}
+.verify-card-icon{font-size:24px;line-height:1}
+.verify-card-text{font-size:13.5px;color:#7c4a03;line-height:1.5}
+.verify-card-btns{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:14px}
+.verify-card-msg{font-size:13px;color:var(--ink-mid,#444)}
 .dialog{background:white;border-radius:14px;padding:28px;max-width:420px;width:100%;box-shadow:var(--sh-lg)}
 .dialog h3{font-size:18px;font-weight:700;margin-bottom:10px}
 .dialog p{font-size:14px;color:var(--ink-mid);margin-bottom:20px;line-height:1.5}
@@ -678,6 +706,7 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
         <button class="nav-item" data-action="nav-panel-mobile" data-panel="schedule"id="mnav-schedule"><span class="nav-icon">🔔</span> Notifications</button>
         <button class="nav-item" data-action="nav-panel-mobile" data-panel="store"   id="mnav-store">   <span class="nav-icon">🏪</span> My Store</button>
         <button class="nav-item" data-action="nav-panel-mobile" data-panel="account" id="mnav-account"> <span class="nav-icon">👤</span> Account</button>
+        <button class="nav-item" data-action="open-feedback" id="mnav-feedback"> <span class="nav-icon">💬</span> Feedback</button>
         <div class="nav-sep" id="mnav-admin-sep" style="display:none"></div>
         <button class="nav-item" data-action="nav-panel-mobile" data-panel="admin"   id="mnav-admin" style="display:none">   <span class="nav-icon">⚙️</span> Admin</button>
       </div>
@@ -690,6 +719,7 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
       <button class="nav-item"        data-action="nav-panel" data-panel="schedule" id="nav-schedule"><span class="nav-icon">🔔</span> Notifications</button>
       <button class="nav-item"        data-action="nav-panel" data-panel="store"    id="nav-store">   <span class="nav-icon">🏪</span> My Store</button>
       <button class="nav-item"        data-action="nav-panel" data-panel="account"  id="nav-account"> <span class="nav-icon">👤</span> Account</button>
+      <button class="nav-item"        data-action="open-feedback" id="nav-feedback"> <span class="nav-icon">💬</span> Feedback</button>
       <div class="nav-sep" id="nav-admin-sep" style="display:none"></div>
       <button class="nav-item"        data-action="nav-panel" data-panel="admin"    id="nav-admin" style="display:none">   <span class="nav-icon">⚙️</span> Admin</button>
     </nav>
@@ -900,6 +930,20 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
 <div class="panel" id="panel-schedule">
   <div class="panel-title">Notifications</div>
   <div class="panel-sub">Control how you receive deal alerts.</div>
+  <div class="card verify-card" id="verify-card" style="display:none">
+    <div class="verify-card-row">
+      <div class="verify-card-icon">📧</div>
+      <div style="flex:1;min-width:220px">
+        <div class="card-title" style="margin-bottom:4px">Verify your email to get alerts</div>
+        <div class="verify-card-text">Weekly deal alerts and test emails can't be sent to <strong id="verify-card-email"></strong> until it's verified. We'll email you a link: open it, then come back here.</div>
+      </div>
+    </div>
+    <div class="verify-card-btns">
+      <button class="btn-load" id="btn-verify-card" data-action="resend-verification" data-btn="btn-verify-card">Send verification email</button>
+      <button class="btn-test" data-action="recheck-verified">I've verified, check again</button>
+      <span class="verify-card-msg" id="verify-card-msg"></span>
+    </div>
+  </div>
   <div class="card">
     <div class="card-title">Email Alerts</div>
     <div class="toggle-row">
@@ -1008,6 +1052,7 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
         <button class="adm-sidebar-item"        data-action="admin-nav" data-tab="reports" id="anav-reports"><span class="adm-si-icon">📊</span> Reports</button>
         <button class="adm-sidebar-item"        data-action="admin-nav" data-tab="logging" id="anav-logging"><span class="adm-si-icon">📋</span> Logging</button>
         <button class="adm-sidebar-item"        data-action="admin-nav" data-tab="inbound" id="anav-inbound"><span class="adm-si-icon">📧</span> Email Import</button>
+        <button class="adm-sidebar-item"        data-action="admin-nav" data-tab="feedback" id="anav-feedback"><span class="adm-si-icon">💬</span> Feedback <span class="fb-badge" id="fb-new-badge" style="display:none"></span></button>
       </nav>
 
       <div class="adm-content">
@@ -1145,6 +1190,18 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
             </div>
           </div>
         </div><!-- /apage-inbound -->
+        <div class="adm-subpage" id="apage-feedback">
+          <div class="adm-sec">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+              <div class="adm-sec-title" style="margin-bottom:0">💬 Feedback <span id="fb-admin-ct" style="font-size:13px;color:var(--ink-soft);font-weight:400"></span></div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <label style="font-size:12px;display:flex;align-items:center;gap:6px"><input type="checkbox" id="fb-show-done" data-action="admin-feedback-filter"> Show done</label>
+                <button class="abn g" data-action="admin-load-feedback">↻ Refresh</button>
+              </div>
+            </div>
+            <div id="fb-admin-list"><div style="color:var(--ink-soft);font-size:13px">Loading…</div></div>
+          </div>
+        </div><!-- /apage-feedback -->
 
       </div><!-- /adm-content -->
     </div><!-- /adm-layout -->
@@ -1229,6 +1286,37 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
 </div>
 
 <!-- DIALOGS -->
+<div class="overlay" id="feedback-ov">
+  <div class="dialog fb-dialog" role="dialog" aria-modal="true" aria-labelledby="fb-title">
+    <h3 id="fb-title">Send feedback</h3>
+    <div id="fb-form">
+      <p class="fb-sub">Questions, ideas or something not working? We read every message and reply to <strong id="fb-email"></strong> if needed.</p>
+      <div class="fb-kinds" role="radiogroup" aria-label="Type">
+        <label><input type="radio" name="fb-kind" value="bug"> 🐞 Bug</label>
+        <label><input type="radio" name="fb-kind" value="idea"> 💡 Idea</label>
+        <label><input type="radio" name="fb-kind" value="question"> ❓ Question</label>
+        <label><input type="radio" name="fb-kind" value="other"> 💬 Other</label>
+      </div>
+      <textarea id="fb-msg" maxlength="2000" rows="6" placeholder="What's on your mind?" data-action="fb-count"></textarea>
+      <div class="fb-foot"><span class="msg" id="fb-status"></span><span class="fb-count" id="fb-count">0 / 2,000</span></div>
+      <div class="dlg-btns">
+        <button class="btn-cancel" data-action="close-overlay" data-ov="feedback-ov">Cancel</button>
+        <button class="btn-save" id="fb-send" data-action="send-feedback">Send</button>
+      </div>
+    </div>
+    <div id="fb-verify" style="display:none">
+      <p class="fb-sub">Please verify your email first, so we can reply to you. Check your inbox for the link, or send a new one from <strong>Notifications</strong>.</p>
+      <div class="dlg-btns">
+        <button class="btn-cancel" data-action="close-overlay" data-ov="feedback-ov">Close</button>
+        <button class="btn-save" data-action="feedback-go-verify">Go to Notifications</button>
+      </div>
+    </div>
+    <div id="fb-done" style="display:none">
+      <p class="fb-sub" style="font-size:15px">✅ Thanks, we got it. We'll reply to your sign-in email if needed.</p>
+      <div class="dlg-btns"><button class="btn-save" data-action="close-overlay" data-ov="feedback-ov">Done</button></div>
+    </div>
+  </div>
+</div>
 <div class="overlay" id="del-overlay">
   <div class="dialog"><h3>Delete account?</h3>
     <p>This permanently removes your account, shopping list, and all settings.</p>

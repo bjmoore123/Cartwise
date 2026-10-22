@@ -16,6 +16,7 @@ os.environ.update({
     "APP_LOGS_TABLE":    "test-app-logs",
     "HISTORY_TABLE":     "test-deal-history",
     "CORPUS_TABLE":      "test-deal-corpus",
+    "FEEDBACK_TABLE":    "test-feedback",
     "ADMIN_SECRET":      "test-admin-secret-12345",
     "FRONTEND_URL":      "http://localhost:3000",
     "API_URL":           "http://localhost:3000",
@@ -52,6 +53,7 @@ def dynamodb_tables():
             ("test-app-logs",     "log_id"),
             ("test-deal-history", "store_id"),
             ("test-deal-corpus",  "corpus_id"),
+            ("test-feedback",     "feedback_id"),
         ]
         for name, key in table_defs:
             ddb.create_table(

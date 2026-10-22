@@ -14,12 +14,13 @@ from prefs    import get_prefs, save_prefs, delete_account, unsubscribe, send_te
 from deals    import get_deals, search_stores, get_deal_history, get_deal_corpus, get_matches
 from logging_utils import log_frontend_error
 from inbound  import inbound_email_list
+from feedback import submit_feedback
 from admin    import (
     admin_login, admin_logout_session,
     admin_list_users, admin_create_user, admin_get_user, admin_delete_user,
     admin_reset_pin, admin_reset_email, admin_patch_prefs, admin_clear_items,
     admin_resend_verification,
-    admin_stats, admin_inbound_logs,
+    admin_stats, admin_inbound_logs, admin_feedback_list, admin_feedback_update,
     get_scrape_logs, invoke_scraper, get_log_tail,
     get_auth_logs, get_app_logs,
 )
@@ -57,6 +58,7 @@ def handler(event, context):
     if path == "/user/test-email"  and method == "POST":   return send_test_email(event)
     if path == "/user/resend-weekly" and method == "POST":  return resend_weekly_email(event)
     if path == "/user/matches"     and method == "GET":    return get_matches(event)
+    if path == "/user/feedback"    and method == "POST":   return submit_feedback(event, body)
 
     if path == "/stores/search"    and method == "GET":    return search_stores(event)
     if path == "/deals"            and method == "GET":    return get_deals(event)
@@ -82,6 +84,9 @@ def handler(event, context):
     if path == "/admin/auth-logs"    and method == "GET":  return get_auth_logs(event)
     if path == "/admin/app-logs"     and method == "GET":  return get_app_logs(event)
     if path == "/admin/inbound-logs" and method == "GET":  return admin_inbound_logs(event)
+    if path == "/admin/feedback"     and method == "GET":  return admin_feedback_list(event)
+    if path.startswith("/admin/feedback/") and method == "POST":
+        return admin_feedback_update(event, body, urllib.parse.unquote(path[len("/admin/feedback/"):]))
 
     # ── Admin parameterised routes  /admin/users/{email}[/action] ────────────
     if path.startswith("/admin/users/"):

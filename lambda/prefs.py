@@ -26,7 +26,9 @@ def get_prefs(event):
     if not user: return err("User not found.", 404)
     prefs = _to_py(user.get("prefs", DEFAULT_PREFS))
     if not prefs.get("notify_email"): prefs["notify_email"] = sess["email"]
-    return ok({"prefs": prefs, "email": sess["email"]})
+    # v9.9: lets a restored session (page reload) know whether to show "Verify your email"
+    return ok({"prefs": prefs, "email": sess["email"],
+               "email_verified": _to_py(user).get("email_verified", True) is not False})
 
 
 def save_prefs(event, body):

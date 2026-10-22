@@ -433,6 +433,7 @@ ALL_TABLES=(
   "${APP_NAME}-app-logs"
   "${APP_NAME}-deal-history"
   "${APP_NAME}-deal-corpus"
+  "${APP_NAME}-feedback"
 )
 
 if [ "$DELETE_DATA" = "true" ]; then

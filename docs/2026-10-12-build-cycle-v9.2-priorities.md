@@ -311,6 +311,16 @@ Test plan: `docs/v9.4-test-plan.md`.
 ### v9.8.6: Autocomplete cleanup reaches every browser ✅ built 2026-10-20
 - Coupon titles ("Save $1.50 on any ONE …") still showed: this week's deal titles are added in the browser (never server-filtered), and browsers kept the v9.8.4 list (same session key; 6-hour HTTP cache). Now the browser applies the same not-a-product rule (parity-tested), and the cache key and URL are versioned so old lists are dropped.
 
+### v9.9: Feedback and verify-on-Notifications ✅ built 2026-10-22 — test plan `docs/v9.9-test-plan.md`
+- 💬 Feedback (sidebar and phone menu): Bug / Idea / Question / Other + message (2,000 chars). Signed-in, verified accounts only; 5/hour and 20/day per account; saved to `cartwise-feedback` (1-year TTL) before emailing.
+- Notification email to the SSM `/publix/feedback-to` address (never in code or page); reply-to = the sender's verified account email from the session; message escaped; subject single line. Staging subject says "staging".
+- Admin → Feedback: list (new / show done), Reply (mailto), Mark done / Reopen, "new" count badge.
+- Notifications page: "Verify your email to get alerts" card with Send verification email / I've verified, check again. Banner kept.
+- Fix: reloading the page hid the verify banner (restored sessions assumed verified). `/user/prefs` now returns `email_verified`; the focus/5-minute session check also refreshes it.
+
+### v9.9.1: Deploy packaging fix ✅ built 2026-10-22
+- Staging returned 500 on every request after v9.9: `deploy.sh` copied a fixed list of lambda files and `feedback.py` was not on it, so the API crashed on import. Now copies `lambda/*.py`, and deploy runs a smoke test (a preflight request through the real handler) and stops with the error if the API can't start. Tests check packaging and that every local import exists.
+
 ### Batch 6: Hygiene (ride-along)
 - [x] Delete `lambda/api.py` (stale duplicate parser, never deployed) and the unused `rapidfuzz` install (v9.3)
 - [x] Dead CSS/JS removed (49 CSS rules, legacy price guessing, hidden loader, `renderTpr`); duplicate test classes removed so the newer ones run (v9.7)
