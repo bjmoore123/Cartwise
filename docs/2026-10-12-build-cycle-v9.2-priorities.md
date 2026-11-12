@@ -321,6 +321,17 @@ Test plan: `docs/v9.4-test-plan.md`.
 ### v9.9.1: Deploy packaging fix ✅ built 2026-10-22
 - Staging returned 500 on every request after v9.9: `deploy.sh` copied a fixed list of lambda files and `feedback.py` was not on it, so the API crashed on import. Now copies `lambda/*.py`, and deploy runs a smoke test (a preflight request through the real handler) and stops with the error if the API can't start. Tests check packaging and that every local import exists.
 
+### v9.10: New logo + admin session lock ✅ built 2026-11-12 (one release)
+- Logo: the "C-cart" mark (a C with a cart handle and two amber wheels) on Cartwise Green `#1a6b3c`, wheels `#f5a524`. New `favicon.ico` (16/32/48), `apple-touch-icon.png`, `icon-192/512.png`, `cartwise_logo.svg`; inline mark in the site header and on the sign-in card. Brand package (logos, colors, business card) lives outside the repo at `C:\Projects\Cartwise\brand-package`. Tests: `tests/test_v910.py`.
+- Admin session lock (below).
+
+### v9.9.2: Admin session lock (ships in v9.10)
+- Bug: the admin dashboard (with its data) could stay on screen after the 12-hour admin session expired, and after a user sign-out / sign-in at `#admin`. `initAdmin` never hid it on a failed check, sign-out never reset it, and admin 401s were ignored.
+- `GET /admin/session` (valid? seconds left). The dashboard is shown only after it says yes; checked when the panel opens, on tab focus, and at the expiry time.
+- Any admin 401 locks the dashboard: hidden, data cleared, secret prompt with "Your admin session has expired".
+- User sign-out also ends the admin session (server-side) and clears the dashboard.
+- Tests: `tests/test_v992.py`.
+
 ### Batch 6: Hygiene (ride-along)
 - [x] Delete `lambda/api.py` (stale duplicate parser, never deployed) and the unused `rapidfuzz` install (v9.3)
 - [x] Dead CSS/JS removed (49 CSS rules, legacy price guessing, hidden loader, `renderTpr`); duplicate test classes removed so the newer ones run (v9.7)

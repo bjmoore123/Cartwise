@@ -39,7 +39,8 @@ body{font-family:var(--body);background:var(--cream);color:var(--ink);min-height
   background:radial-gradient(ellipse 80% 60% at 10% 10%,rgba(26,107,60,.08),transparent 60%),
              radial-gradient(ellipse 60% 50% at 90% 90%,rgba(26,107,60,.06),transparent 60%),var(--cream)}
 .auth-card{background:var(--white);border:1px solid var(--border);border-radius:16px;box-shadow:var(--sh-lg);width:100%;max-width:400px;overflow:hidden}
-.auth-hd{background:var(--green);padding:32px 32px 28px;color:white}
+.auth-hd{background:var(--green);padding:30px 32px 28px;color:white;display:flex;align-items:center;gap:16px}
+.brand-mark.auth-mark{height:50px}
 .auth-hd h1{font-family:var(--serif);font-size:26px;font-weight:400;margin-bottom:4px}
 .auth-hd p{opacity:.75;font-size:13px}
 .auth-tabs{display:flex;border-bottom:1px solid var(--border)}
@@ -63,7 +64,9 @@ body{font-family:var(--body);background:var(--cream);color:var(--ink);min-height
 #app-screen{display:none}
 #app-screen.visible{display:block}
 .topbar{height:var(--bar);background:var(--green);color:white;display:flex;align-items:center;justify-content:space-between;padding:0 24px;position:sticky;top:0;z-index:200;box-shadow:0 2px 8px rgba(0,0,0,.15)}
-.tb-brand{font-family:var(--serif);font-size:18px;font-weight:400}
+.tb-brand{font-family:var(--serif);font-size:18px;font-weight:400;display:flex;align-items:center;gap:9px}
+/* v9.10 logo: the C-cart mark. KEEP IN SYNC with frontend/cartwise_logo.svg */
+.brand-mark{height:26px;width:auto;flex-shrink:0;color:#fff;display:block}
 .tb-right{display:flex;align-items:center;gap:12px}
 .tb-email{font-size:12px;opacity:.8}
 .btn-ghost{padding:6px 14px;border:1.5px solid rgba(255,255,255,.4);border-radius:6px;background:transparent;color:white;font-size:12px;font-weight:700;cursor:pointer;transition:background var(--t)}
@@ -654,7 +657,7 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
 <!-- AUTH -->
 <div id="auth-screen">
   <div class="auth-card">
-    <div class="auth-hd"><h1>Cartwise</h1><p>Get notified when your grocery list goes on sale</p></div>
+    <div class="auth-hd"><svg class="brand-mark auth-mark" viewBox="8.2 7.8 42.2 53.2" aria-hidden="true" focusable="false"><path d="M46 17.5A18 18 0 1 0 46 42.5" fill="none" stroke="currentColor" stroke-width="7.5" stroke-linecap="round"/><path d="M19.5 16.5L11.5 11" fill="none" stroke="currentColor" stroke-width="5.5" stroke-linecap="round"/><circle cx="24" cy="56" r="4.6" fill="#f5a524"/><circle cx="41" cy="56" r="4.6" fill="#f5a524"/></svg><div><h1>Cartwise</h1><p>Get notified when your grocery list goes on sale</p></div></div>
     <div class="auth-tabs">
       <button class="auth-tab active" data-action="switch-tab" data-tab="login">Sign In</button>
       <button class="auth-tab" data-action="switch-tab" data-tab="register">Create Account</button>
@@ -684,7 +687,7 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
       <button class="burger" id="burger-btn" data-action="open-mobile-nav" aria-label="Open menu">
         <span></span><span></span><span></span>
       </button>
-      <div class="tb-brand">Cartwise</div>
+      <div class="tb-brand"><svg class="brand-mark" viewBox="8.2 7.8 42.2 53.2" aria-hidden="true" focusable="false"><path d="M46 17.5A18 18 0 1 0 46 42.5" fill="none" stroke="currentColor" stroke-width="7.5" stroke-linecap="round"/><path d="M19.5 16.5L11.5 11" fill="none" stroke="currentColor" stroke-width="5.5" stroke-linecap="round"/><circle cx="24" cy="56" r="4.6" fill="#f5a524"/><circle cx="41" cy="56" r="4.6" fill="#f5a524"/></svg><span>Cartwise</span></div>
     </div>
     <div class="tb-right">
       <span class="tb-email" id="topbar-email"></span>

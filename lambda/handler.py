@@ -16,7 +16,7 @@ from logging_utils import log_frontend_error
 from inbound  import inbound_email_list
 from feedback import submit_feedback
 from admin    import (
-    admin_login, admin_logout_session,
+    admin_login, admin_logout_session, admin_session_info,
     admin_list_users, admin_create_user, admin_get_user, admin_delete_user,
     admin_reset_pin, admin_reset_email, admin_patch_prefs, admin_clear_items,
     admin_resend_verification,
@@ -73,6 +73,7 @@ def handler(event, context):
     # ── Admin session auth (PDC-04) ───────────────────────────────────────────
     if path == "/admin/login"        and method == "POST": return admin_login(event, body)
     if path == "/admin/logout"       and method == "POST": return admin_logout_session(event)
+    if path == "/admin/session"      and method == "GET":  return admin_session_info(event)
 
     # ── Admin fixed routes ────────────────────────────────────────────────────
     if path == "/admin/users"        and method == "GET":  return admin_list_users(event)

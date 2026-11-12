@@ -16,6 +16,11 @@ window.fetch = async function(input, init) {
     if (res.status === 401 && url.startsWith(API) && !/\/(auth|admin)\/|\/user\/unsubscribe/.test(url)) {
       sessionEnded();
     }
+    // v9.9.2: an expired admin session used to leave the dashboard (and its data) on
+    // screen while every action failed. Any 401 from an admin endpoint now locks it.
+    if (res.status === 401 && url.startsWith(API + '/admin/') && !/\/admin\/(login|logout)/.test(url) && _adminLoggedIn) {
+      adminLock('Your admin session has expired. Enter the admin secret again.');
+    }
   } catch (_) {}
   return res;
 };
@@ -25,6 +30,7 @@ function checkSession(force) {
   const now = Date.now();
   if (!force && now - _lastSessionCheck < 60000) return;   // at most once a minute
   _lastSessionCheck = now;
+  if (_adminLoggedIn) adminCheckSession();                                // 401 → adminLock()
   fetch(API + '/user/prefs', {credentials:'include', cache:'no-store'})   // 401 → sessionEnded()
     .then(r => r.ok ? r.json() : null)
     .then(d => { if (d && d.email_verified !== undefined && (d.email_verified !== false) !== _emailVerified) setEmailVerified(d.email_verified); })
@@ -629,6 +635,11 @@ async function doLogout(opts){
   if (!(opts && opts.local)) {
     try{await fetch(API+'/auth/logout',{method:'POST',credentials:'include',headers:authHeaders()});}catch(_){}
   }
+  // v9.9.2: signing out also ends the admin session and clears the dashboard. Before,
+  // the admin cookie stayed valid for 12 hours and the user table stayed in the page,
+  // so the next person to sign in on this browser and open #admin saw it.
+  try{ fetch(API+'/admin/logout',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'}}).catch(()=>{}); }catch(_){}
+  adminLock('');
   userEmail=null;prefs=null;_allDeals=[];_allMatches=[];_dealsStoreId='';_storeData=null;_badgeCache=new Map();_tprLoaded=false;_totalAllDeals=0;_dealHistory=null;_badgeIndex=null;_dealsGen++;_coreGen=0;_pendingTpr=null;
   // v9.5: nothing from this user should be visible to the next person on this browser
   _dealTokenCache=new Map();_deptCounts={};_dealsShownTotal=null;_matchesDirty=true;
@@ -2491,12 +2502,45 @@ async function adminSignOut(){
   try{
     await fetch(API+'/admin/logout',{method:'POST',credentials:'include',headers:adminHdrs()});
   }catch(_){}
+  adminLock('');
+}
+
+// v9.9.2: the one place the dashboard is closed: admin sign-out, user sign-out, an
+// expired or revoked admin session. Hides it, shows the secret prompt, and removes
+// the admin data already rendered so nothing stale (or private) stays on screen.
+let _adminExpiryTimer = null;
+const ADMIN_DATA_IDS = ['admin-tbody','admin-user-pages','admin-user-ct','auth-log-wrap','admin-stats-body',
+                        'app-log-wrap','inbound-log-wrap','fb-admin-list','admin-logs-el','fb-admin-ct'];
+let _adminBlankHtml = null;          // each data area as it was before any admin data was drawn
+function adminSnapshotBlank(){
+  if(_adminBlankHtml) return;
+  _adminBlankHtml={};
+  ADMIN_DATA_IDS.forEach(id=>{const el=document.getElementById(id); if(el) _adminBlankHtml[id]=el.innerHTML;});
+}
+function adminLock(msg){
   _adminLoggedIn=false;
-  _adminDataLoaded = false;  // allow re-fetch on next login
+  _adminDataLoaded=false;    // allow re-fetch on next login
+  clearTimeout(_adminExpiryTimer); _adminExpiryTimer=null;
+  _allAdminUsers=[]; _adminFeedback=[];
+  if(_adminBlankHtml) Object.keys(_adminBlankHtml).forEach(id=>{const el=document.getElementById(id); if(el) el.innerHTML=_adminBlankHtml[id];});
+  adminSetFeedbackBadge(0);
+  document.querySelectorAll('.overlay.vis').forEach(o=>{ if(/^(adm|admin)/.test(o.id)) o.classList.remove('vis'); });
   document.getElementById('admin-dash').style.display='none';
   document.getElementById('admin-login-sec').style.display='';
   document.getElementById('admin-secret-inp').value='';
-  setMsg('admin-login-msg','','');
+  setMsg('admin-login-msg', msg||'', msg?'err':'');
+}
+// Is the admin session still valid? Locks the dashboard on 401 (via the fetch wrapper)
+// and schedules a re-check for the moment the session runs out.
+async function adminCheckSession(){
+  try{
+    const res=await fetch(API+'/admin/session',{credentials:'include',cache:'no-store',headers:adminHdrs()});
+    if(!res.ok) return res.status===401 ? false : null;       // null = couldn't tell (server/network)
+    const d=await res.json();
+    clearTimeout(_adminExpiryTimer);
+    if(d.expires_in>0) _adminExpiryTimer=setTimeout(adminCheckSession, Math.min(d.expires_in*1000+2000, 2147483647));
+    return true;
+  }catch(_){ return null; }
 }
 
 // Called once per admin login (fresh login OR restored session) — not on every page visit.
@@ -2514,20 +2558,22 @@ async function adminPostLogin() {
   adminLoadFeedback();  // Feedback tab: also sets the "new" badge in the sidebar
 }
 async function initAdmin(){
-  // PDC-21: admin token is in HttpOnly cookie — validate by making an authenticated call
-  try{
-    const res=await fetch(API+'/admin/scrape-logs',{credentials:'include',headers:adminHdrs()});
-    if(res.ok){
-      _adminLoggedIn=true;
-      document.getElementById('admin-login-sec').style.display='none';
-      document.getElementById('admin-dash').style.display='block';
-      adminLoadUsers();
-      adminPostLogin();
-      return;
-    }
-  }catch(_){}
-  // No valid session — show login form
-  _adminLoggedIn=false;
+  // PDC-21: admin token is in HttpOnly cookie — validate with the server every time
+  // the panel opens. v9.9.2: the dashboard is only shown after this says yes; a "no"
+  // closes it and clears its data (before, an old dashboard could stay on screen).
+  adminSnapshotBlank();
+  const wasIn=_adminLoggedIn;
+  const valid=await adminCheckSession();
+  if(valid===true){
+    _adminLoggedIn=true;
+    document.getElementById('admin-login-sec').style.display='none';
+    document.getElementById('admin-dash').style.display='block';
+    adminLoadUsers();
+    adminPostLogin();
+    return;
+  }
+  if(valid===null && wasIn) return;      // server unreachable: keep what's shown; actions will say so
+  adminLock(wasIn ? 'Your admin session has expired. Enter the admin secret again.' : '');
 }
 async function adminLogin(){
   const s=document.getElementById('admin-secret-inp').value.trim();
@@ -2551,7 +2597,9 @@ async function adminLogin(){
       return;
     }
     _adminLoggedIn=true;
+    setMsg('admin-login-msg','','');
     document.getElementById('admin-secret-inp').value=''; // clear secret from DOM
+    adminCheckSession();                                  // schedules the expiry check
     adminPostLogin();
     document.getElementById('admin-login-sec').style.display='none';
     document.getElementById('admin-dash').style.display='block';

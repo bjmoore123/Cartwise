@@ -89,6 +89,22 @@ def _get_admin_token_from_event(event) -> str:
     return ""
 
 
+def admin_session_info(event):
+    """GET /admin/session — is this admin session still valid, and for how long? (v9.9.2)
+    A cheap check the page uses on load, on focus and before the session runs out, so
+    an expired session locks the dashboard instead of leaving stale data on screen."""
+    if not get_admin_auth(event):
+        return err("Unauthorized.", 401)
+    expires_at = 0
+    try:
+        item = admin_sessions_tbl.get_item(Key={"token": _get_admin_token_from_event(event)}).get("Item") or {}
+        expires_at = int(item.get("expires_at", 0))
+    except Exception as e:
+        print(f"[CW] admin_session_info: {e}")
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    return ok({"ok": True, "expires_in": max(0, expires_at - now_ts)}, _event=event)
+
+
 # ── Decorator ─────────────────────────────────────────────────────────────────
 
 def require_admin(f):
