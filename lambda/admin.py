@@ -205,6 +205,8 @@ def admin_get_user(event, email: str):
     if not user: return err("User not found.", 404)
     safe = _to_py(user)
     safe.pop("pin_hash", None)
+    for k in ("pin_reset_hash", "pin_reset_exp", "verify_token", "verify_token_exp"):   # v9.11: never leave the server
+        safe.pop(k, None)
     return ok({"user": safe})
 
 
@@ -252,6 +254,7 @@ def admin_reset_email(event, body, email: str):
     if users_table.get_item(Key={"email": new_email}).get("Item"):
         return err("An account with that email already exists.", 409)
     new_item = {**user, "email": new_email}
+    new_item.pop("pin_reset_hash", None); new_item.pop("pin_reset_exp", None)   # v9.11: a reset link is for the old address
     prefs    = _to_py(new_item.get("prefs") or {})
     if prefs.get("notify_email", "").lower() == email.lower():
         prefs["notify_email"] = new_email

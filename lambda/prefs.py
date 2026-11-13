@@ -5,6 +5,7 @@ PDC-09: save_prefs filters to ALLOWED_PREF_KEYS; validates threshold and item le
 import os
 import re
 import urllib.parse
+from datetime import datetime, timezone
 
 from helpers import (
     ok, err, _to_py, get_session,
@@ -15,6 +16,9 @@ from helpers import (
     EMAIL_RE, check_rate_limit,
 )
 from logging_utils import _log_app_event
+from shared import unsub as _unsub
+from shared import email_layout as L
+from html import escape as _esc
 
 
 # ── Prefs ─────────────────────────────────────────────────────────────────────
@@ -99,108 +103,63 @@ def unsubscribe(event):
     method = event.get("httpMethod", event.get("requestContext", {}).get("http", {}).get("method", "GET")).upper()
 
     if not email or not token:
-        return _unsub_html("Invalid Link", "This unsubscribe link is missing required parameters.", success=False)
+        return _unsub_html("This link isn't complete", "The unsubscribe link is missing part of its address. Try the link from the most recent email.", success=False)
     if not UNSUB_SECRET or UNSUB_SECRET == "changeme-set-in-deploy":
-        return _unsub_html("Configuration Error", "Unsubscribe is not configured on this server.", success=False)
+        return _unsub_html("Configuration Error", "Unsubscribe isn't set up on this server yet. Please try again later.", success=False)
     if not _verify_unsub_token(email, token):
-        return _unsub_html("Invalid Token", "This unsubscribe link is not valid or has expired.", success=False)
+        return _unsub_html("This link isn't valid", "The unsubscribe link may have been cut off. Try the link from the most recent email, or sign in and turn off emails in Notifications.", success=False)
 
+    # v9.11: works for every account, verified or not: the signed link is the proof,
+    # and an unverified address is exactly the one that may never have asked for mail.
     item = users_table.get_item(Key={"email": email}).get("Item")
     if not item:
-        return _unsub_html("Account Not Found", "No account found for this email address.", success=False)
+        return _unsub_html("Nothing to unsubscribe", "There's no Cartwise account for this address any more, so we won't send it anything.")
 
     if method == "GET":
-        already_off = not _to_py(item.get("prefs", {})).get("email_enabled", True)
+        already_off = (_to_py(item.get("prefs") or {}).get("email_enabled", True) is False)
         if already_off:
-            return _unsub_html("Already Unsubscribed",
-                f"Email alerts are already turned off for <strong>{email}</strong>.")
+            return _unsub_html("Already unsubscribed",
+                f"Cartwise emails are already turned off for {L.addr(email)}.")
         return _unsub_confirm_page(email, token)
 
     if method == "POST":
-        prefs = _to_py(item.get("prefs", {}))
+        prefs = _to_py(item.get("prefs") or {}) or {**DEFAULT_PREFS, "notify_email": email}
         prefs["email_enabled"] = False
         users_table.update_item(
             Key={"email": email},
-            UpdateExpression="SET prefs = :p",
-            ExpressionAttributeValues={":p": prefs},
+            UpdateExpression="SET prefs = :p, unsubscribed_at = :t",
+            ExpressionAttributeValues={":p": prefs, ":t": datetime.now(timezone.utc).isoformat()},
         )
-        _log_app_event("api", "info", action="unsubscribe", email=email)
-        return _unsub_html("Unsubscribed",
-            f"Email alerts have been turned off for <strong>{email}</strong>. "
-            f"You can re-enable them at any time by signing in to Cartwise.")
+        _log_app_event("api", "info", action="unsubscribe", email=email,
+                       verified=bool(_to_py(item).get("email_verified", True)))
+        return _unsub_html("You're unsubscribed", UNSUB_DONE_MSG.format(email=L.addr(email)))
 
-    return _unsub_html("Method Not Allowed", "Unexpected request method.", success=False)
+    return _unsub_html("Something went wrong", "Please open the unsubscribe link from your email again.", success=False)
+
+
+UNSUB_DONE_MSG = ("You won't get deal alerts or reminders from Cartwise at {email}. "
+                  "We'll still send emails you ask for, like a PIN reset link. "
+                  "To turn alerts back on, sign in and open Notifications.")
 
 
 def _unsub_html(title: str, body_html: str, success: bool = True) -> dict:
-    colour  = "#1a6b3c" if success else "#c0392b"
-    icon    = "✅" if success else "❌"
-    app_url = FRONTEND_URL or "#"
-    html = f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title} — Cartwise</title>
-<style>
-  body{{font-family:Arial,sans-serif;background:#f5f5f5;display:flex;align-items:center;
-        justify-content:center;min-height:100vh;margin:0;padding:24px;box-sizing:border-box}}
-  .card{{background:white;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.1);
-          padding:40px 36px;max-width:480px;width:100%;text-align:center}}
-  h1{{color:{colour};font-size:22px;margin:16px 0 10px}}
-  p{{color:#555;line-height:1.6;margin:0 0 24px}}
-  .icon{{font-size:48px;line-height:1}}
-  a{{color:#1a6b3c;text-decoration:none;font-weight:600}}
-  a:hover{{text-decoration:underline}}
-</style></head>
-<body><div class="card">
-  <div class="icon">{icon}</div>
-  <h1>{title}</h1>
-  <p>{body_html}</p>
-  <a href="{app_url}">← Back to Cartwise</a>
-</div></body></html>"""
-    return {
-        "statusCode": 200,
-        "headers": {"Content-Type": "text/html; charset=utf-8"},
-        "body": html,
-    }
+    app = _esc((FRONTEND_URL or "https://www.cartwise.shopping").rstrip("/"))
+    return L.landing_page(title, body_html, ok=success, site=FRONTEND_URL,
+                          action_html=f'<a class="btn" href="{app}">Go to Cartwise</a>')
 
 
 def _unsub_confirm_page(email: str, token: str) -> dict:
-    app_url    = FRONTEND_URL or "#"
+    app = _esc((FRONTEND_URL or "https://www.cartwise.shopping").rstrip("/"))
     action_url = f"{API_URL}/user/unsubscribe" if API_URL else "/user/unsubscribe"
-    html = f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Unsubscribe — Cartwise</title>
-<style>
-  body{{font-family:Arial,sans-serif;background:#f5f5f5;display:flex;align-items:center;
-        justify-content:center;min-height:100vh;margin:0;padding:24px;box-sizing:border-box}}
-  .card{{background:white;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.1);
-          padding:40px 36px;max-width:480px;width:100%;text-align:center}}
-  h1{{color:#1a6b3c;font-size:22px;margin:16px 0 10px}}
-  p{{color:#555;line-height:1.6;margin:0 0 24px}}
-  .icon{{font-size:48px;line-height:1}}
-  .btn{{display:inline-block;background:#c0392b;color:white;padding:12px 28px;
-         border-radius:6px;font-size:15px;font-weight:700;border:none;cursor:pointer;
-         text-decoration:none;margin-bottom:12px}}
-  .btn:hover{{background:#a93226}}
-  .cancel{{display:block;color:#888;font-size:13px;text-decoration:none;margin-top:8px}}
-  .cancel:hover{{color:#555}}
-</style></head>
-<body><div class="card">
-  <div class="icon">📧</div>
-  <h1>Unsubscribe from Deal Alerts?</h1>
-  <p>Click the button below to stop weekly email alerts for <strong>{email}</strong>.
-     You can re-enable them at any time by signing in.</p>
-  <form method="POST" action="{action_url}?email={urllib.parse.quote(email)}&token={token}">
-    <button class="btn" type="submit">Yes, unsubscribe me</button>
-  </form>
-  <a class="cancel" href="{app_url}">Cancel — keep my alerts</a>
-</div></body></html>"""
-    return {
-        "statusCode": 200,
-        "headers": {"Content-Type": "text/html; charset=utf-8"},
-        "body": html,
-    }
+    action = _esc(action_url + "?" + urllib.parse.urlencode({"email": email, "token": token}))
+    return L.landing_page(
+        "Unsubscribe from Cartwise emails?",
+        f"This stops weekly deal alerts and reminders to {L.addr(email)}. "
+        "You can turn alerts back on whenever you like.",
+        site=FRONTEND_URL, ask=True,
+        action_html=(f'<form method="POST" action="{action}"><button class="btn danger" type="submit">'
+                     f'Yes, unsubscribe me</button></form>'
+                     f'<a class="alt" href="{app}">Cancel, keep my emails</a>'))
 
 
 # ── Test email ────────────────────────────────────────────────────────────────
@@ -226,24 +185,33 @@ def send_test_email(event):
     if not resend_key:
         return err("Resend API key not configured.", 500)
 
+    link = _unsub.url(API_URL, UNSUB_SECRET, sess["email"])
+    hdrs = _unsub.headers(link)
+    reason = "Sent because you asked for a test email."
+    acct = sess["email"]
+    from_line = ("" if notify_email.lower() == acct.lower() else
+                 L.p(f"Sent from the Cartwise account {L.addr(acct)}.", small=True, muted=True))
+    app = (FRONTEND_URL or "https://www.cartwise.shopping").rstrip("/")
+    html = L.email(
+        title="Cartwise test email", preheader="Your weekly deal alerts will arrive at this address.",
+        heading="Your alerts are set up",
+        body=(L.p(f"This is a test from Cartwise. Your weekly deal alerts will arrive at {L.addr(notify_email)}, "
+                  "usually on Wednesday when the new Publix ad comes out.")
+              + from_line + L.button("Open Cartwise", app)),
+        unsub_url=link, reason=reason, site=FRONTEND_URL)
+    text = L.text("Your Cartwise alerts are set up",
+                  f"This is a test from Cartwise. Your weekly deal alerts will arrive at {notify_email}, usually on "
+                  "Wednesday when the new Publix ad comes out.",
+                  (f"Sent from the Cartwise account {acct}." if from_line else ""),
+                  unsub_url=link, reason=reason, site=FRONTEND_URL)
     try:
         import resend as _resend
         _resend.api_key = resend_key
-        _resend.Emails.send({
-            "from":    resend_from,
-            "to":      [notify_email],
-            "subject": "✅ Cartwise — test email",
-            "html":    f"""<html><body style="font-family:Arial,sans-serif;max-width:600px;margin:40px auto;color:#333;">
-  <div style="background:#1a6b3c;color:white;padding:24px;border-radius:8px 8px 0 0;">
-    <h2 style="margin:0;">✅ Test Email</h2>
-    <p style="margin:4px 0 0;opacity:.8;">Cartwise notifications are working.</p>
-  </div>
-  <div style="background:white;border:1px solid #ddd;border-top:none;padding:24px;border-radius:0 0 8px 8px;">
-    <p>This is a test message sent to <strong>{notify_email}</strong>.</p>
-    <p style="color:#888;font-size:13px;margin-top:16px;">Sent from your Cartwise account: {sess["email"]}</p>
-  </div>
-</body></html>""",
-        })
+        msg = {"from": resend_from, "to": [notify_email], "subject": "Cartwise test email",
+               "html": html, "text": text}
+        if hdrs:
+            msg["headers"] = hdrs
+        _resend.Emails.send(msg)
         _log_app_event("email", "info", ok=True,
                        to=notify_email, subject="test-email",
                        trigger="manual", user=sess["email"])

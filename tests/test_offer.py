@@ -113,7 +113,7 @@ class TestEmail:
     def test_unsubscribe_and_text_part(self):
         html = ER.build_html([self._m()], "1546", "S", unsub_url="https://api.x/user/unsubscribe?a=1&b=2")
         assert "unsubscribe?a=1&amp;b=2" in html
-        assert "Unsubscribe: https://api.x" in ER.build_text([self._m()], "S", "https://api.x/u")
+        assert "Unsubscribe from Cartwise emails: https://api.x" in ER.build_text([self._m()], "S", "https://api.x/u")
 
     def test_tags_match_frontend_taxonomy(self):
         bogo = self._m(saving_type="WeeklyAd", is_bogo=True, offer=classify_offer("WeeklyAd", "Buy 1 Get 1 FREE"))

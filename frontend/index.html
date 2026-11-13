@@ -59,6 +59,12 @@ body{font-family:var(--body);background:var(--cream);color:var(--ink);min-height
 .btn-primary:disabled{opacity:.5;cursor:not-allowed}
 .msg{margin-top:12px;font-size:13px;min-height:18px}
 .msg.err{color:var(--red)}.msg.ok{color:var(--green)}
+/* v9.11 forgot / reset PIN */
+.auth-alt{margin-top:14px;display:flex;justify-content:center;gap:18px;flex-wrap:wrap}
+.link-btn{background:none;border:none;padding:4px 2px;font:700 13px var(--body);color:var(--green);cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.link-btn:hover{color:var(--green-lt)}
+.auth-h2{font-family:var(--serif);font-weight:400;font-size:21px;margin:0 0 6px}
+.auth-p{font-size:13.5px;color:var(--ink-mid);line-height:1.5;margin:0 0 18px;word-break:break-word}
 
 /* APP SHELL */
 #app-screen{display:none}
@@ -675,6 +681,42 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
         </div></div>
       <button class="btn-primary" id="auth-btn" type="submit">Sign In</button>
       <div class="msg" id="auth-msg"></div>
+      <div class="auth-alt" id="forgot-link-row"><button type="button" class="link-btn" data-action="show-forgot-pin">Forgot PIN?</button></div>
+      </form>
+      <!-- v9.11: forgot PIN (request a reset link) -->
+      <form id="forgot-form" style="display:none" novalidate>
+        <h2 class="auth-h2">Reset your PIN</h2>
+        <p class="auth-p">Enter your account email. If an account exists for it, we'll email a link to choose a new PIN.</p>
+        <div class="field"><label for="forgot-email">Email address</label>
+          <input type="email" id="forgot-email" placeholder="you@example.com" autocomplete="email" data-action="sanitize-email"></div>
+        <button class="btn-primary" id="forgot-btn" type="submit">Email me a reset link</button>
+        <div class="msg" id="forgot-msg" role="status"></div>
+        <div class="auth-alt"><button type="button" class="link-btn" data-action="show-sign-in">← Back to sign in</button></div>
+      </form>
+      <!-- v9.11: choose a new PIN (opened from the emailed link) -->
+      <form id="reset-form" style="display:none" novalidate>
+        <h2 class="auth-h2">Choose a new PIN</h2>
+        <p class="auth-p">For <strong id="reset-email"></strong>. You'll be signed out on all devices.</p>
+        <div id="reset-fields" style="display:none">
+        <div class="field"><label>New 4-digit PIN</label>
+          <div class="pin-wrap">
+          <input class="pin-d rp-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·" autocomplete="off">
+          <input class="pin-d rp-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·" autocomplete="off">
+          <input class="pin-d rp-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·" autocomplete="off">
+          <input class="pin-d rp-pin" type="password" inputmode="numeric" maxlength="1" placeholder="·" autocomplete="off">
+          </div></div>
+        <div class="field"><label>Enter it again</label>
+          <div class="pin-wrap">
+          <input class="pin-d rp-pin2" type="password" inputmode="numeric" maxlength="1" placeholder="·" autocomplete="off">
+          <input class="pin-d rp-pin2" type="password" inputmode="numeric" maxlength="1" placeholder="·" autocomplete="off">
+          <input class="pin-d rp-pin2" type="password" inputmode="numeric" maxlength="1" placeholder="·" autocomplete="off">
+          <input class="pin-d rp-pin2" type="password" inputmode="numeric" maxlength="1" placeholder="·" autocomplete="off">
+          </div></div>
+        <button class="btn-primary" id="reset-btn" type="submit">Save new PIN</button>
+        </div>
+        <div class="msg" id="reset-msg" role="status"></div>
+        <div class="auth-alt"><button type="button" class="link-btn" id="reset-again" data-action="show-forgot-pin" style="display:none">Request a new link</button>
+          <button type="button" class="link-btn" data-action="show-sign-in">← Back to sign in</button></div>
       </form>
     </div>
   </div>

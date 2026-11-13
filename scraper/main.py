@@ -23,6 +23,8 @@ import secrets as _secrets
 
 from scraper import get_deals_with_status
 from shared import email_render
+from shared import unsub as _unsub
+from shared import email_layout as L
 from shared.deal_parser import effective_bogo_mode
 from shared.matcher import match_deals_for_user
 
@@ -311,13 +313,8 @@ def _unsub_token(email: str) -> str:
     ).hexdigest()
 
 def _unsub_url(account_email: str) -> str:
-    """Build the full unsubscribe URL for a given account email."""
-    if not UNSUB_SECRET or not API_URL:
-        return ""
-    import urllib.parse
-    token = _unsub_token(account_email)
-    params = urllib.parse.urlencode({"email": account_email, "token": token})
-    return f"{API_URL}/user/unsubscribe?{params}"
+    """Full unsubscribe URL for an account (shared/unsub.py); "" if not configured."""
+    return _unsub.url(API_URL, UNSUB_SECRET, account_email)
 
 def build_html(matches, store_id, store_name, frontend_url="", account_email="", bogo_mode="two"):
     """v9.3: rendered by shared/email_render.py from the normalized offer."""
@@ -337,7 +334,8 @@ def send_alert(notify_email: str, matches: list[dict], store_id: str, store_name
         "subject": subject,
         "html":    build_html(matches, store_id, store_name, FRONTEND_URL, account_email=account_email,
                               bogo_mode=bogo_mode),
-        "text":    email_render.build_text(matches, store_name, unsub_url, bogo_mode=bogo_mode),
+        "text":    email_render.build_text(matches, store_name, unsub_url, bogo_mode=bogo_mode,
+                                           frontend_url=FRONTEND_URL),
     }
     if unsub_url:
         # v9.3: one-click unsubscribe (RFC 8058); POST /user/unsubscribe accepts the same query
@@ -456,6 +454,135 @@ def purge_inactive_users() -> None:
         pass
 
 
+# ── Verification reminders (v9.11) ────────────────────────────────────────────
+# Accounts that never clicked the verification link get up to 4 reminders, one a
+# week: at 7, 14, 21 and 28 days after sign-up. Runs daily, so each person's
+# reminders keep a 7-day rhythm from their own sign-up date. Each reminder carries
+# a fresh link (the sign-up link expires after 48 hours) that stays valid for 7 days.
+VERIFY_REMINDERS_MAX   = 4
+VERIFY_REMINDER_EVERY  = timedelta(days=7)
+VERIFY_REMINDER_GAP    = timedelta(days=6)      # never two within a week, even for old accounts catching up
+VERIFY_REMINDER_LINK   = timedelta(days=7)
+
+
+def _verify_reminder_email(email: str, verify_url: str, n: int, unsub_url: str = "") -> tuple[str, str, str]:
+    """(subject, html, text) for reminder n of VERIFY_REMINDERS_MAX."""
+    last = n >= VERIFY_REMINDERS_MAX
+    subject = ("Last reminder: verify your Cartwise email" if last else "Reminder: verify your Cartwise email")
+    reason = "Sent because this address signed up for Cartwise."
+    tail = ("This is the last reminder we'll send." if last else
+            f"This is reminder {n} of {VERIFY_REMINDERS_MAX}.")
+    html = L.email(
+        title=subject, preheader="Your weekly Publix deal alerts are waiting on one click.",
+        heading="One last step" if last else "Finish setting up Cartwise",
+        body=(L.p(f"You signed up with {L.addr(email)} but haven't confirmed it yet, so your weekly deal "
+                  "alerts are on hold.")
+              + L.button("Verify my email", verify_url)
+              + L.p(f"The link expires in 7 days. {tail} Didn't sign up? Unsubscribe below and we won't "
+                    "email you again.", small=True, muted=True, last=True)),
+        unsub_url=unsub_url, reason=reason, site=FRONTEND_URL)
+    text = L.text("Finish setting up Cartwise",
+                  f"You signed up with {email} but haven't confirmed it yet, so your weekly deal alerts are on hold.",
+                  f"Verify your email (link expires in 7 days):\n{verify_url}",
+                  f"{tail} Didn't sign up? Unsubscribe below and we won't email you again.",
+                  unsub_url=unsub_url, reason=reason, site=FRONTEND_URL)
+    return subject, html, text
+
+
+def _reminder_due(u: dict, now: datetime):
+    """The reminder number to send now (1..4), or None."""
+    if u.get("email_verified") is not False or u.get("email") == "__meta__":
+        return None                                 # verified, or a legacy account with no flag
+    if (u.get("prefs") or {}).get("email_enabled") is False:
+        return None                                 # unsubscribed
+    sent = int(u.get("verify_reminders") or 0)
+    if sent >= VERIFY_REMINDERS_MAX:
+        return None
+    try:
+        created = datetime.fromisoformat(str(u.get("created_at") or ""))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    if now < created + VERIFY_REMINDER_EVERY * (sent + 1):
+        return None
+    last = u.get("last_verify_reminder_at")
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(str(last))
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            if now - last_dt < VERIFY_REMINDER_GAP:
+                return None
+        except ValueError:
+            pass
+    return sent + 1
+
+
+def send_verify_reminders(now: datetime | None = None) -> dict:
+    """Daily job: email reminders to unverified accounts that are due one."""
+    import urllib.parse
+    now = now or datetime.now(timezone.utc)
+    fields = "email, email_verified, created_at, verify_reminders, last_verify_reminder_at, prefs.email_enabled"
+    items, resp = [], users_table.scan(ProjectionExpression=fields)
+    items.extend(resp.get("Items", []))
+    while "LastEvaluatedKey" in resp:
+        resp = users_table.scan(ProjectionExpression=fields, ExclusiveStartKey=resp["LastEvaluatedKey"])
+        items.extend(resp.get("Items", []))
+    sent, failed, skipped = [], [], 0
+    for u in (to_python(i) for i in items):
+        n = _reminder_due(u, now)
+        if not n:
+            continue
+        email = u["email"]
+        token = _secrets.token_urlsafe(32)
+        try:
+            # Claim this reminder first: if two runs overlap, only one sends it.
+            users_table.update_item(
+                Key={"email": email},
+                UpdateExpression="SET verify_reminders = :n, last_verify_reminder_at = :now, "
+                                 "verify_token = :t, verify_token_exp = :e",
+                ConditionExpression="email_verified = :f AND "
+                                    "(attribute_not_exists(verify_reminders) OR verify_reminders = :prev)",
+                ExpressionAttributeValues={":n": n, ":prev": n - 1, ":now": now.isoformat(), ":f": False,
+                                           ":t": token, ":e": (now + VERIFY_REMINDER_LINK).isoformat()},
+            )
+        except Exception as e:
+            if "ConditionalCheckFailed" in str(e):
+                skipped += 1
+                continue
+            failed.append(email); print(f"  ERROR claiming reminder for {email}: {e}")
+            continue
+        url = f"{API_URL}/auth/verify-email?" + urllib.parse.urlencode({"token": token, "email": email})
+        unsub_url = _unsub_url(email)
+        subject, html, text = _verify_reminder_email(email, url, n, unsub_url)
+        msg = {"from": RESEND_FROM, "to": [email], "subject": subject, "html": html, "text": text}
+        if unsub_url:
+            msg["headers"] = _unsub.headers(unsub_url)
+        try:
+            resend.Emails.send(msg)
+            sent.append(email)
+            _log_email(email, subject, True, user=email, message=f"verification reminder {n} of {VERIFY_REMINDERS_MAX}")
+            print(f"  Reminder {n}/{VERIFY_REMINDERS_MAX} -> {email}")
+        except Exception as e:
+            failed.append(email)
+            _log_email(email, subject, False, user=email, message=str(e))
+            print(f"  ERROR sending reminder to {email}: {e}")
+    summary = {"sent": len(sent), "failed": len(failed), "skipped": skipped}
+    try:
+        stamp = now.isoformat()
+        app_logs_tbl.put_item(Item={
+            "log_id": f"{stamp}#{_secrets.token_hex(4)}", "ts": stamp, "source": "api",
+            "level": "error" if failed else "info", "action": "verify-reminders",
+            "message": f"Verification reminders: {len(sent)} sent, {len(failed)} failed",
+            **summary, "expires_at": int((now + timedelta(days=90)).timestamp()),
+        })
+    except Exception:
+        pass
+    print(f"Verification reminders: {summary}")
+    return summary
+
+
 def handler(event, context):
     """Lambda entry point -- called by EventBridge, admin, or self-invoked as store worker.
 
@@ -465,10 +592,15 @@ def handler(event, context):
       3. source=store-worker         -> WORKER: process one store (fetch, match, email)
       4. source=manual-resend        -> scrape + email one user only
       5. source=monthly-cleanup      -> delete inactive accounts
+      6. source=verify-reminders     -> daily: remind unverified accounts (4, weekly)
     """
     source       = event.get("source", "")
     detail_type  = event.get("detail-type", "")
     target_email = (event.get("target_email") or "").strip().lower()
+
+    # v9.11: daily verification reminders
+    if source == "verify-reminders":
+        return {"statusCode": 200, "body": json.dumps(send_verify_reminders())}
 
     # Monthly inactive-account cleanup
     if source == "monthly-cleanup":

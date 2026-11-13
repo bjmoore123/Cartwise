@@ -353,9 +353,7 @@ for f in "${SCRIPT_DIR}"/lambda/*.py; do
 done
 # Include shared libraries (deal_parser + matcher)
 mkdir -p "${API_BUILD_TMP}/shared"
-cp "${SCRIPT_DIR}/shared/__init__.py"   "${API_BUILD_TMP}/shared/"
-cp "${SCRIPT_DIR}/shared/deal_parser.py" "${API_BUILD_TMP}/shared/"
-cp "${SCRIPT_DIR}/shared/matcher.py"    "${API_BUILD_TMP}/shared/"
+cp "${SCRIPT_DIR}"/shared/*.py "${API_BUILD_TMP}/shared/"      # v9.11: every module, not a fixed list
 info "Installing api dependencies (resend)..."
 ${PIP_CMD} install resend \
   --target "${API_BUILD_TMP}" --quiet \
@@ -522,10 +520,7 @@ cp "${SCRIPT_DIR}/scraper/main.py"    "${SCRAPER_TMP}/"
 cp "${SCRIPT_DIR}/scraper/scraper.py" "${SCRAPER_TMP}/"
 # Include shared libraries (deal_parser + matcher)
 mkdir -p "${SCRAPER_TMP}/shared"
-cp "${SCRIPT_DIR}/shared/__init__.py"    "${SCRAPER_TMP}/shared/"
-cp "${SCRIPT_DIR}/shared/deal_parser.py" "${SCRAPER_TMP}/shared/"
-cp "${SCRIPT_DIR}/shared/matcher.py"     "${SCRAPER_TMP}/shared/"
-cp "${SCRIPT_DIR}/shared/email_render.py" "${SCRAPER_TMP}/shared/"   # v9.3
+cp "${SCRIPT_DIR}"/shared/*.py "${SCRAPER_TMP}/shared/"       # v9.11: every module, not a fixed list
 
 info "Installing scraper dependencies..."
 ${PIP_CMD} install resend \
@@ -788,7 +783,8 @@ MSYS_NO_PATHCONV=1 aws s3 cp app_deploy_tmp.js \
   "s3://${S3_FRONTEND}/app.js" \
   --content-type "application/javascript" --cache-control "no-cache, no-store, must-revalidate" --no-progress
 # v9.4: icons and web manifest (linked from index.html; were never uploaded before)
-for asset in favicon.ico apple-touch-icon.png icon-192.png icon-512.png cartwise_logo.svg manifest.json; do
+# v9.11: email-logo.png is the header image in every email (emails can't use SVG)
+for asset in favicon.ico apple-touch-icon.png icon-192.png icon-512.png cartwise_logo.svg email-logo.png manifest.json; do
   [ -f "${SCRIPT_DIR}/frontend/${asset}" ] || continue
   case "${asset}" in
     *.ico)  ctype="image/x-icon" ;;
@@ -884,6 +880,32 @@ aws events put-targets \
   --targets "Id=cleanup,Arn=${LAMBDA_SCRAPER_ARN},Input=\"{\\\"source\\\":\\\"monthly-cleanup\\\"}\"" \
   --region "${AWS_REGION}" > /dev/null
 ok "EventBridge → cleanup target set (1st of month, 13:00 UTC)"
+
+# ── STEP 8c: Daily verification reminders (v9.11) ─────────────────────────────
+# Unverified accounts get up to 4 reminders, 7 days apart from their own sign-up date.
+REMIND_RULE="${APP_NAME}-verify-reminders"
+REMIND_ARN=$(aws events put-rule \
+  --name "${REMIND_RULE}" \
+  --schedule-expression "cron(0 15 * * ? *)" \
+  --state ENABLED \
+  --description "Cartwise — daily verification reminders (4 max, weekly)" \
+  --region "${AWS_REGION}" \
+  --query 'RuleArn' --output text)
+ok "EventBridge rule: ${REMIND_RULE}"
+
+aws lambda add-permission \
+  --function-name "${LAMBDA_SCRAPER}" \
+  --statement-id "eventbridge-verify-reminders-invoke" \
+  --action lambda:InvokeFunction \
+  --principal events.amazonaws.com \
+  --source-arn "${REMIND_ARN}" \
+  --region "${AWS_REGION}" > /dev/null 2>&1 || true
+
+aws events put-targets \
+  --rule "${REMIND_RULE}" \
+  --targets "Id=verify-reminders,Arn=${LAMBDA_SCRAPER_ARN},Input=\"{\\\"source\\\":\\\"verify-reminders\\\"}\"" \
+  --region "${AWS_REGION}" > /dev/null
+ok "EventBridge → verification reminders target set (daily, 15:00 UTC)"
 
 # ── Final env update: re-apply both Lambda configs now that API_URL and FRONTEND_URL are known ──
 # On first deploy these were empty; this pass fills them in correctly.

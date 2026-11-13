@@ -321,6 +321,26 @@ Test plan: `docs/v9.4-test-plan.md`.
 ### v9.9.1: Deploy packaging fix ✅ built 2026-10-22
 - Staging returned 500 on every request after v9.9: `deploy.sh` copied a fixed list of lambda files and `feedback.py` was not on it, so the API crashed on import. Now copies `lambda/*.py`, and deploy runs a smoke test (a preflight request through the real handler) and stops with the error if the API can't start. Tests check packaging and that every local import exists.
 
+### v9.11: Forgot PIN + verification reminders ✅ built 2026-11-13 — test plan `docs/v9.11-test-plan.md`
+- **Forgot PIN?** on the sign-in card → email a one-time link → "Choose a new PIN" (enter twice).
+  - Request never confirms an account exists: one message for every outcome, minimum 1.5 s response, rate limits 3/hour per email and 10/hour per IP.
+  - Link: 256-bit random token, only its SHA-256 stored; 30 minutes; one use (conditional write); a newer request replaces it; travels in the URL fragment and is removed from the address bar on open.
+  - Bad / used / expired / unknown links all get one message. Weak PINs rejected without using up the link.
+  - The page checks the link (`POST /auth/check-reset`, 30/hour per IP, uses nothing up) before showing the PIN boxes: a dead link shows "invalid or has expired" + Request a new link straight away; a good one shows "This link expires in N minutes" and switches to expired on screen when time runs out. If the check itself can't reach the server, the form shows and Save re-checks.
+  - Success: new PIN, lockout cleared, every session signed out, email marked verified (the link proves the mailbox), "Your PIN was changed" notice emailed.
+  - Admin user view never returns the reset fields; an email change drops a pending link.
+- **Verification reminders:** daily job (`cartwise-verify-reminders`, 15:00 UTC) emails unverified accounts at 7, 14, 21 and 28 days after sign-up (4 max, at least 6 days apart, fresh 7-day link each time, last one says so). Logged in Admin → Logging. Old unverified accounts catch up one week at a time.
+- **Unsubscribe link in every email** (`shared/unsub.py`): verification, PIN reset, PIN changed, test email, verification reminders and the weekly alert all end with "Unsubscribe from Cartwise emails" (HTML + text) and carry `List-Unsubscribe` / one-click headers. Same signed link as before, so no sign-in needed and it works for unverified accounts.
+  - Unsubscribing stops scheduled mail: weekly alerts and verification reminders. Emails the person asks for (PIN reset, resend verification, test email) and the PIN-changed security notice still go out.
+  - Unverified accounts with no saved prefs get the defaults plus `email_enabled: false`; `unsubscribed_at` is recorded. Page wording now covers all emails, not just deal alerts. Email address escaped on the pages.
+  - Admin feedback notifications go only to the admin address, so they have no link.
+- **Branded emails** (`shared/email_layout.py`): every email (verify, PIN reset, PIN changed, test, reminders, weekly alert) and the pages their links open (email verified, unsubscribe) use one layout from the brand package: green header with the logo (`frontend/email-logo.png`, a PNG because Gmail/Outlook don't show SVG; uploaded by deploy.sh), cream page, DM Serif headings with Georgia fallback, Lato/Arial body, table buttons that work in Outlook.
+  - No awkward wrapping: buttons and footer links never wrap; email addresses only break at the "@"; weekly deal rows give the product name the full width with price, savings and dates on their own lines (the old right-hand price column squeezed names to one word per line on phones). Checked at 720, 375 and 320 px with no sideways scrolling.
+  - Plain-text parts rewritten too: one line per paragraph, links on their own line, same footer.
+  - Verify-page titles no longer reveal whether an account exists ("This link isn't valid" for all failures).
+- deploy.sh copies every `shared/*.py` into both Lambdas (fixed list removed, same fix as v9.9.1).
+- Tests: `tests/test_v911.py` (33).
+
 ### v9.10: New logo + admin session lock ✅ built 2026-11-12 (one release)
 - Logo: the "C-cart" mark (a C with a cart handle and two amber wheels) on Cartwise Green `#1a6b3c`, wheels `#f5a524`. New `favicon.ico` (16/32/48), `apple-touch-icon.png`, `icon-192/512.png`, `cartwise_logo.svg`; inline mark in the site header and on the sign-in card. Brand package (logos, colors, business card) lives outside the repo at `C:\Projects\Cartwise\brand-package`. Tests: `tests/test_v910.py`.
 - Admin session lock (below).

@@ -355,7 +355,7 @@ fi
 # ── 7. EventBridge: weekly + monthly-cleanup rules ───────────────────────────
 step "EventBridge rules"
 
-for RULE_NAME in "${APP_NAME}-weekly" "${APP_NAME}-monthly-cleanup"; do
+for RULE_NAME in "${APP_NAME}-weekly" "${APP_NAME}-monthly-cleanup" "${APP_NAME}-verify-reminders"; do
   # Check if rule exists
   RULE_STATE=$(aws events describe-rule --name "${RULE_NAME}" --region "${AWS_REGION}" \
     --query 'State' --output text 2>/dev/null)

@@ -6,9 +6,11 @@ PDC-18: logout sets valid_after to invalidate all other sessions.
 Email verification: accounts start unverified; no alert emails are sent until
 the user clicks the link in the verification email sent at registration.
 """
+import hashlib
 import os
 import re
 import secrets
+import time
 import urllib.parse
 from html import escape as _esc
 from datetime import datetime, timezone, timedelta
@@ -19,11 +21,18 @@ from helpers import (
     DEFAULT_PREFS, SESSION_TTL_HOURS, FRONTEND_URL, API_URL,
     LOGIN_MAX_ATTEMPTS, LOGIN_LOCKOUT_MINUTES, EMAIL_RE,
     PIN_DENYLIST, check_rate_limit, _get_client_ip,
-    SESSION_COOKIE_NAME, make_cookie,
+    SESSION_COOKIE_NAME, make_cookie, revoke_sessions,
 )
 from logging_utils import _log_auth_event
+from shared import unsub as _unsub
+from shared import email_layout as L
 
 VERIFY_TOKEN_TTL_HOURS = 48
+
+
+def _unsub_link(email: str) -> str:
+    import helpers
+    return _unsub.url(API_URL, helpers.UNSUB_SECRET, email)
 
 
 def _send_verification_email(email: str, token: str) -> None:
@@ -39,67 +48,51 @@ def _send_verification_email(email: str, token: str) -> None:
 
     # v9.5: encode the query; a raw "+" (ben+test@x.com) arrives as a space and fails verification
     verify_url = f"{API_URL}/auth/verify-email?" + urllib.parse.urlencode({"token": token, "email": email})
-    app_url    = FRONTEND_URL or "#"
-
-    html = f"""<!DOCTYPE html>
-<html><body style="font-family:sans-serif;max-width:480px;margin:32px auto;color:#1a1a1a">
-  <h2 style="color:#1a6b3c">Verify your Cartwise email</h2>
-  <p>Thanks for signing up! Click below to verify <strong>{_esc(email)}</strong>
-     and activate weekly deal alerts.</p>
-  <p style="margin:24px 0">
-    <a href="{_esc(verify_url)}"
-       style="background:#1a6b3c;color:#fff;padding:12px 24px;border-radius:8px;
-              text-decoration:none;font-weight:600;display:inline-block">
-      Verify Email Address
-    </a>
-  </p>
-  <p style="font-size:13px;color:#666">
-    This link expires in 48 hours. If you didn't create a Cartwise account,
-    you can safely ignore this email.
-  </p>
-  <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0">
-  <p style="font-size:12px;color:#999">
-    <a href="{app_url}" style="color:#1a6b3c">cartwise.shopping</a>
-  </p>
-</body></html>"""
+    link   = _unsub_link(email)
+    hdrs   = _unsub.headers(link)
+    reason = "Sent because this address signed up for Cartwise."
+    html = L.email(
+        title="Verify your Cartwise email", preheader="One click to turn on your weekly Publix deal alerts.",
+        heading="Confirm your email",
+        body=(L.p(f"Thanks for signing up! Confirm {L.addr(email)} so we can start sending your weekly deal alerts.")
+              + L.button("Verify my email", verify_url)
+              + L.p("This link expires in 48 hours. If you didn't create a Cartwise account, you can ignore "
+                    "this email.", small=True, muted=True, last=True)),
+        unsub_url=link, reason=reason, site=FRONTEND_URL)
+    text = L.text("Confirm your Cartwise email",
+                  f"Thanks for signing up! Confirm {email} so we can start sending your weekly deal alerts:\n{verify_url}",
+                  "This link expires in 48 hours. If you didn't create a Cartwise account, you can ignore this email.",
+                  unsub_url=link, reason=reason, site=FRONTEND_URL)
 
     try:
         import resend as _resend
         _resend.api_key = resend_key
-        _resend.Emails.send({
+        msg = {
             "from":    resend_from,
             "to":      [email],
             "subject": "Verify your Cartwise email address",
             "html":    html,
-        })
+            "text":    text,
+        }
+        if hdrs:
+            msg["headers"] = hdrs
+        _resend.Emails.send(msg)
         print(f"[CW] Verification email sent -> {email}")
     except Exception as e:
         print(f"[CW] _send_verification_email failed: {e}")
 
 
 def _verify_html_response(success: bool, message: str, already: bool = False) -> dict:
-    """Return an HTML page response for the email verification link click."""
-    app_url = FRONTEND_URL or "#"
-    icon    = "✅" if success else "❌"
-    color   = "#1a6b3c" if success else "#dc2626"
+    """The branded page shown after a verification link is clicked."""
+    app_url = _esc((FRONTEND_URL or "https://www.cartwise.shopping").rstrip("/"))
     if success:
-        cta = f'<p><a href="{app_url}" style="background:#1a6b3c;color:#fff;padding:10px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Go to Cartwise</a></p>'
+        detail = ("Your weekly deal alerts are on." if not already else "Nothing else to do.")
+        action = f'<a class="btn" href="{app_url}">Go to Cartwise</a>'
     else:
-        cta = f'<p><a href="{app_url}" style="color:#1a6b3c">Return to Cartwise</a></p>'
-
-    html = f"""<!DOCTYPE html>
-<html><body style="font-family:sans-serif;max-width:420px;margin:64px auto;color:#1a1a1a;text-align:center">
-  <div style="font-size:48px;margin-bottom:16px">{icon}</div>
-  <h2 style="color:{color}">{message}</h2>
-  {'<p>You can now receive weekly deal alerts.</p>' if success and not already else ''}
-  {cta}
-</body></html>"""
-
-    return {
-        "statusCode": 200 if success else 400,
-        "headers": {"Content-Type": "text/html"},
-        "body": html,
-    }
+        detail = "Request a new link from the banner after you sign in."
+        action = f'<a class="btn" href="{app_url}">Sign in to Cartwise</a>'
+    return L.landing_page(message.rstrip("!"), detail, ok=success, action_html=action,
+                          site=FRONTEND_URL, status=200 if success else 400)
 
 
 def register(body, event=None, _admin=False):
@@ -152,22 +145,22 @@ def verify_email(body):
     token = (body.get("token") or "").strip()
     email = (body.get("email") or "").strip().lower()
     if not token or not email:
-        return _verify_html_response(False, "Missing token or email.")
+        return _verify_html_response(False, "This link isn't valid")
 
     item = users_table.get_item(Key={"email": email}).get("Item")
     if not item:
-        return _verify_html_response(False, "Account not found.")
+        return _verify_html_response(False, "This link isn't valid")
 
     user = _to_py(item)
 
     if user.get("email_verified"):
-        return _verify_html_response(True, "Email already verified.", already=True)
+        return _verify_html_response(True, "Your email is already verified", already=True)
 
     stored_token = user.get("verify_token", "")
     token_exp    = user.get("verify_token_exp", "")
 
     if not stored_token or not secrets.compare_digest(stored_token, token):
-        return _verify_html_response(False, "Invalid or expired verification link.")
+        return _verify_html_response(False, "This link isn't valid")
 
     if token_exp:
         try:
@@ -176,7 +169,7 @@ def verify_email(body):
                 exp_dt = exp_dt.replace(tzinfo=timezone.utc)
             if datetime.now(timezone.utc) > exp_dt:
                 return _verify_html_response(
-                    False, "Verification link has expired. Please log in and request a new one."
+                    False, "This link has expired"
                 )
         except Exception:
             pass
@@ -187,7 +180,7 @@ def verify_email(body):
         ExpressionAttributeValues={":t": True},
     )
     print(f"[CW] Email verified: {email}")
-    return _verify_html_response(True, "Email verified successfully!")
+    return _verify_html_response(True, "Your email is verified")
 
 
 def resend_verification(event, body):
@@ -360,3 +353,199 @@ def change_pin(event, body):
         },
     )
     return ok({"message": "PIN updated. You will need to log in again."})
+
+
+# ── Forgot PIN (v9.11) ────────────────────────────────────────────────────────
+# Self-service PIN reset from the sign-in page. Safety rules, same as sign-up and
+# email verification:
+#   - The request never says whether an account exists: one message for every
+#     outcome (no account, rate-limited, sent), and a fixed minimum response time
+#     so "we sent an email" can't be told apart by how long it took.
+#   - Rate limits: 3 an hour per email, 10 an hour per IP (counted whether or not
+#     the account exists).
+#   - The link holds a random 256-bit token; only its SHA-256 is stored. It lasts
+#     30 minutes, works once, and a newer request replaces it. It travels in the
+#     URL fragment (#reset?...), which browsers never send to servers or logs.
+#   - A bad, used or expired link gets one generic message.
+#   - Success signs out every session, clears the lockout, and emails a notice.
+
+PIN_RESET_TTL_MINUTES   = 30
+PIN_RESET_MIN_SECONDS   = 1.5      # every /auth/forgot-pin answer takes at least this long
+PIN_RESET_REQUEST_MSG   = ("If an account exists for that email, we've sent a link to reset your PIN. "
+                           "It expires in 30 minutes.")
+PIN_RESET_BAD_LINK_MSG  = "This reset link is invalid or has expired. Please request a new one."
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256((token or "").encode()).hexdigest()
+
+
+def _send_email(to: str, subject: str, html: str, text: str, headers: dict | None = None) -> bool:
+    key = os.environ.get("RESEND_API_KEY", "")
+    if not key:
+        print("[CW] auth email: no RESEND_API_KEY -- skipping")
+        return False
+    sender = (f"{os.environ.get('RESEND_FROM_NAME', 'Cartwise Alerts')} "
+              f"<{os.environ.get('RESEND_FROM_ADDR', 'onboarding@resend.dev')}>")
+    try:
+        import resend as _resend
+        _resend.api_key = key
+        msg = {"from": sender, "to": [to], "subject": subject, "html": html, "text": text}
+        if headers:
+            msg["headers"] = headers
+        _resend.Emails.send(msg)
+        return True
+    except Exception as e:
+        print(f"[CW] auth email failed: {e}")
+        return False
+
+
+def _send_pin_reset_email(email: str, token: str) -> None:
+    base = (FRONTEND_URL or "https://cartwise.shopping").rstrip("/")
+    link = f"{base}/#reset?" + urllib.parse.urlencode({"token": token, "email": email})
+    unsub = _unsub_link(email)
+    reason = "Sent because a PIN reset was requested."
+    html = L.email(
+        title="Reset your Cartwise PIN", preheader=f"This link works once and expires in {PIN_RESET_TTL_MINUTES} minutes.",
+        heading="Reset your PIN",
+        body=(L.p(f"We got a request to reset the PIN for {L.addr(email)}. If that was you, choose a new one:")
+              + L.button("Choose a new PIN", link)
+              + L.callout(f"This link works once and expires in {PIN_RESET_TTL_MINUTES} minutes.")
+              + L.p("Didn't ask for this? Ignore this email and your PIN stays the same.",
+                    small=True, muted=True, last=True)),
+        unsub_url=unsub, reason=reason, site=FRONTEND_URL)
+    text = L.text("Reset your Cartwise PIN",
+                  f"We got a request to reset the PIN for {email}. If that was you, choose a new one here:\n{link}",
+                  f"This link works once and expires in {PIN_RESET_TTL_MINUTES} minutes.",
+                  "Didn't ask for this? Ignore this email and your PIN stays the same.",
+                  unsub_url=unsub, reason=reason, site=FRONTEND_URL)
+    _send_email(email, "Reset your Cartwise PIN", html, text, _unsub.headers(unsub))
+
+
+def _send_pin_changed_email(email: str) -> None:
+    base = (FRONTEND_URL or "https://cartwise.shopping").rstrip("/")
+    unsub = _unsub_link(email)
+    reason = "Security notice for your Cartwise account."
+    html = L.email(
+        title="Your Cartwise PIN was changed", preheader="Every device was signed out. Wasn't you? Here's what to do.",
+        heading="Your PIN was changed",
+        body=(L.p(f"The PIN for {L.addr(email)} was just reset using a link sent to this address. "
+                  "For your security, every device was signed out.")
+              + L.callout("<strong>Wasn't you?</strong> Reset it again with <em>Forgot PIN?</em> on the sign-in "
+                          "page, and check who can get into this mailbox.")
+              + L.button("Sign in to Cartwise", base)),
+        unsub_url=unsub, reason=reason, site=FRONTEND_URL)
+    text = L.text("Your Cartwise PIN was changed",
+                  f"The PIN for {email} was just reset using a link sent to this address. For your security, "
+                  "every device was signed out.",
+                  f"Wasn't you? Reset it again with \"Forgot PIN?\" on the sign-in page ({base}) and check who "
+                  "can get into this mailbox.",
+                  unsub_url=unsub, reason=reason, site=FRONTEND_URL)
+    _send_email(email, "Your Cartwise PIN was changed", html, text, _unsub.headers(unsub))
+
+
+def forgot_pin(event, body):
+    """POST /auth/forgot-pin {email} -- email a one-time PIN reset link.
+    Always the same answer, in about the same time, whatever happened."""
+    started = time.monotonic()
+    email = (body.get("email") or "").strip().lower()
+    if not email.isascii() or not re.match(EMAIL_RE, email):
+        return err("Enter a valid email address.")            # about the input, not about any account
+
+    def done():
+        wait = PIN_RESET_MIN_SECONDS - (time.monotonic() - started)
+        if wait > 0:
+            time.sleep(wait)
+        return ok({"message": PIN_RESET_REQUEST_MSG})
+
+    try:
+        allowed = check_rate_limit("forgot-pin-ip", _get_client_ip(event), 10)
+        allowed = check_rate_limit("forgot-pin", email, 3) and allowed      # count both, always
+        if not allowed:
+            return done()
+        if not users_table.get_item(Key={"email": email}, ProjectionExpression="email").get("Item"):
+            return done()
+        token = secrets.token_urlsafe(32)
+        expires = int(datetime.now(timezone.utc).timestamp()) + PIN_RESET_TTL_MINUTES * 60
+        users_table.update_item(
+            Key={"email": email},
+            UpdateExpression="SET pin_reset_hash = :h, pin_reset_exp = :e",
+            ConditionExpression="attribute_exists(email)",
+            ExpressionAttributeValues={":h": _token_hash(token), ":e": expires},
+        )
+        _send_pin_reset_email(email, token)
+        _log_auth_event(event, email, True, "pin_reset_requested")
+    except Exception as e:
+        print(f"[CW] forgot_pin: {e}")
+    return done()
+
+
+def _pin_reset_link(email: str, token: str):
+    """The account row and stored hash if (email, token) is a live reset link, else None.
+    Timing-safe: always compares, even with no account or no pending reset."""
+    item = users_table.get_item(Key={"email": email}).get("Item") if email else None
+    user = _to_py(item) if item else {}
+    stored = str(user.get("pin_reset_hash") or "")
+    matches = secrets.compare_digest(stored or _token_hash("no-reset-pending"), _token_hash(token))
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    if user and stored and token and matches and int(user.get("pin_reset_exp") or 0) >= now_ts:
+        return user, stored
+    return None
+
+
+def check_pin_reset(event, body):
+    """POST /auth/check-reset {email, token} -- is this reset link still good?
+    Lets the page say "expired" before the user types a new PIN. Only someone holding a
+    live link learns anything; every bad link gets the same 400 as reset_pin. Uses nothing up."""
+    email = (body.get("email") or "").strip().lower()
+    token = str(body.get("token") or "").strip()
+    if not check_rate_limit("check-reset-ip", _get_client_ip(event), 30):
+        return err("Too many attempts. Please try again later.", 429)
+    found = _pin_reset_link(email, token)
+    if not found:
+        _log_auth_event(event, email, False, "pin_reset_link_check_failed")
+        return err(PIN_RESET_BAD_LINK_MSG, 400)
+    left = int(found[0].get("pin_reset_exp") or 0) - int(datetime.now(timezone.utc).timestamp())
+    return ok({"valid": True, "expires_in": max(0, left)})
+
+
+def reset_pin(event, body):
+    """POST /auth/reset-pin {email, token, new_pin} -- set a new PIN with a reset link."""
+    email   = (body.get("email") or "").strip().lower()
+    token   = str(body.get("token") or "").strip()
+    new_pin = str(body.get("new_pin") or "").strip()
+    if not re.match(r'^\d{4}$', new_pin):
+        return err("New PIN must be 4 digits.")
+    if new_pin in PIN_DENYLIST:
+        return err("That PIN is too common. Please choose a less obvious PIN.")
+    if not check_rate_limit("reset-pin-ip", _get_client_ip(event), 10) or \
+       (email and not check_rate_limit("reset-pin", email, 5)):
+        return err("Too many attempts. Please try again later.", 429)
+
+    found = _pin_reset_link(email, token)
+    if not found:
+        _log_auth_event(event, email, False, "pin_reset_bad_link")
+        return err(PIN_RESET_BAD_LINK_MSG, 400)
+    stored = found[1]
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+
+    try:
+        users_table.update_item(
+            Key={"email": email},
+            # Using the link proves control of the mailbox, so the email counts as verified.
+            UpdateExpression="SET pin_hash = :p, valid_after = :t, email_verified = :v "
+                             "REMOVE pin_reset_hash, pin_reset_exp, failed_attempts, lockout_until, last_failed_at, "
+                             "verify_token, verify_token_exp",
+            ConditionExpression="pin_reset_hash = :h",                    # one use, even under a race
+            ExpressionAttributeValues={":p": hash_pin(new_pin), ":t": now_ts, ":v": True, ":h": stored},
+        )
+    except Exception as e:
+        if "ConditionalCheckFailed" in str(e):
+            return err(PIN_RESET_BAD_LINK_MSG, 400)
+        print(f"[CW] reset_pin: {e}")
+        return err("Could not reset the PIN. Please try again.", 500)
+    revoke_sessions(email)
+    _log_auth_event(event, email, True, "pin_reset")
+    _send_pin_changed_email(email)
+    return ok({"message": "PIN updated. Sign in with your new PIN."})
+

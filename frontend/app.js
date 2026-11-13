@@ -356,6 +356,7 @@ document.querySelectorAll('.auth-pin').forEach((el,i,arr) => {
 let authMode = 'login';
 function switchTab(m) {
   authMode=m;
+  const fl=document.getElementById('forgot-link-row'); if(fl) fl.style.display = m==='login' ? '' : 'none';
   document.querySelectorAll('.auth-tab').forEach((t,i)=>t.classList.toggle('active',(m==='login'&&i===0)||(m==='register'&&i===1)));
   document.getElementById('auth-btn').textContent = m==='login'?'Sign In':'Create Account';
   setMsg('auth-msg','','');
@@ -369,6 +370,122 @@ function sanitizeEmailInput(el) {
   const cleaned = el.value.replace(/[^a-zA-Z0-9!#$%&'*+/=?^_`{|}~.@-]/g, '');
   if (cleaned !== el.value) { el.value = cleaned; }
 }
+// ═══════════════════════════════════════════════════════════════════
+// FORGOT / RESET PIN (v9.11)
+// The request never reveals whether an account exists: the server gives one answer
+// for every outcome and this page shows it as-is. The emailed link carries a one-time
+// token in the URL fragment (#reset?token=…&email=…); it is read once, kept only in
+// memory, and removed from the address bar and history straight away.
+// ═══════════════════════════════════════════════════════════════════
+let _pinReset = null;                       // {token, email} from the emailed link
+let _resetExpiryTimer = null;
+function showAuthView(view) {               // 'sign-in' | 'forgot' | 'reset'
+  document.getElementById('auth-form').style.display   = view==='sign-in' ? '' : 'none';
+  document.getElementById('forgot-form').style.display = view==='forgot'  ? '' : 'none';
+  document.getElementById('reset-form').style.display  = view==='reset'   ? '' : 'none';
+  document.querySelector('.auth-tabs').style.display   = view==='sign-in' ? '' : 'none';
+  ['auth-msg','forgot-msg','reset-msg'].forEach(id => setMsg(id,'',''));
+}
+function showForgotPin() {
+  const from = (_pinReset && _pinReset.email) || document.getElementById('auth-email').value.trim();
+  showAuthView('forgot');
+  const inp = document.getElementById('forgot-email'); inp.value = from || ''; inp.focus();
+  const btn = document.getElementById('forgot-btn'); btn.disabled = false; btn.textContent = 'Email me a reset link';
+}
+function showSignIn(msg) {
+  clearTimeout(_resetExpiryTimer); _pinReset = null; clrPinQuiet('.rp-pin'); clrPinQuiet('.rp-pin2');
+  showAuthView('sign-in'); switchTab('login');
+  if (msg) setMsg('auth-msg', msg, 'ok');
+}
+function clrPinQuiet(sel){ document.querySelectorAll(sel).forEach(e=>e.value=''); }
+async function requestPinReset() {
+  const em = document.getElementById('forgot-email').value.trim().toLowerCase();
+  if (!em) { setMsg('forgot-msg','Please enter your email.','err'); return; }
+  const btn = document.getElementById('forgot-btn');
+  btn.disabled = true; btn.textContent = 'Sending…';
+  let again = 0;
+  try {
+    const res = await fetch(API+'/auth/forgot-pin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:em})});
+    const d = await res.json().catch(()=>({}));
+    if (res.ok) { setMsg('forgot-msg', d.message || 'If an account exists for that email, we\'ve sent a reset link.', 'ok'); again = 30000; btn.textContent = 'Check your email'; }
+    else setMsg('forgot-msg', d.error || 'Something went wrong. Please try again.', 'err');
+  } catch (_) { setMsg('forgot-msg','Could not reach the server. Please try again.','err'); }
+  setTimeout(() => { btn.disabled = false; btn.textContent = 'Email me a reset link'; }, again);
+}
+// Called on load and on hashchange. Returns true when a reset link was opened.
+// The link is checked with the server before the PIN boxes appear, so nobody types a
+// new PIN only to be told afterwards that the link had expired.
+function checkResetLink() {
+  if (!location.hash.startsWith('#reset?')) return false;
+  const p = new URLSearchParams(location.hash.slice(7));
+  const token = p.get('token') || '', email = (p.get('email') || '').trim().toLowerCase();
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (_) { location.hash = ''; }
+  if (!token || !email) return false;
+  _pinReset = { token, email };
+  if (typeof userEmail !== 'undefined' && userEmail) { try { doLogout({local:true}); } catch (_) {} }   // show the sign-in card
+  showAuthView('reset');
+  document.getElementById('reset-email').textContent = email;
+  document.getElementById('reset-again').style.display = 'none';
+  document.getElementById('reset-fields').style.display = 'none';
+  document.getElementById('reset-btn').disabled = false;
+  clrPinQuiet('.rp-pin2'); clrPinQuiet('.rp-pin');
+  setMsg('reset-msg', 'Checking your link…', '');
+  verifyResetLink();
+  return true;
+}
+function resetLinkDead(msg) {
+  clearTimeout(_resetExpiryTimer);
+  document.getElementById('reset-fields').style.display = 'none';
+  document.getElementById('reset-again').style.display = '';
+  setMsg('reset-msg', msg || 'This reset link is invalid or has expired. Please request a new one.', 'err');
+}
+async function verifyResetLink() {
+  const mine = _pinReset;
+  let res = null, d = {};
+  try {
+    res = await fetch(API+'/auth/check-reset',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({email:mine.email, token:mine.token})});
+    d = await res.json().catch(()=>({}));
+  } catch (_) { res = null; }
+  if (_pinReset !== mine) return;                       // user moved on meanwhile
+  if (res && res.status === 400) { resetLinkDead(d.error); return; }
+  // Good link, or the check itself failed (offline, rate limit): show the form;
+  // saving re-checks the link anyway.
+  document.getElementById('reset-fields').style.display = '';
+  setMsg('reset-msg', '', '');
+  clrPin('.rp-pin');
+  if (res && res.ok && d.expires_in > 0) {
+    const mins = Math.max(1, Math.round(d.expires_in / 60));
+    setMsg('reset-msg', `This link expires in ${mins} minute${mins===1?'':'s'}.`, '');
+    clearTimeout(_resetExpiryTimer);
+    _resetExpiryTimer = setTimeout(() => { if (_pinReset === mine) resetLinkDead(); }, d.expires_in * 1000);
+  }
+}
+async function submitPinReset() {
+  if (!_pinReset) { showForgotPin(); return; }
+  const pin = getPin('.rp-pin'), pin2 = getPin('.rp-pin2');
+  if (pin.length !== 4) { setMsg('reset-msg','Please enter a 4-digit PIN.','err'); return; }
+  if (pin !== pin2) { setMsg('reset-msg','The two PINs don\'t match.','err'); clrPinQuiet('.rp-pin2'); return; }
+  const btn = document.getElementById('reset-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const res = await fetch(API+'/auth/reset-pin',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({email:_pinReset.email, token:_pinReset.token, new_pin:pin})});
+    const d = await res.json().catch(()=>({}));
+    if (res.ok) {
+      const em = _pinReset.email;
+      showSignIn(d.message || 'PIN updated. Sign in with your new PIN.');
+      document.getElementById('auth-email').value = em; clrPin('.auth-pin');
+      return;
+    }
+    setMsg('reset-msg', d.error || 'Something went wrong. Please try again.', 'err');
+    // A dead link can't be retried: offer a new one. A rejected PIN (too common) can.
+    if (res.status === 400 && /link/i.test(d.error || '')) resetLinkDead(d.error);
+    else clrPinQuiet('.rp-pin2'), clrPin('.rp-pin');
+  } catch (_) { setMsg('reset-msg','Could not reach the server. Please try again.','err'); }
+  finally { btn.disabled = false; btn.textContent = 'Save new PIN'; }
+}
+
 let _lockoutTimer = null;
 function _startLockoutCountdown(retryAfterSeconds) {
   clearInterval(_lockoutTimer);
@@ -614,6 +731,7 @@ function _checkAdminHash() {
   }
 }
 window.addEventListener('hashchange', _checkAdminHash);
+window.addEventListener('hashchange', checkResetLink);
 
 // v9.6: the weekly run is cron(0 12 ? * WED *) in UTC, which is 8 AM ET in summer
 // and 7 AM ET in winter. Show it in the viewer's own time zone instead of a fixed "8:00 AM ET".
@@ -3250,6 +3368,8 @@ function closeOv(id){document.getElementById(id).classList.remove('vis');}
 // AUTO-LOGIN
 // ═══════════════════════════════════════════════════════════════════
 (async function init(){
+  // v9.11: opened from a PIN-reset email: show "Choose a new PIN" instead of signing in
+  if (checkResetLink()) return;
   // Check active session via token
   try{
     const res=await fetch(API+'/user/prefs', {credentials:'include',headers:authHeaders()});
@@ -3413,6 +3533,10 @@ function acHide() {
 }
 document.addEventListener('DOMContentLoaded', () => {
   initPinInputs('.auth-pin');
+  initPinInputs('.rp-pin');
+  initPinInputs('.rp-pin2');
+  document.getElementById('forgot-form').addEventListener('submit', e => { e.preventDefault(); requestPinReset(); });
+  document.getElementById('reset-form').addEventListener('submit', e => { e.preventDefault(); submitPinReset(); });
   initPinInputs('.ac-pin');
 
   // ═══════════════════════════════════════════════════════════════════
@@ -3449,6 +3573,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // -- Auth / Nav --
     if (action === 'switch-tab')        return switchTab(el.dataset.tab);
+    if (action === 'show-forgot-pin')   return showForgotPin();
+    if (action === 'show-sign-in')      return showSignIn();
     if (action === 'do-logout')         return doLogout();
     if (action === 'open-mobile-nav')   return openMobileNav();
     if (action === 'close-mobile-nav')  return closeMobileNav();

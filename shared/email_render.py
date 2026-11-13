@@ -15,8 +15,10 @@ from html import escape
 
 try:
     from shared.deal_parser import apply_bogo_mode
+    from shared import email_layout as L
 except ImportError:                                  # pragma: no cover
     from deal_parser import apply_bogo_mode
+    import email_layout as L
 
 GREEN, GREEN_BG = "#1a6b3c", "#e0efe7"
 AMBER, AMBER_BG = "#8a4106", "#fdf0dc"
@@ -108,93 +110,99 @@ def subject_line(matches: list, today: date | None = None) -> str:
 
 
 def _row(m: dict, bogo_mode: str = "two") -> str:
+    """One deal. v9.11: the name gets the full width and the price sits on its own line under
+    it, so nothing gets squeezed into a narrow column on a phone (no media queries needed)."""
     lines = offer_lines(m, bogo_mode)
     tag_key = deal_tag(m)
     _, fg, bg = TAGS[tag_key]
     label = escape(tag_label(m, tag_key))
     img = m.get("image_url") or ""
     img_cell = (
-        f'<img src="{escape(img)}" width="56" height="56" alt="" '
-        f'style="display:block;width:56px;height:56px;object-fit:contain;border-radius:8px;background:#f4f2ec;">'
+        f'<img src="{escape(img)}" width="64" height="64" alt="" '
+        f'style="display:block;width:64px;height:64px;object-fit:contain;border-radius:8px;background:#f4f2ec;border:0;">'
         if img.startswith("https://") else
-        '<div style="width:56px;height:56px;border-radius:8px;background:#f4f2ec;"></div>'
+        '<div style="width:64px;height:64px;border-radius:8px;background:#f4f2ec;"></div>'
     )
-    clip = ""
+    nw = "white-space:nowrap;"
+    gap = "display:inline-block;margin:0 10px 4px 0;vertical-align:middle;"
+    price = (f'<span style="{nw}font-size:19px;line-height:24px;font-weight:700;color:{lines["color"]};">'
+             f'{escape(lines["headline"])}</span>')
+    if lines["context"]:
+        price += f' <span style="font-size:13px;color:{MUTED};">{escape(lines["context"])}</span>'
+    extra = (f'<div style="font-size:13px;font-weight:700;color:{PURPLE};margin-top:2px;">{escape(lines["extra"])}</div>'
+             if lines["extra"] else "")
+    # Tag, savings, dates, coupon: separate pieces, each kept whole, that wrap as units on a phone
+    meta = (f'<span style="{gap}{nw}font-size:10px;line-height:16px;font-weight:900;letter-spacing:.06em;'
+            f'text-transform:uppercase;padding:2px 7px;border-radius:4px;background:{bg};color:{fg};">{label}</span>')
+    if lines["save"]:
+        meta += f' <span style="{gap}{nw}font-size:13px;font-weight:700;color:{RED};">{escape(lines["save"])}</span>'
+    if _valid(m):
+        meta += (f' <span style="{gap}{nw}font-size:12px;color:#8a8a8a;">'
+                 f'Valid {escape(_valid(m)[0])} – {escape(_valid(m)[1])}</span>')
     if m.get("coupon_id") and (m.get("has_coupon") or tag_key in ("coupon", "stacked")):
         url = f"https://www.publix.com/savings/digital-coupons?cid={escape(str(m['coupon_id']))}"
-        clip = (f'<div style="margin-top:3px;"><a href="{url}" style="font-size:12px;font-weight:700;'
-                f'color:{PURPLE};text-decoration:none;">✂️ Clip coupon →</a></div>')
-    context = f'<span style="font-size:12px;color:{MUTED};">{escape(lines["context"])}</span>' if lines["context"] else ""
-    extra = f'<div style="font-size:12px;font-weight:700;color:{PURPLE};">{escape(lines["extra"])}</div>' if lines["extra"] else ""
-    valid = ""
-    if _valid(m):
-        valid = f'<div style="font-size:11px;color:#999;">Valid {escape(_valid(m)[0])} – {escape(_valid(m)[1])}</div>'
+        meta += (f' <a href="{url}" style="{gap}{nw}font-size:12px;font-weight:700;color:{PURPLE};'
+                 f'text-decoration:none;">✂️ Clip coupon →</a>')
     return f"""
       <tr>
-        <td style="padding:12px 0 12px 24px;width:56px;vertical-align:top;border-bottom:1px solid {LINE};">{img_cell}</td>
-        <td style="padding:12px 14px;vertical-align:top;border-bottom:1px solid {LINE};">
-          <div style="font-size:10px;font-weight:900;letter-spacing:.07em;text-transform:uppercase;color:{GREEN};">{escape(m.get('my_item', ''))}</div>
-          <div style="font-size:14px;font-weight:700;color:{INK};margin:2px 0;">{escape(m.get('deal_name') or m.get('title', ''))}</div>
-          <div><span style="font-size:9.5px;font-weight:900;letter-spacing:.06em;text-transform:uppercase;padding:2px 6px;border-radius:4px;background:{bg};color:{fg};">{label}</span> {context}</div>
-          {valid}{clip}
-        </td>
-        <td style="padding:12px 24px 12px 0;text-align:right;vertical-align:top;white-space:nowrap;border-bottom:1px solid {LINE};">
-          <div style="font-family:'DM Mono',Consolas,monospace;font-size:18px;font-weight:600;color:{lines['color']};">{escape(lines['headline'])}</div>
-          {f'<div style="font-size:12px;font-weight:700;color:{RED};">{escape(lines["save"])}</div>' if lines['save'] else ''}
-          {extra}
+        <td width="64" style="padding:16px 0 16px 24px;width:64px;vertical-align:top;border-bottom:1px solid {LINE};">{img_cell}</td>
+        <td style="padding:14px 24px 16px 16px;vertical-align:top;border-bottom:1px solid {LINE};">
+          <div style="font-size:10px;line-height:14px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:{GREEN};">{escape(m.get('my_item', ''))}</div>
+          <div style="font-size:15px;line-height:21px;font-weight:700;color:{INK};margin:2px 0 4px;">{escape(m.get('deal_name') or m.get('title', ''))}</div>
+          <div style="line-height:24px;">{price}</div>{extra}
+          <div style="margin-top:6px;line-height:20px;">{meta}</div>
         </td>
       </tr>"""
 
 
 def build_html(matches, store_id, store_name, frontend_url="", unsub_url="", account_email="",
                bogo_mode: str = "two") -> str:
+    """v9.11: on the shared brand layout (logo header, cream page, serif heading)."""
     counts: dict = {}
     for m in matches:
         k = deal_tag(m)
         counts[k] = counts.get(k, 0) + 1
     chips = "".join(
-        f'<span style="display:inline-block;margin:0 6px 4px 0;font-size:11px;font-weight:900;letter-spacing:.05em;'
-        f'text-transform:uppercase;padding:3px 8px;border-radius:4px;background:{TAGS[k][2]};color:{TAGS[k][1]};">'
-        f'{counts[k]} {TAGS[k][0]}</span>'
+        f'<span style="display:inline-block;margin:0 6px 6px 0;font-size:11px;font-weight:900;letter-spacing:.05em;'
+        f'text-transform:uppercase;padding:3px 8px;border-radius:4px;white-space:nowrap;'
+        f'background:{TAGS[k][2]};color:{TAGS[k][1]};">{counts[k]} {TAGS[k][0]}</span>'
         for k in TAGS if counts.get(k)
     )
     wk = _week(matches)
     name = store_name or f"Store #{store_id}"
     store = escape(name if name.lower().startswith("publix") else f"Publix · {name}")
-    valid = f" · Valid {escape(wk[0])} – {escape(wk[1])}" if wk else ""
+    valid = (f' <span style="white-space:nowrap">· Valid {escape(wk[0])} – {escape(wk[1])}</span>' if wk else "")
     n = len(matches)
+    heading = f"{n} item{'s' if n != 1 else ''} on your list {'are' if n != 1 else 'is'} on sale"
     rows = "".join(_row(m, bogo_mode) for m in matches[:MAX_ROWS])
     if n > MAX_ROWS:
-        rows += (f'<tr><td colspan="3" style="padding:12px 24px;font-size:13px;color:{MUTED};border-bottom:1px solid {LINE};">'
+        rows += (f'<tr><td colspan="2" style="padding:12px 24px;font-size:13px;color:{MUTED};border-bottom:1px solid {LINE};">'
                  f'…and {n - MAX_ROWS} more on Cartwise.</td></tr>')
-    cta_url = escape(frontend_url or "https://cartwise.shopping")
-    footer_to = f" for {escape(account_email)}" if account_email else ""
-    unsub = (f'<a href="{escape(unsub_url)}" style="color:{MUTED};">Unsubscribe</a> · '
-             if unsub_url else "")
-    return f"""<!doctype html><html><body style="margin:0;padding:24px 0;background:#efece5;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
-<table role="presentation" width="680" cellpadding="0" cellspacing="0" style="max-width:680px;width:100%;background:#ffffff;border-radius:12px;overflow:hidden;font-family:Lato,Arial,sans-serif;color:{INK};">
-  <tr><td colspan="3" style="background:{GREEN};color:#ffffff;padding:22px 24px;">
-    <div style="font-family:'DM Serif Display',Georgia,serif;font-size:24px;">Cartwise</div>
-    <div style="font-size:14px;opacity:.9;margin-top:4px;">{n} item{'s' if n != 1 else ''} on your list {'are' if n != 1 else 'is'} on sale this week</div>
-    <div style="font-size:12px;opacity:.75;margin-top:2px;">{store}{valid}</div>
-  </td></tr>
-  <tr><td colspan="3" style="padding:14px 24px 10px;border-bottom:1px solid {LINE};">{chips}</td></tr>
-  {rows}
-  <tr><td colspan="3" style="padding:20px 24px;background:#f0f7f3;text-align:center;">
-    <a href="{cta_url}" style="display:inline-block;background:{GREEN};color:#ffffff;padding:11px 26px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px;">See all {n} match{'es' if n != 1 else ''}</a>
-    <div style="font-size:11.5px;color:{MUTED};margin-top:12px;line-height:1.5;">You're getting this because weekly alerts are on{footer_to}.<br>{unsub}<a href="{cta_url}" style="color:{MUTED};">Edit my list</a></div>
-  </td></tr>
-</table></td></tr></table></body></html>"""
+    cta_url = frontend_url or "https://www.cartwise.shopping"
+    body = f"""<div style="padding:28px 24px 10px;font-family:{L.SANS};">
+    <h1 class="cw-h1" style="margin:0 0 6px;font-family:{L.SERIF};font-size:26px;line-height:32px;font-weight:400;color:{INK};">{heading}</h1>
+    <div style="font-size:14px;line-height:20px;color:{MUTED};margin:0 0 14px;">{store}{valid}</div>
+    <div>{chips}</div>
+  </div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-family:{L.SANS};color:{INK};border-top:1px solid {LINE};">{rows}</table>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+    <td align="center" bgcolor="{L.MINT}" style="background:{L.MINT};padding:24px 24px 6px;border-radius:0 0 12px 12px;font-family:{L.SANS};">
+      {L.button(f"See all {n} match{'es' if n != 1 else ''}", cta_url).replace('margin:8px 0 24px', 'margin:0 auto 12px')}
+      <div style="font-size:13px;line-height:20px;padding-bottom:18px;"><a href="{escape(cta_url)}" style="color:{GREEN};font-weight:700;text-decoration:none;white-space:nowrap;">Edit my list</a></div>
+    </td></tr></table>"""
+    reason = "Sent because your weekly deal alerts are on."
+    return L.email(title=heading, preheader=f"{heading} at {name}.", heading="", body=body, raw_body=True,
+                   wide=True, unsub_url=unsub_url, reason=reason, site=frontend_url)
 
 
-def build_text(matches, store_name="", unsub_url="", bogo_mode: str = "two") -> str:
+def build_text(matches, store_name="", unsub_url="", bogo_mode: str = "two", frontend_url: str = "") -> str:
     """Plain-text part (improves deliverability; some clients show only this)."""
-    out = [f"Cartwise: {len(matches)} item(s) on your list are on sale at {store_name or 'your Publix'}.", ""]
+    head = f"Cartwise: {len(matches)} item(s) on your list are on sale at {store_name or 'your Publix'}."
+    rows = []
     for m in matches:
         lines = offer_lines(m, bogo_mode)
         bits = [lines["headline"], lines["context"], lines["save"], lines["extra"]]
-        out.append(f"- {m.get('deal_name') or m.get('title', '')}: " + " · ".join(b for b in bits if b))
-    if unsub_url:
-        out += ["", f"Unsubscribe: {unsub_url}"]
-    return "\n".join(out)
+        rows.append(f"- {m.get('deal_name') or m.get('title', '')}: " + " · ".join(b for b in bits if b))
+    site = L.site_url(frontend_url)
+    return L.text(head, "\n".join(rows), f"See all your matches and edit your list:\n{site}",
+                  unsub_url=unsub_url, reason="Sent because your weekly deal alerts are on.", site=frontend_url)

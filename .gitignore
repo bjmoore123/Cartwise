@@ -3,3 +3,6 @@ __pycache__/
 .pytest_cache/
 publix_raw.json
 out.json
+
+# tools/test_emails.sh scratch file
+cw_test_out.json

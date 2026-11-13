@@ -9,7 +9,8 @@ Architecture #7: login() receives explicit event (no __event__ mutation).
 import urllib.parse
 from helpers import ok, err, get_body, cors_headers, set_request_context
 
-from auth     import register, login, logout, change_pin, verify_email, resend_verification
+from auth     import (register, login, logout, change_pin, verify_email, resend_verification,
+                      forgot_pin, reset_pin, check_pin_reset)
 from prefs    import get_prefs, save_prefs, delete_account, unsubscribe, send_test_email, resend_weekly_email
 from deals    import get_deals, search_stores, get_deal_history, get_deal_corpus, get_matches
 from logging_utils import log_frontend_error
@@ -50,6 +51,9 @@ def handler(event, context):
     if path == "/auth/change-pin"          and method == "POST":   return change_pin(event, body)
     if path == "/auth/verify-email"        and method == "GET":    return verify_email(qs)
     if path == "/auth/resend-verification" and method == "POST":   return resend_verification(event, body)
+    if path == "/auth/forgot-pin"          and method == "POST":   return forgot_pin(event, body)
+    if path == "/auth/reset-pin"           and method == "POST":   return reset_pin(event, body)
+    if path == "/auth/check-reset"         and method == "POST":   return check_pin_reset(event, body)
 
     if path == "/user/prefs"       and method == "GET":    return get_prefs(event)
     if path == "/user/prefs"       and method == "PUT":    return save_prefs(event, body)
