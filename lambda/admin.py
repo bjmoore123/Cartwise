@@ -164,6 +164,17 @@ def admin_list_users(event):
                 "sensitivity":    (p.get("matching") or {}).get("sensitivity", "normal"),
                 "email_verified": u.get("email_verified", True),
                 "last_login":     u.get("last_login", ""),
+                # v9.13: how this person uses Cartwise, and verification emails actually sent
+                "last_seen_at":         u.get("last_seen_at", ""),
+                "last_alert_open_at":   u.get("last_alert_open_at", ""),
+                "last_alert_click_at":  u.get("last_alert_click_at", ""),
+                "site_days":            int(u.get("site_days") or 0),
+                "alert_open_days":      int(u.get("alert_open_days") or 0),
+                "verify_emails":        (int(u["verify_emails"]) if u.get("verify_emails") is not None else None),
+                "verify_reminders":     int(u.get("verify_reminders") or 0),
+                "last_verify_email_at": u.get("last_verify_email_at", ""),
+                "email_bounced_at":     u.get("email_bounced_at", ""),
+                "alerts_on":            p.get("email_enabled", True) is not False,
             })
 
         # v9.8.3: users with no last_login yet get it from the auth log, saved once

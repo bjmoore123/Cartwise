@@ -321,6 +321,24 @@ Test plan: `docs/v9.4-test-plan.md`.
 ### v9.9.1: Deploy packaging fix ✅ built 2026-10-22
 - Staging returned 500 on every request after v9.9: `deploy.sh` copied a fixed list of lambda files and `feedback.py` was not on it, so the API crashed on import. Now copies `lambda/*.py`, and deploy runs a smoke test (a preflight request through the real handler) and stops with the error if the API can't start. Tests check packaging and that every local import exists.
 
+### v9.13: How people use Cartwise (email or site), real verification-email counts, attention fixes ✅ built 2026-11-14 — test plan `docs/v9.13-test-plan.md`
+- **Engaged = opened/clicked a weekly deal alert, or used the site.** Either route counts; the report shows which.
+  - Site: `last_seen_at` is now recorded on any signed-in request (helpers.get_session, at most every 30 minutes), because a saved session never signs in again and `last_login` alone undercounted. `site_days` counts distinct days.
+  - Email: every send now writes `em#<Resend id>` with the **account** it was sent for (`shared/mailmeta.record_send`), so an open is credited to the right account even when alerts go to a different notify-to address. Opens/clicks of weekly alerts set `last_alert_open_at` / `last_alert_click_at` and `alert_open_days` (opens of PIN, verify or admin mail don't count).
+  - Daily totals (`day#<Eastern date>`: site_users, alert_openers, kept 400 days) for the per-day charts.
+  - Reports: "How people use Cartwise" (email and site / email only / site only / not seen, 7 and 30 days, and among alert recipients), two per-day charts, "Engaged this week" tile and 12-week trend (replaces "Active this week"). Weekly email gets the same section.
+  - Admin → Users: "Last Active" (latest site use or alert open, with site/email chips for the last 30 days; hover for both dates and day counts) replaces "Last Login".
+- **Verification emails actually sent**, per account (`verify_emails`, `last_verify_email_at`): counted on every send Resend accepts — sign-up, banner resend, admin Resend Verify, reminders. Failed sends don't count (the reminder number is claimed before sending, so it can't tell). Shown as a "Verify Emails" column in Admin → Users ("?" until backfilled).
+  - History before v9.13: `tools/backfill_verify_counts.py` reads the CloudWatch lines the app has printed since March (`Verification email sent -> …`, `Reminder n/4 -> …`). Dry run by default; `--apply` writes; safe to re-run.
+- **Needs-attention fixes**
+  - "Still unverified after 28 days and all reminders" counted account age, not reminders, so it flagged old accounts that had only just had their first reminder. Now: all 4 reminders sent and the last link (7 days) expired. Verification section shows "reminders still going" vs "after all 4 reminders", plus unverified accounts with no verification email on record.
+  - "No deal-fetch run in the last 7 days" would fire every Wednesday before the new run was logged. Now fires when the last run is more than 8 days old.
+  - The other rules (scrape errors, failed emails, spam, bounces, error jump, open feedback, tracking set-up) were checked against their data and are correct; the failed-email one now says where to look.
+- Tests: `tests/test_v913.py` (20).
+
+### Next
+- Watch the engagement numbers for a few weeks. If opens look inflated (Apple Mail loads images automatically), consider turning on Resend click tracking for a stronger signal, or counting a visit that arrives from the weekly email's links.
+
 ### v9.12: Admin metrics, email engagement, weekly admin report ✅ built 2026-11-14 — test plan `docs/v9.12-test-plan.md`
 - **Admin → Reports rewritten** (`GET /admin/metrics`, replaces `/admin/stats`): 8 headline tiles with change vs last week, a "Needs attention" box, 12-week trend (4 small charts), setup funnel, verification, activity, site health, email by type with delivered/opened/clicked/bounced, bounce and complaint list, this week's deals, lists and stores. Kept from the old page: sign-ups by month, users by location, most popular list items.
 - **Metrics** (`lambda/metrics.py`, one definition per number, unit-tested as a pure function):

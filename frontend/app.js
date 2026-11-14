@@ -650,7 +650,7 @@ async function recheckVerified() {
 // ═══════════════════════════════════════════════════════════════════
 // FEEDBACK (v9.9)
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = '9.12';
+const APP_VERSION = '9.13';
 const FB_MAX = 2000;
 function openFeedback() {
   closeMobileNav && closeMobileNav();
@@ -2767,11 +2767,12 @@ function rptBars(list, labelKey, countKey, color){
 }
 // One small chart: a single measure over the weekly snapshots. type: 'bar' (counts per week)
 // or 'line' (a level over time). Hover or focus a week for its value.
-function rptChart(title, points, type, fmt){
+function rptChart(title, points, type, fmt, unit){
+  const lbl = p => unit==='Day' ? rptDay(p.week) : 'Week ending '+rptDay(p.week);
   const pts = points.filter(p => p.v !== null && p.v !== undefined);
   const last = pts.length ? pts[pts.length-1] : null;
   const head = `<div class="rpt-chart-hd"><span class="rpt-chart-title">${escH(title)}</span><span class="rpt-chart-now">${last ? fmt(last.v) : '–'}</span></div>`;
-  if(pts.length < 2) return `<div class="rpt-chart">${head}<div class="rpt-empty">Needs two weekly reports to draw a trend.</div></div>`;
+  if(pts.length < 2) return `<div class="rpt-chart">${head}<div class="rpt-empty">${unit==='Day'?'Needs two days of data.':'Needs two weekly reports to draw a trend.'}</div></div>`;
   const W=300, H=84, padT=10, padB=4, n=pts.length, slot=W/n;
   const lo = type==='bar' ? 0 : Math.min(...pts.map(p=>p.v)), hi = Math.max(...pts.map(p=>p.v));
   const span = (hi-lo) || 1, base = H-padB;
@@ -2786,7 +2787,7 @@ function rptChart(title, points, type, fmt){
     marks = `<polyline class="rpt-line" points="${xy.map(a=>a.join(',')).join(' ')}"/>` +
       xy.map((a,i)=>`<circle class="rpt-dot${i===n-1?' on':''}" data-i="${i}" cx="${a[0]}" cy="${a[1]}" r="4"/>`).join('');
   }
-  const hits = pts.map((p,i)=>`<rect class="rpt-hit" tabindex="0" data-i="${i}" x="${i*slot}" y="0" width="${slot}" height="${H}" data-tip="${escH('Week ending '+rptDay(p.week)+': '+fmt(p.v))}"><title>${escH('Week ending '+rptDay(p.week)+': '+fmt(p.v))}</title></rect>`).join('');
+  const hits = pts.map((p,i)=>`<rect class="rpt-hit" tabindex="0" data-i="${i}" x="${i*slot}" y="0" width="${slot}" height="${H}" data-tip="${escH(lbl(p)+': '+fmt(p.v))}"><title>${escH(lbl(p)+': '+fmt(p.v))}</title></rect>`).join('');
   return `<div class="rpt-chart">${head}
     <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${escH(title)}: ${escH(pts.map(p=>rptDay(p.week)+' '+fmt(p.v)).join(', '))}">
       <line class="rpt-axis" x1="0" x2="${W}" y1="${base}" y2="${base}"/>${marks}${hits}</svg>
@@ -2802,7 +2803,7 @@ function rptRender(m){
     rptTile('Total users', rptN(h.total), rptDelta(h.total, prev.total) || first),
     rptTile('New sign-ups', rptN(h.new), (h.new||g.new_prev) ? rptDelta(h.new, g.new_prev) : 'none last week either'),
     rptTile('Verified', rptP(h.verified_rate), rptDelta(h.verified_rate, prev.verified_rate, ' pts') || `${rptN(h.verified)} of ${rptN(h.total)}`),
-    rptTile('Active this week', rptN(h.active_7d), rptDelta(h.active_7d, prev.active_7d) || `${rptP(act.active_7d_rate)} of users`),
+    rptTile('Engaged this week', rptN(h.engaged_7d), rptDelta(h.engaged_7d, prev.engaged_7d) || `${m.usage.d7.by_email} by email · ${m.usage.d7.by_site} on the site`),
     rptTile('Emails sent', rptN(h.emails_sent), h.emails_failed ? `${h.emails_failed} failed` : (rptDelta(h.emails_sent, prev.emails_sent) || 'none failed')),
     rptTile('Opened', eng.has_opens ? rptP(h.open_rate) : '–', eng.has_opens ? (rptDelta(h.open_rate, prev.open_rate, ' pts') || 'of delivered') : (eng.has_data ? 'open tracking is off' : 'no tracking data yet')),
     rptTile('Users with a match', rptN(h.users_matched), val.last ? `${rptP(val.last.match_rate)} of users with a list` : 'after the next weekly run'),
@@ -2821,7 +2822,7 @@ function rptRender(m){
       ${rptChart('Total users', series('total'), 'line', v=>rptN(v))}
       ${rptChart('New sign-ups per week', series('new'), 'bar', v=>rptN(v))}
       ${rptChart('Verified', series('verified_rate'), 'line', v=>rptP(v))}
-      ${rptChart('Active users per week', series('active_7d'), 'bar', v=>rptN(v))}
+      ${rptChart('Engaged users per week', series('engaged_7d'), 'bar', v=>rptN(v))}
     </div>`;
 
   const maxMonth = Math.max(1, ...g.by_month.map(x=>x.count));
@@ -2839,7 +2840,9 @@ function rptRender(m){
     ver.verified_time_unknown ? ['Verified, time not recorded', rptN(ver.verified_time_unknown), 'verified before v9.12 started recording it'] : null,
     ['Still unverified', rptN(ver.still_unverified)],
     ['Unverified accounts (all)', rptN(g.unverified), pending ? 'reminders: ' + escH(pending) : ''],
-    ['Unverified more than 28 days', rptN(ver.unverified_over_28d)],
+    ['Unverified, reminders still going', rptN(ver.reminders_in_progress), 'one reminder a week, 4 in all'],
+    ['Unverified after all 4 reminders', rptN(ver.reminders_finished), 'the last link has expired'],
+    ver.verify_emails_known ? ['Unverified with no verification email on record', rptN(ver.no_verify_email), 'counts in Admin → Users'] : null,
     ['Unverified and unsubscribed', rptN(ver.unverified_unsubscribed)],
     ver.tracked ? ['Verified with no reminder / after a reminder', `${ver.by_reminder[0].count} / ${ver.tracked-ver.by_reminder[0].count}`, byRem ? 'after ' + escH(byRem) : ''] : null,
   ]);
@@ -2908,9 +2911,28 @@ function rptRender(m){
     ['Stores in use', rptN(ls.stores), `${ls.single_user_stores} with one user · ${ls.no_store} users with no store`],
   ]);
 
+  const U=m.usage, u7=U.d7, u30=U.d30;
+  const seg=(d)=>{ const t=Math.max(1,d.both+d.email_only+d.site_only+d.none);
+    const part=(n,c,l)=>n?`<div class="use-seg ${c}" style="width:${n/t*100}%" title="${escH(l)}: ${n}"></div>`:'';
+    return `<div class="use-bar" role="img" aria-label="Last ${d.days} days: ${d.both} email and site, ${d.email_only} email only, ${d.site_only} site only, ${d.none} not seen">${part(d.both,'b','Email and site')}${part(d.email_only,'e','Email only')}${part(d.site_only,'s','Site only')}${part(d.none,'n','Not seen')}</div>`; };
+  const usageTbl = `<div style="overflow-x:auto"><table class="rpt-tbl"><thead><tr><th></th><th>Last 7 days</th><th>Last 30 days</th></tr></thead><tbody>
+      <tr><td colspan="3" style="padding-top:2px">${seg(u7)}<div class="use-legend"><span style="font-weight:700;color:var(--ink-soft)">Last 7 days:</span><span><i class="b"></i>Email and site</span><span><i class="e"></i>Email only</span><span><i class="s"></i>Site only</span><span><i class="n"></i>Not seen</span></div></td></tr>
+      <tr><td>Email and site</td><td>${rptN(u7.both)}</td><td>${rptN(u30.both)}</td></tr>
+      <tr><td>Email only <span class="rpt-sub">opened or clicked a weekly deal alert</span></td><td>${rptN(u7.email_only)}</td><td>${rptN(u30.email_only)}</td></tr>
+      <tr><td>Site only <span class="rpt-sub">signed in, or visited while signed in</span></td><td>${rptN(u7.site_only)}</td><td>${rptN(u30.site_only)}</td></tr>
+      <tr class="tot"><td>Engaged</td><td>${rptN(u7.engaged)} · ${rptP(u7.engaged_rate)}</td><td>${rptN(u30.engaged)} · ${rptP(u30.engaged_rate)}</td></tr>
+      <tr><td>Not seen</td><td>${rptN(u7.none)}</td><td>${rptN(u30.none)}</td></tr>
+      <tr><td>Alert recipients who engaged <span class="rpt-sub">verified, alerts on, store and list set</span></td><td>${rptN(u7.recipients_engaged)} of ${rptN(u7.recipients)}</td><td>${rptN(u30.recipients_engaged)} of ${rptN(u30.recipients)}</td></tr>
+    </tbody></table></div>`;
+  const daySeries = k => U.daily.map(d=>({week:d.day, v:d[k]}));
+  const usageDaily = U.tracking_since
+    ? `<div class="rpt-charts two">${rptChart('People using the site, per day', daySeries('site_users'), 'bar', v=>rptN(v), 'Day')}${rptChart('People opening a deal alert, per day', daySeries('alert_openers'), 'bar', v=>rptN(v), 'Day')}</div>`
+    : '';
+  const usageNote = `<div class="rpt-note">Either route counts. Site use is recorded on any signed-in visit from v9.13 (before that, only sign-ins). Email use is an opened or clicked weekly deal alert; opens are approximate, because some mail apps load images automatically and others block them.${U.tracking_since?` Daily counts start ${rptDay(U.tracking_since)}.`:''}</div>`;
   const sec = (title, body) => `<div class="rpt-sec"><div class="rpt-sec-title">${title}</div>${body}</div>`;
   return `<div class="rpt-period">Last 7 days: <strong>${period}</strong>${m.env==='staging'?' · staging':''} <span>Compared with the weekly report saved ${m.previous?rptDay(m.previous.week):'(none yet)'}.</span></div>
     <div class="rpt-tiles">${tiles}</div>${attn}
+    ${sec('How people use Cartwise', usageTbl + usageDaily + usageNote)}
     ${sec('Twelve-week trend', trend)}
     <div class="rpt-two">${sec('Setup funnel', funnel + '<div class="rpt-note">Each step counts users who also completed every step above it.</div>')}${sec('Verification', verification)}</div>
     <div class="rpt-two">${sec('Activity', activity)}${sec('Site health', health)}</div>
@@ -3050,9 +3072,34 @@ const ADMIN_USER_SORT={
   store:      u=>u.store_id?Number(u.store_id)||u.store_id:'',
   items:      u=>u.item_count||0,
   joined:     u=>u.created_at||'',
-  last_login: u=>u.last_login||'',
+  last_login: u=>adminLastActive(u).ts||'',
+  verify:     u=>u.email_verified===false ? (u.verify_emails==null ? -1 : u.verify_emails) : '',
 };
-const ADMIN_SORT_FIRST_DIR={email:1,notify:1,store:1,items:-1,joined:-1,last_login:-1};
+const ADMIN_SORT_FIRST_DIR={email:1,notify:1,store:1,items:-1,joined:-1,last_login:-1,verify:1};
+// v9.13: the latest of site use (any signed-in visit, or a sign-in) and opening a weekly alert
+function adminLastActive(u){
+  const pick=(...xs)=>xs.filter(Boolean).sort().pop()||'';
+  const site=pick(u.last_seen_at,u.last_login), mail=pick(u.last_alert_open_at,u.last_alert_click_at);
+  return {ts:pick(site,mail), site, mail};
+}
+function adminUsageHtml(u){
+  const {ts,site,mail}=adminLastActive(u);
+  const cut=Date.now()-30*86400000, on=t=>t&&new Date(t).getTime()>=cut;
+  const chip=(txt,cls,tip)=>`<span class="use-chip ${cls}" title="${escH(tip)}">${txt}</span>`;
+  const fmt=t=>t?new Date(t).toLocaleString([], {dateStyle:'medium', timeStyle:'short'}):'never';
+  const tip=`Site (signed in or visited): ${fmt(site)}${u.site_days?` · ${u.site_days} day${u.site_days===1?'':'s'}`:''}\nOpened a weekly alert: ${fmt(mail)}${u.alert_open_days?` · ${u.alert_open_days} day${u.alert_open_days===1?'':'s'}`:''}`;
+  const chips=(on(site)?chip('site','s',tip):'')+(on(mail)?chip('email','e',tip):'');
+  if(!ts) return `<span style="color:var(--ink-soft)" title="${escH(tip)}">—</span>`;
+  return `${adminLastLoginHtml(ts)}<div class="use-chips" title="${escH(tip)}">${chips||'<span class="use-none">none in 30 days</span>'}</div>`;
+}
+function adminVerifyHtml(u){
+  if(u.email_verified!==false) return '<span style="color:var(--ink-soft);font-size:11px">—</span>';
+  const n=u.verify_emails, r=u.verify_reminders||0;
+  const last=u.last_verify_email_at?new Date(u.last_verify_email_at).toLocaleDateString([], {month:'short',day:'numeric'}):'';
+  const tip=n==null?'Not counted yet: run tools/backfill_verify_counts.py once':`${n} verification email${n===1?'':'s'} accepted for delivery (sign-up, resends and reminders)${r?`; ${r} of 4 reminders sent`:''}${last?`; last ${last}`:''}`;
+  const val=n==null?'?':String(n);
+  return `<span class="vcount${n===0?' zero':''}" title="${escH(tip)}">${val}</span><br><span style="font-size:11px;color:var(--ink-soft)">${r?`${r}/4 reminders`:''}${u.email_bounced_at?' · <span style="color:var(--red)">bounced</span>':''}</span>`;
+}
 function adminSortUsers(key){
   if(!ADMIN_USER_SORT[key]) return;
   _adminUserSort = _adminUserSort.key===key ? {key,dir:-_adminUserSort.dir} : {key,dir:ADMIN_SORT_FIRST_DIR[key]||1};
@@ -3098,7 +3145,7 @@ async function adminLoadUsers(){
     document.getElementById('admin-user-ct').textContent=`(${_allAdminUsers.length})`;
     document.getElementById('admin-user-search').value='';
     adminRenderUsers();
-  }catch(e){document.getElementById('admin-tbody').innerHTML=`<tr><td colspan="7" style="color:var(--red);font-size:13px">Error: ${escH(e.message)}</td></tr>`;}
+  }catch(e){document.getElementById('admin-tbody').innerHTML=`<tr><td colspan="8" style="color:var(--red);font-size:13px">Error: ${escH(e.message)}</td></tr>`;}
 }
 
 function adminFilterUsers(){
@@ -3139,8 +3186,9 @@ function adminRenderUsers(){
         <td><span style="font-size:12px">${escH(u.notify_email||u.email)}</span><br>${vBadge}</td>
         <td>${u.store_id?`<span style="font-family:var(--mono);font-size:12px">#${escH(u.store_id)}</span><br><span style="font-size:11px;color:var(--ink-soft)">${escH(u.store_name||'')}</span>`:'<span style="color:var(--ink-soft);font-size:12px">—</span>'}</td>
         <td><button class="abn a" data-email="${escH(u.email)}" data-items="${escH(JSON.stringify(u.items))}" data-action="admin-show-items">${u.item_count} item${u.item_count!==1?'s':''}</button></td>
+        <td style="text-align:center">${adminVerifyHtml(u)}</td>
         <td style="font-size:11px;color:var(--ink-soft)">${escH(u.created_at?.slice(0,10)||'—')}</td>
-        <td style="font-size:11px;white-space:nowrap">${adminLastLoginHtml(u.last_login)}</td>
+        <td style="font-size:11px;white-space:nowrap">${adminUsageHtml(u)}</td>
         <td><div style="display:flex;gap:5px;flex-wrap:wrap">
           <button class="abn g" data-email="${escH(u.email)}" data-action="admin-show-pin">Reset PIN</button>
           <button class="abn a" data-email="${escH(u.email)}" data-action="admin-show-email">Reset Email</button>
@@ -3148,7 +3196,7 @@ function adminRenderUsers(){
           <button class="abn r" data-email="${escH(u.email)}" data-action="admin-del-user">Delete</button>
         </div></td>
       </tr>`}).join('')
-    : `<tr><td colspan="7" style="color:var(--ink-soft);font-size:13px;padding:16px">${q?'No users match your search.':'No users found.'}</td></tr>`;
+    : `<tr><td colspan="8" style="color:var(--ink-soft);font-size:13px;padding:16px">${q?'No users match your search.':'No users found.'}</td></tr>`;
 
   // Pagination controls
   const pages=document.getElementById('admin-user-pages');

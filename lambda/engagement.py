@@ -23,6 +23,7 @@ from datetime import datetime, timezone, timedelta
 from helpers import ok, users_table, dynamodb, _to_py, DEFAULT_PREFS
 from logging_utils import _log_app_event
 from shared import mailmeta
+from shared import usage
 
 metrics_tbl = dynamodb.Table(os.environ.get("METRICS_TABLE", "cartwise-metrics"))
 
@@ -84,11 +85,19 @@ def record_event(body: dict):
         vals[":bt"] = str(b.get("type") or b.get("subType") or "")[:40] if isinstance(b, dict) else ""
     expr = "SET " + ", ".join(sets) + (" ADD " + ", ".join(adds) if adds else "")
     try:
-        metrics_tbl.update_item(Key={"pk": f"em#{email_id}"}, UpdateExpression=expr,
-                                ExpressionAttributeNames=names, ExpressionAttributeValues=vals)
+        row = metrics_tbl.update_item(Key={"pk": f"em#{email_id}"}, UpdateExpression=expr,
+                                      ExpressionAttributeNames=names, ExpressionAttributeValues=vals,
+                                      ReturnValues="ALL_NEW").get("Attributes") or {}
     except Exception as e:
         print(f"[CW] engagement: could not record {evt}: {e}")
         return ok({"recorded": False})
+
+    # v9.13: an opened / clicked weekly alert counts as using Cartwise by email. The account comes
+    # from the row written at send time; mail sent before v9.13 falls back to the To address.
+    if evt in ("email.opened", "email.clicked") and row.get("kind", kind) in mailmeta.ENGAGEMENT_KINDS:
+        account = str(row.get("account") or to or "").lower()
+        if account and account != "(admin)":
+            usage.credit_alert(users_table, metrics_tbl, account, evt, when)
 
     if evt == "email.complained":
         _on_complaint(to, kind)

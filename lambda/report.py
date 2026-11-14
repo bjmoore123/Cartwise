@@ -19,6 +19,7 @@ from helpers import ok, err
 from logging_utils import _log_app_event
 from shared import email_layout as L
 from shared import mailmeta
+from shared import usage
 import metrics
 
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "")
@@ -27,20 +28,9 @@ RED, AMBER_TXT = "#b3261e", "#8a4106"
 
 # ── Small formatting helpers ─────────────────────────────────────────────────
 
-def _nth_sunday(year: int, month: int, n: int) -> int:
-    """Day of the month of the n-th Sunday."""
-    first = datetime(year, month, 1).weekday()            # Monday = 0 ... Sunday = 6
-    return 1 + (6 - first) % 7 + 7 * (n - 1)
-
-
 def _local(dt):
-    """UTC -> US Eastern, without the time zone database (it isn't installed on Windows, and
-    isn't guaranteed on Lambda). Daylight time runs from 2 AM on the second Sunday of March
-    to 2 AM on the first Sunday of November, i.e. 07:00 UTC to 06:00 UTC on those days."""
-    u = dt.astimezone(timezone.utc)
-    start = datetime(u.year, 3, _nth_sunday(u.year, 3, 2), 7, tzinfo=timezone.utc)
-    end = datetime(u.year, 11, _nth_sunday(u.year, 11, 1), 6, tzinfo=timezone.utc)
-    return u - timedelta(hours=4 if start <= u < end else 5)
+    """UTC -> US Eastern (shared/usage.py does the daylight-time rule; no tz database needed)."""
+    return usage.eastern(dt)
 
 
 def _day(iso: str) -> str:
@@ -154,6 +144,23 @@ def _attention(items) -> str:
             f'<table role="presentation" cellpadding="0" cellspacing="0" border="0">{lis}</table></td></tr></table>')
 
 
+def _usage_html(u: dict) -> str:
+    d7, d30 = u["d7"], u["d30"]
+    rows = _grid(["", "7 days", "30 days"], [
+        ["Email and site", _num(d7["both"]), _num(d30["both"])],
+        ["Email only (opened a deal alert)", _num(d7["email_only"]), _num(d30["email_only"])],
+        ["Site only (signed in or visited)", _num(d7["site_only"]), _num(d30["site_only"])],
+        ["<strong>Engaged</strong>", f'<strong>{_num(d7["engaged"])}</strong> · {_num(d7["engaged_rate"], "%")}',
+         f'<strong>{_num(d30["engaged"])}</strong> · {_num(d30["engaged_rate"], "%")}'],
+        ["Not seen", _num(d7["none"]), _num(d30["none"])],
+        ["Alert recipients engaged", f'{d7["recipients_engaged"]} of {d7["recipients"]}',
+         f'{d30["recipients_engaged"]} of {d30["recipients"]}'],
+    ])
+    note = L.p("Engaged = opened a weekly deal alert or used the site. Opens are approximate: some mail "
+               "apps load images automatically, and others block them.", small=True, muted=True, last=True)
+    return rows + note.replace("margin:0 0 0px", "margin:8px 0 0")
+
+
 # ── The email ────────────────────────────────────────────────────────────────
 
 def subject_line(m: dict) -> str:
@@ -179,8 +186,9 @@ def build_html(m: dict, site: str = "") -> str:
              + _tile("Verified", _num(h["verified_rate"], "%"),
                      delta(h["verified_rate"], prev.get("verified_rate"), " pts")
                      or f'{h["verified"]:,} of {h["total"]:,}')
-             + _tile("Active this week", _num(h["active_7d"]),
-                     delta(h["active_7d"], prev.get("active_7d")) or f'{_num(act["active_7d_rate"], "%")} of users',
+             + _tile("Engaged this week", _num(h["engaged_7d"]),
+                     delta(h["engaged_7d"], prev.get("engaged_7d"))
+                     or f'{m["usage"]["d7"]["by_email"]} by email · {m["usage"]["d7"]["by_site"]} on the site',
                      left=False)
              + "</tr></table>")
 
@@ -189,7 +197,8 @@ def build_html(m: dict, site: str = "") -> str:
         ("Verified within 24 hours", f'{ver["within_24h"]} · {_num(ver["within_24h_rate"], "%")}'),
         ("Verified within 7 days", f'{ver["within_24h"] + ver["within_7d"]} · {_num(ver["within_7d_rate"], "%")}'),
         ("Still unverified", _num(ver["still_unverified"])),
-        ("Unverified more than 28 days (all accounts)", _num(ver["unverified_over_28d"])),
+        ("Unverified, reminders still going", _num(ver["reminders_in_progress"])),
+        ("Unverified after all 4 reminders", _num(ver["reminders_finished"])),
     ]
     if ver["tracked"]:
         after = ", ".join(f'reminder {r["after"]}: {r["count"]}' for r in ver["by_reminder"] if r["after"] and r["count"])
@@ -262,6 +271,7 @@ def build_html(m: dict, site: str = "") -> str:
             f'<div style="font-family:{L.SANS};font-size:14px;line-height:20px;color:{L.MUTED};margin:0 0 16px">'
             f'{escape(period)}{" · staging" if m.get("env") == "staging" else ""}</div>'
             + tiles + _attention(m["attention"])
+            + _h2("How people use Cartwise") + _usage_html(m["usage"])
             + _h2("Setup funnel") + _funnel(m["funnel"])
             + _h2("Verification") + _rows(verify_rows)
             + _h2("Email") + email_html
@@ -278,9 +288,12 @@ def build_text(m: dict, site: str = "") -> str:
     h, act, em, eng, val, hl, ver = (m["headline"], m["activity"], m["email"], m["engagement"],
                                      m["value"], m["health"], m["verification"])
     period = f'{_day(m["window"]["start"])} – {_day(m["window"]["end"])}'
+    u7, u30 = m["usage"]["d7"], m["usage"]["d30"]
     lines = [f"Total users: {h['total']}   New sign-ups: {h['new']} (previous week {m['growth']['new_prev']})",
              f"Verified: {_num(h['verified_rate'], '%')} ({h['verified']} of {h['total']})   "
-             f"Active this week: {h['active_7d']}"]
+             f"Engaged this week: {h['engaged_7d']}"]
+    usage_txt = (f"How people use Cartwise (last 30 days): {u30['both']} email and site, {u30['email_only']} email "
+                 f"only, {u30['site_only']} site only, {u30['none']} not seen. Last 7 days: {u7['engaged']} engaged.")
     attention = ("Needs attention:\n" + "\n".join(f"- {a['text']}" for a in m["attention"])
                  if m["attention"] else "Nothing needs attention this week.")
     funnel = "Setup funnel:\n" + "\n".join(f"- {s['step']}: {s['count']} ({_num(s['pct'], '%')})" for s in m["funnel"])
@@ -299,7 +312,7 @@ def build_text(m: dict, site: str = "") -> str:
     health = (f"Health: {hl['scrape_runs']} deal-fetch runs ({hl['scrape_runs_with_errors']} with errors), "
               f"{hl['errors']} errors logged, {hl['feedback_open']} feedback open. "
               f"Sign-ins {act['sign_ins']}, failed {act['failed_sign_ins']}, lockouts {act['lockouts']}.")
-    return L.text(f"Cartwise weekly report, {period}", "\n".join(lines), attention, funnel, verify, email,
+    return L.text(f"Cartwise weekly report, {period}", "\n".join(lines), attention, usage_txt, funnel, verify, email,
                   deals, health, f"Full report:\n{L.site_url(site)}/#admin",
                   reason="Admin report. Sent every Thursday morning.", site=site)
 
@@ -328,9 +341,10 @@ def send_report(scheduled: bool = False, now=None) -> dict:
     try:
         import resend as _resend
         _resend.api_key = key
-        _resend.Emails.send({"from": sender, "to": [to], "subject": subject,
-                             "html": build_html(m, FRONTEND_URL), "text": build_text(m, FRONTEND_URL),
-                             "tags": mailmeta.tags("admin_report")})
+        resp = _resend.Emails.send({"from": sender, "to": [to], "subject": subject,
+                                    "html": build_html(m, FRONTEND_URL), "text": build_text(m, FRONTEND_URL),
+                                    "tags": mailmeta.tags("admin_report")})
+        mailmeta.record_send(metrics.metrics_tbl, resp, "admin_report", "(admin)", "(admin)")
         out["sent"] = True
         _log_app_event("email", "info", ok=True, to="(admin)", kind="admin_report", subject=subject[:120],
                        trigger="scheduled" if scheduled else "manual")

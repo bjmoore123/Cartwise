@@ -45,7 +45,8 @@ def sample():
         user("d@x.com", 3, verified_at=iso(3, -2), verified_after_reminders=0, login=2),  # new, verified in 2h
         user("e@x.com", 20, verified_at=iso(12), verified_after_reminders=1, items=()),   # verified day 8, no list
         user("f@x.com", 5, verified=False, store=False, items=()),                        # new, unverified
-        user("g@x.com", 40, verified=False, store=False, items=(), verify_reminders=4),   # stale unverified
+        user("g@x.com", 40, verified=False, store=False, items=(), verify_reminders=4,
+             last_verify_reminder_at=iso(10)),                                            # all 4 reminders, link expired
         user("h@x.com", 10, enabled=False, unsubscribed_at=iso(2), verified_at=iso(9), verified_after_reminders=0),
         {"email": "__meta__", "deleted_count": 6},
     ]
@@ -102,7 +103,7 @@ class TestMetrics:
         assert (v["within_24h"], v["within_7d"], v["later"], v["still_unverified"]) == (2, 0, 1, 1)
         assert v["within_24h_rate"] == 50
         assert [r["count"] for r in v["by_reminder"]] == [2, 1, 0, 0, 0] and v["tracked"] == 3
-        assert v["unverified_over_28d"] == 1
+        assert v["reminders_finished"] == 1 and v["reminders_in_progress"] == 1
         assert [r["count"] for r in v["reminders_pending"]] == [1, 0, 0, 0, 1]
 
     def test_activity(self, m):
@@ -160,7 +161,7 @@ class TestMetrics:
 
     def test_attention_lists_only_real_problems(self, m, M):
         texts = " | ".join(a["text"] for a in m["attention"])
-        assert "failed to send" in texts and "bounced" in texts and "feedback" in texts and "28 days" in texts
+        assert "failed to send" in texts and "bounced" in texts and "feedback" in texts and "all 4 reminders" in texts
         assert "No deal-fetch run" not in texts
         quiet = M.build(NOW, [user("a@x.com", 100, login=1)], [], [],
                         [{"started_at": iso(1), "errors": []}], [], [])
@@ -418,7 +419,7 @@ class TestReportsPage:
         chart = self.js[self.js.index("function rptChart("):self.js.index("function rptRender(m){")]
         assert 'role="img"' in chart and "aria-label" in chart and "data-tip" in chart and "<title>" in chart
         assert "rpt-hit" in chart and 'tabindex="0"' in chart          # keyboard reachable
-        assert self.js.count("rptChart('") == 4                        # four small charts, one measure each
+        assert self.js.count("rptChart('") == 6                        # 4 weekly + 2 daily (v9.13), one measure each
 
     def test_admin_row_and_accurate_tracking_note(self):
         assert "Admin emails" in self.js and "not in the totals" in self.js

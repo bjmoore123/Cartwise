@@ -26,6 +26,7 @@ from datetime import datetime, timezone, timedelta
 from helpers import (ok, err, _to_py, _scan_all, users_table, auth_logs_tbl, app_logs_tbl,
                      scrape_logs_tbl, dynamodb)
 from shared import mailmeta
+from shared import usage as usage_mod
 
 metrics_tbl = dynamodb.Table(os.environ.get("METRICS_TABLE", "cartwise-metrics"))
 feedback_tbl = dynamodb.Table(os.environ.get("FEEDBACK_TABLE", "cartwise-feedback"))
@@ -34,6 +35,7 @@ WINDOW_DAYS = 7
 ADMIN_KINDS = ("admin_report", "feedback")          # mail to the admin, left out of user-facing totals
 FUNNEL_STEPS = ("Signed up", "Verified email", "Chose a store", "Started a list", "Alerts on")
 SNAP_FIELDS = ("total", "new", "verified", "unverified", "verified_rate", "active_7d", "active_30d",
+               "engaged_7d", "engaged_30d", "engaged_email_30d", "engaged_site_30d",
                "emails_sent", "emails_failed", "unsubscribed_total", "delivered_rate", "open_rate",
                "click_rate", "bounced", "users_matched", "match_rate", "feedback_open", "errors")
 
@@ -63,6 +65,18 @@ def _in(d, start, end) -> bool:
 
 def _verified(u) -> bool:
     return u.get("email_verified") is not False
+
+
+def _reminders_finished(u, now) -> bool:
+    if int(u.get("verify_reminders") or 0) < 4:
+        return False
+    last = _dt(u.get("last_verify_reminder_at"))
+    return bool(last and now - last >= timedelta(days=7))
+
+
+def _latest(*values):
+    ds = [d for d in (_dt(v) for v in values) if d]
+    return max(ds) if ds else None
 
 
 def _city(prefs: dict) -> str:
@@ -124,8 +138,15 @@ def build(now, users, auth_logs, app_logs, scrape_logs, feedback, metric_rows,
         "within_7d_rate": _pct(c["within_24h"] + c["within_7d"], len(cohort)),
         "by_reminder": [{"after": n, "count": by_reminder.get(n, 0)} for n in range(5)],
         "tracked": sum(by_reminder.values()),
-        "unverified_over_28d": sum(1 for u in unverified
-                                   if created[u["email"]] and created[u["email"]] < now - timedelta(days=28)),
+        # v9.13: "finished" = all 4 reminders sent AND the last link (7 days) has expired. Account
+        # age alone is wrong: accounts older than 28 days only started getting reminders in v9.11.
+        "reminders_finished": sum(1 for u in unverified if _reminders_finished(u, now)),
+        "reminders_in_progress": sum(1 for u in unverified
+                                     if not _reminders_finished(u, now)
+                                     and (u.get("prefs") or {}).get("email_enabled") is not False),
+        "verify_emails_known": sum(1 for u in unverified if u.get("verify_emails") is not None),
+        "no_verify_email": sum(1 for u in unverified
+                               if u.get("verify_emails") is not None and int(u.get("verify_emails") or 0) == 0),
         "reminders_pending": [{"sent": n, "count": sum(1 for u in unverified
                                                        if min(4, int(u.get("verify_reminders") or 0)) == n)}
                               for n in range(5)],
@@ -162,6 +183,49 @@ def build(now, users, auth_logs, app_logs, scrape_logs, feedback, metric_rows,
         "sign_ins": sum(1 for a in week_auth if a.get("success") and not a.get("reason")),
         "failed_sign_ins": reasons["bad_pin"], "lockouts": reasons["locked_out"],
         "pin_resets_requested": reasons["pin_reset_requested"], "pin_resets_done": reasons["pin_reset"],
+    }
+
+    # ── How people use Cartwise: site, email, or both ─────────────────────────
+    # site  = last_seen_at (any signed-in visit, v9.13+) or last_login (password sign-in)
+    # email = opened or clicked a weekly deal alert (Resend events, v9.12+)
+    recipients = set()
+    for u in users:
+        p = u.get("prefs") or {}
+        if _verified(u) and p.get("store_id") and p.get("items") and p.get("email_enabled", True) is not False:
+            recipients.add(u["email"])
+    site_last = {u["email"]: _latest(u.get("last_seen_at"), u.get("last_login")) for u in users}
+    mail_last = {u["email"]: _latest(u.get("last_alert_open_at"), u.get("last_alert_click_at")) for u in users}
+    def _split(n_days):
+        cut = now - timedelta(days=n_days)
+        c = Counter()
+        rc = Counter()
+        for e in site_last:
+            s_on = bool(site_last[e] and site_last[e] >= cut)
+            m_on = bool(mail_last[e] and mail_last[e] >= cut)
+            key = "both" if s_on and m_on else "site_only" if s_on else "email_only" if m_on else "none"
+            c[key] += 1
+            if e in recipients:
+                rc[key] += 1
+        engaged = c["both"] + c["site_only"] + c["email_only"]
+        r_eng = rc["both"] + rc["site_only"] + rc["email_only"]
+        return {"days": n_days, "both": c["both"], "site_only": c["site_only"], "email_only": c["email_only"],
+                "none": c["none"], "engaged": engaged, "engaged_rate": _pct(engaged, total),
+                "by_email": c["both"] + c["email_only"], "by_site": c["both"] + c["site_only"],
+                "recipients": len(recipients), "recipients_engaged": r_eng,
+                "recipients_rate": _pct(r_eng, len(recipients))}
+    days_rows = {r["pk"][4:]: r for r in metric_rows if str(r.get("pk", "")).startswith("day#")}
+    first_day = min(days_rows) if days_rows else None
+    daily = []
+    for i in range(29, -1, -1):
+        d = (usage_mod.eastern(now) - timedelta(days=i)).strftime("%Y-%m-%d")
+        r = days_rows.get(d)
+        tracked = bool(first_day and d >= first_day)
+        daily.append({"day": d, "site_users": int(r.get("site_users") or 0) if r else (0 if tracked else None),
+                      "alert_openers": int(r.get("alert_openers") or 0) if r else (0 if tracked else None)})
+    usage = {
+        "d7": _split(7), "d30": _split(30), "daily": daily, "tracking_since": first_day,
+        "never": sum(1 for e in site_last if not site_last[e] and not mail_last[e]),
+        "site_ever": sum(1 for v in site_last.values() if v), "email_ever": sum(1 for v in mail_last.values() if v),
     }
 
     # ── Email sent (app log) ─────────────────────────────────────────────────
@@ -291,6 +355,8 @@ def build(now, users, auth_logs, app_logs, scrape_logs, feedback, metric_rows,
         "scrape_runs": len(week_scrapes),
         "scrape_runs_with_errors": sum(1 for s in week_scrapes if s.get("errors")),
         "last_scrape": _scrape(all_scrapes[0]) if all_scrapes else None,
+        "last_scrape_days": (round((now - _dt(all_scrapes[0].get("started_at"))).total_seconds() / 86400, 1)
+                             if all_scrapes and _dt(all_scrapes[0].get("started_at")) else None),
         "errors": sum(errors_by_source.values()), "errors_prev": errors_prev,
         "errors_by_source": [{"source": k, "count": v} for k, v in errors_by_source.most_common()],
         "feedback_new": len(week_fb), "feedback_open": sum(1 for f in feedback if f.get("status") == "new"),
@@ -309,6 +375,8 @@ def build(now, users, auth_logs, app_logs, scrape_logs, feedback, metric_rows,
         "total": total, "new": new, "verified": verified_n, "unverified": total - verified_n,
         "verified_rate": growth["verified_rate"],
         "active_7d": activity["active_7d"], "active_30d": activity["active_30d"],
+        "engaged_7d": usage["d7"]["engaged"], "engaged_30d": usage["d30"]["engaged"],
+        "engaged_email_30d": usage["d30"]["by_email"], "engaged_site_30d": usage["d30"]["by_site"],
         "emails_sent": email["sent"], "emails_failed": email["failed"],
         "unsubscribed_total": unsubscribed_total,
         "delivered_rate": engagement["delivered_rate"], "open_rate": engagement["open_rate"],
@@ -323,7 +391,7 @@ def build(now, users, auth_logs, app_logs, scrape_logs, feedback, metric_rows,
         "window": {"days": days, "start": start.isoformat(), "end": now.isoformat()},
         "env": mailmeta.env_name(),
         "headline": headline, "previous": previous,
-        "growth": growth, "verification": verification, "funnel": funnel, "activity": activity,
+        "growth": growth, "verification": verification, "funnel": funnel, "activity": activity, "usage": usage,
         "email": email, "engagement": engagement, "value": value, "lists": lists, "health": health,
         "trend": trend,
     }
@@ -340,10 +408,16 @@ def _attention(m: dict, now) -> list:
     if h["scrape_runs_with_errors"]:
         add("bad", f'{h["scrape_runs_with_errors"]} of {h["scrape_runs"]} deal-fetch runs had errors '
                    f'(Admin → Logging → scrape log).')
-    if not h["scrape_runs"]:
-        add("bad", "No deal-fetch run in the last 7 days. The Wednesday job may not be running.")
+    # v9.13: by the age of the last run. "No run in the 7-day window" fired falsely every Wednesday
+    # just before the new run was logged (last week's run is then exactly 7 days old).
+    if h["last_scrape_days"] is None:
+        add("bad", "No deal-fetch run has been recorded. The Wednesday job may not be running.")
+    elif h["last_scrape_days"] > 8:
+        add("bad", f'The last deal-fetch run was {h["last_scrape_days"]:.0f} days ago. '
+                   f'The Wednesday job may not be running.')
     if e["failed"]:
-        add("bad", f'{e["failed"]} email{"s" if e["failed"] != 1 else ""} failed to send.')
+        add("bad", f'{e["failed"]} email{"s" if e["failed"] != 1 else ""} failed to send '
+                   f'(Admin → Logging → email).')
     elif v["last"] and v["last"]["send_failed"]:
         add("bad", f'{v["last"]["send_failed"]} weekly alert(s) failed to send in the last run.')
     if e["spam_complaints"] or g["complained"]:
@@ -357,9 +431,10 @@ def _attention(m: dict, now) -> list:
     if h["feedback_open"]:
         add("warn", f'{h["feedback_open"]} feedback message{"s" if h["feedback_open"] != 1 else ""} '
                     f'waiting in Admin → Feedback.')
-    if m["verification"]["unverified_over_28d"]:
-        n = m["verification"]["unverified_over_28d"]
-        add("info", f'{n} account{"s" if n != 1 else ""} still unverified after 28 days and all reminders.')
+    if m["verification"]["reminders_finished"]:
+        n = m["verification"]["reminders_finished"]
+        add("info", f'{n} account{"s" if n != 1 else ""} still unverified after all 4 reminders '
+                    f'(the last link has expired).')
     if not g["tracking_seen"] and e["sent"]:
         add("info", "No delivery or open data yet. Turn on the email events in Resend (see the v9.12 test plan).")
     return out

@@ -213,7 +213,10 @@ def send_test_email(event):
         if hdrs:
             msg["headers"] = hdrs
         msg["tags"] = mailmeta.tags("test")
-        _resend.Emails.send(msg)
+        resp = _resend.Emails.send(msg)
+        from helpers import dynamodb as _ddb
+        mailmeta.record_send(_ddb.Table(os.environ.get("METRICS_TABLE", "cartwise-metrics")), resp, "test",
+                             notify_email, sess["email"])
         _log_app_event("email", "info", ok=True,
                        to=notify_email, subject="test-email", kind="test",
                        trigger="manual", user=sess["email"])

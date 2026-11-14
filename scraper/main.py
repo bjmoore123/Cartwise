@@ -348,7 +348,8 @@ def send_alert(notify_email: str, matches: list[dict], store_id: str, store_name
         }
     msg["tags"] = mailmeta.tags("weekly")
     try:
-        resend.Emails.send(msg)
+        resp = resend.Emails.send(msg)
+        mailmeta.record_send(metrics_tbl, resp, "weekly", notify_email, account_email)
         _log_email(notify_email, subject, ok=True, user=account_email)
         print(f"   Email sent → {notify_email}")
     except Exception as exc:
@@ -523,6 +524,18 @@ def _reminder_due(u: dict, now: datetime):
     return sent + 1
 
 
+def _count_verify_email(email: str, now: datetime) -> None:
+    """v9.13: one more verification email actually accepted by Resend (shown in Admin → Users).
+    The reminder number above is claimed before sending, so it can't tell a failed send apart."""
+    try:
+        users_table.update_item(
+            Key={"email": email}, UpdateExpression="ADD verify_emails :one SET last_verify_email_at = :now",
+            ConditionExpression="attribute_exists(email)",
+            ExpressionAttributeValues={":one": 1, ":now": now.isoformat()})
+    except Exception as e:
+        print(f"  WARNING: verify email count not saved for {email}: {e}")
+
+
 def send_verify_reminders(now: datetime | None = None) -> dict:
     """Daily job: email reminders to unverified accounts that are due one."""
     import urllib.parse
@@ -565,8 +578,10 @@ def send_verify_reminders(now: datetime | None = None) -> dict:
             msg["headers"] = _unsub.headers(unsub_url)
         msg["tags"] = mailmeta.tags("reminder")
         try:
-            resend.Emails.send(msg)
+            resp = resend.Emails.send(msg)
             sent.append(email)
+            mailmeta.record_send(metrics_tbl, resp, "reminder", email, email)
+            _count_verify_email(email, now)
             _log_email(email, subject, True, user=email, kind="reminder",
                        message=f"verification reminder {n} of {VERIFY_REMINDERS_MAX}")
             print(f"  Reminder {n}/{VERIFY_REMINDERS_MAX} -> {email}")

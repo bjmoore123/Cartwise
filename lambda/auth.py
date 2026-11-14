@@ -32,6 +32,11 @@ from logging_utils import _log_app_event
 VERIFY_TOKEN_TTL_HOURS = 48
 
 
+def _metrics_tbl():
+    from helpers import dynamodb
+    return dynamodb.Table(os.environ.get("METRICS_TABLE", "cartwise-metrics"))
+
+
 def _unsub_link(email: str) -> str:
     import helpers
     return _unsub.url(API_URL, helpers.UNSUB_SECRET, email)
@@ -79,8 +84,16 @@ def _send_verification_email(email: str, token: str) -> None:
         if hdrs:
             msg["headers"] = hdrs
         msg["tags"] = mailmeta.tags("verify")
-        _resend.Emails.send(msg)
-        print(f"[CW] Verification email sent -> {email}")
+        resp = _resend.Emails.send(msg)
+        print(f"[CW] Verification email sent -> {email}")      # tools/backfill_verify_counts.py reads this line
+        mailmeta.record_send(_metrics_tbl(), resp, "verify", email, email)
+        try:
+            users_table.update_item(          # v9.13: real verification emails sent (Admin → Users)
+                Key={"email": email}, UpdateExpression="ADD verify_emails :one SET last_verify_email_at = :now",
+                ConditionExpression="attribute_exists(email)",
+                ExpressionAttributeValues={":one": 1, ":now": datetime.now(timezone.utc).isoformat()})
+        except Exception as ce:
+            print(f"[CW] verify email count not saved: {ce}")
         _log_app_event("email", "info", ok=True, to=email, user=email, kind="verify", subject=msg["subject"])
     except Exception as e:
         print(f"[CW] _send_verification_email failed: {e}")
@@ -405,7 +418,8 @@ def _send_email(to: str, subject: str, html: str, text: str, headers: dict | Non
         if headers:
             msg["headers"] = headers
         msg["tags"] = mailmeta.tags(kind)
-        _resend.Emails.send(msg)
+        resp = _resend.Emails.send(msg)
+        mailmeta.record_send(_metrics_tbl(), resp, kind, to, to)
         _log_app_event("email", "info", ok=True, to=to, user=to, kind=kind, subject=subject)
         return True
     except Exception as e:

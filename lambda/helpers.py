@@ -321,6 +321,10 @@ def get_session(event):
             session_created  = int(item.get("session_created_at", 0))
             if valid_after and session_created and session_created < valid_after:
                 return None
+            # v9.13: record that this person used the site (a saved session never signs in again,
+            # so last_login alone undercounts). Throttled; never raises.
+            from shared import usage
+            usage.touch_site(users_table, dynamodb.Table(os.environ.get("METRICS_TABLE", "cartwise-metrics")), user)
         except Exception:
             pass  # a DynamoDB hiccup must not log everyone out
     return item
