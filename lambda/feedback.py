@@ -137,8 +137,10 @@ def _notify(item: dict) -> bool:
     try:
         import resend as _resend
         _resend.api_key = key
+        from shared import mailmeta
         _resend.Emails.send({"from": sender, "to": [to], "reply_to": [email],
-                             "subject": subject, "html": html, "text": text})
+                             "subject": subject, "html": html, "text": text,
+                             "tags": mailmeta.tags("feedback")})
         return True
     except Exception as e:
         print(f"[CW] feedback email failed: {e}")

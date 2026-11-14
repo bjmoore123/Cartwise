@@ -347,12 +347,12 @@ class TestUnsubscribeEverywhere:
 
     def test_every_sender_in_the_code_adds_the_link(self):
         """Guard: any module that sends mail to users must use shared/unsub.py.
-        feedback.py is exempt: it only ever emails the admin."""
+        feedback.py and report.py (v9.12) are exempt: they only ever email the admin."""
         for rel in ("lambda/auth.py", "lambda/prefs.py", "scraper/main.py"):
             src = open(os.path.join(_ROOT, rel), encoding="utf-8").read()
             assert "Emails.send" in src and "from shared import unsub" in src, rel
         for rel in os.listdir(os.path.join(_ROOT, "lambda")):
-            if rel.endswith(".py") and rel not in ("auth.py", "prefs.py", "feedback.py"):
+            if rel.endswith(".py") and rel not in ("auth.py", "prefs.py", "feedback.py", "report.py"):
                 assert "Emails.send" not in open(os.path.join(_ROOT, "lambda", rel), encoding="utf-8").read(), rel
 
 
@@ -394,11 +394,13 @@ class TestEmailLayout:
         assert "text-decoration:underline" in a and "#1a6b3c" in a and "&lt;" in L.addr("<x>@y.z")
 
     def test_logo_is_shipped_and_deployed(self):
-        from PIL import Image
-        im = Image.open(os.path.join(_ROOT, "frontend", "email-logo.png"))
+        import struct
+        raw = open(os.path.join(_ROOT, "frontend", "email-logo.png"), "rb").read(24)
+        assert raw[:8] == b"\x89PNG\r\n\x1a\n" and raw[12:16] == b"IHDR"            # a real PNG
+        w, h = struct.unpack(">II", raw[16:24])                                          # no PIL needed
         from shared import email_layout as L
-        assert im.size[0] / im.size[1] == pytest.approx(L.LOGO_W / L.LOGO_H, rel=0.02)
-        assert im.size[1] >= L.LOGO_H * 3                                                 # sharp on phones
+        assert w / h == pytest.approx(L.LOGO_W / L.LOGO_H, rel=0.02)
+        assert h >= L.LOGO_H * 3                                                          # sharp on phones
         assert "email-logo.png" in open(os.path.join(_ROOT, "deploy.sh"), encoding="utf-8").read()
 
     def test_landing_pages_are_branded(self, auth):

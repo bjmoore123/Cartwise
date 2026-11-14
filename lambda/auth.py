@@ -26,6 +26,8 @@ from helpers import (
 from logging_utils import _log_auth_event
 from shared import unsub as _unsub
 from shared import email_layout as L
+from shared import mailmeta
+from logging_utils import _log_app_event
 
 VERIFY_TOKEN_TTL_HOURS = 48
 
@@ -76,10 +78,14 @@ def _send_verification_email(email: str, token: str) -> None:
         }
         if hdrs:
             msg["headers"] = hdrs
+        msg["tags"] = mailmeta.tags("verify")
         _resend.Emails.send(msg)
         print(f"[CW] Verification email sent -> {email}")
+        _log_app_event("email", "info", ok=True, to=email, user=email, kind="verify", subject=msg["subject"])
     except Exception as e:
         print(f"[CW] _send_verification_email failed: {e}")
+        _log_app_event("email", "error", ok=False, to=email, user=email, kind="verify",
+                       subject="Verify your Cartwise email address", message=str(e)[:200])
 
 
 def _verify_html_response(success: bool, message: str, already: bool = False) -> dict:
@@ -174,10 +180,13 @@ def verify_email(body):
         except Exception:
             pass
 
+    # v9.12: when, and after how many reminders (0 = from the first email), for the admin report
     users_table.update_item(
         Key={"email": email},
-        UpdateExpression="SET email_verified = :t REMOVE verify_token, verify_token_exp",
-        ExpressionAttributeValues={":t": True},
+        UpdateExpression="SET email_verified = :t, verified_at = :now, verified_after_reminders = :n, "
+                         "verified_via = :via REMOVE verify_token, verify_token_exp",
+        ExpressionAttributeValues={":t": True, ":now": datetime.now(timezone.utc).isoformat(),
+                                   ":n": int(user.get("verify_reminders") or 0), ":via": "link"},
     )
     print(f"[CW] Email verified: {email}")
     return _verify_html_response(True, "Your email is verified")
@@ -217,7 +226,8 @@ def login(event, body):
     pin   = str(body.get("pin") or "").strip()
     now   = datetime.now(timezone.utc)
 
-    user = users_table.get_item(Key={"email": email}).get("Item")
+    # v9.12: an empty email used to make DynamoDB raise (a 500); it's just a failed sign-in
+    user = users_table.get_item(Key={"email": email}).get("Item") if email else None
 
     # Timing-safe: always run verify_pin even when user not found
     if not user:
@@ -380,7 +390,8 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256((token or "").encode()).hexdigest()
 
 
-def _send_email(to: str, subject: str, html: str, text: str, headers: dict | None = None) -> bool:
+def _send_email(to: str, subject: str, html: str, text: str, headers: dict | None = None,
+                kind: str = "other") -> bool:
     key = os.environ.get("RESEND_API_KEY", "")
     if not key:
         print("[CW] auth email: no RESEND_API_KEY -- skipping")
@@ -393,10 +404,13 @@ def _send_email(to: str, subject: str, html: str, text: str, headers: dict | Non
         msg = {"from": sender, "to": [to], "subject": subject, "html": html, "text": text}
         if headers:
             msg["headers"] = headers
+        msg["tags"] = mailmeta.tags(kind)
         _resend.Emails.send(msg)
+        _log_app_event("email", "info", ok=True, to=to, user=to, kind=kind, subject=subject)
         return True
     except Exception as e:
         print(f"[CW] auth email failed: {e}")
+        _log_app_event("email", "error", ok=False, to=to, user=to, kind=kind, subject=subject, message=str(e)[:200])
         return False
 
 
@@ -419,7 +433,7 @@ def _send_pin_reset_email(email: str, token: str) -> None:
                   f"This link works once and expires in {PIN_RESET_TTL_MINUTES} minutes.",
                   "Didn't ask for this? Ignore this email and your PIN stays the same.",
                   unsub_url=unsub, reason=reason, site=FRONTEND_URL)
-    _send_email(email, "Reset your Cartwise PIN", html, text, _unsub.headers(unsub))
+    _send_email(email, "Reset your Cartwise PIN", html, text, _unsub.headers(unsub), kind="pin_reset")
 
 
 def _send_pin_changed_email(email: str) -> None:
@@ -441,7 +455,7 @@ def _send_pin_changed_email(email: str) -> None:
                   f"Wasn't you? Reset it again with \"Forgot PIN?\" on the sign-in page ({base}) and check who "
                   "can get into this mailbox.",
                   unsub_url=unsub, reason=reason, site=FRONTEND_URL)
-    _send_email(email, "Your Cartwise PIN was changed", html, text, _unsub.headers(unsub))
+    _send_email(email, "Your Cartwise PIN was changed", html, text, _unsub.headers(unsub), kind="pin_changed")
 
 
 def forgot_pin(event, body):
@@ -528,16 +542,23 @@ def reset_pin(event, body):
         return err(PIN_RESET_BAD_LINK_MSG, 400)
     stored = found[1]
     now_ts = int(datetime.now(timezone.utc).timestamp())
+    # v9.12: if this reset is what verifies the address, record when and how (admin report)
+    newly_verified = ("", {})
+    if found[0].get("email_verified") is False:
+        newly_verified = (", verified_at = :vat, verified_after_reminders = :vn, verified_via = :via",
+                          {":vat": datetime.now(timezone.utc).isoformat(),
+                           ":vn": int(found[0].get("verify_reminders") or 0), ":via": "pin_reset"})
 
     try:
         users_table.update_item(
             Key={"email": email},
             # Using the link proves control of the mailbox, so the email counts as verified.
-            UpdateExpression="SET pin_hash = :p, valid_after = :t, email_verified = :v "
+            UpdateExpression="SET pin_hash = :p, valid_after = :t, email_verified = :v" + newly_verified[0] + " "
                              "REMOVE pin_reset_hash, pin_reset_exp, failed_attempts, lockout_until, last_failed_at, "
                              "verify_token, verify_token_exp",
             ConditionExpression="pin_reset_hash = :h",                    # one use, even under a race
-            ExpressionAttributeValues={":p": hash_pin(new_pin), ":t": now_ts, ":v": True, ":h": stored},
+            ExpressionAttributeValues={":p": hash_pin(new_pin), ":t": now_ts, ":v": True, ":h": stored,
+                                       **newly_verified[1]},
         )
     except Exception as e:
         if "ConditionalCheckFailed" in str(e):

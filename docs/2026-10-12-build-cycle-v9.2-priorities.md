@@ -321,6 +321,29 @@ Test plan: `docs/v9.4-test-plan.md`.
 ### v9.9.1: Deploy packaging fix ✅ built 2026-10-22
 - Staging returned 500 on every request after v9.9: `deploy.sh` copied a fixed list of lambda files and `feedback.py` was not on it, so the API crashed on import. Now copies `lambda/*.py`, and deploy runs a smoke test (a preflight request through the real handler) and stops with the error if the API can't start. Tests check packaging and that every local import exists.
 
+### v9.12: Admin metrics, email engagement, weekly admin report ✅ built 2026-11-14 — test plan `docs/v9.12-test-plan.md`
+- **Admin → Reports rewritten** (`GET /admin/metrics`, replaces `/admin/stats`): 8 headline tiles with change vs last week, a "Needs attention" box, 12-week trend (4 small charts), setup funnel, verification, activity, site health, email by type with delivered/opened/clicked/bounced, bounce and complaint list, this week's deals, lists and stores. Kept from the old page: sign-ups by month, users by location, most popular list items.
+- **Metrics** (`lambda/metrics.py`, one definition per number, unit-tested as a pure function):
+  - Growth: total, new this week vs previous week, verified/unverified and rate, deleted.
+  - Verification: of sign-ups in the last 30 days, verified within 24 hours / 7 days / still unverified; verified with no reminder vs after reminder 1–4; unverified past 28 days.
+  - Setup funnel (cumulative): signed up → verified → store chosen → list started → alerts on.
+  - Activity: signed in within 7 / 30 days, dormant 60+ days, sign-ins, failed sign-ins, lockouts, PIN resets.
+  - Email: sent and failed by type, unsubscribes, spam complaints.
+  - Value: users with a match, match rate, matches per user, matched-but-not-emailed, most matched items.
+  - Health: deal-fetch runs and errors, errors by source vs last week, feedback received and open.
+- **New tracking** (only from this release on; earlier history can't be rebuilt):
+  - `verified_at`, `verified_after_reminders`, `verified_via` on the account when it verifies.
+  - Weekly run totals: each store worker adds its numbers to `run#<date>` / `runitems#<date>` (scheduled runs only).
+  - Every email carries Resend tags `kind` and `env`; every send is logged with its kind.
+  - **Email engagement** (`lambda/engagement.py`): Resend's sent / delivered / bounced / complained / opened / clicked events arrive on the existing signed webhook (`/inbound/email-list`) and build one row per message (`em#<id>`, kept 120 days). Rates count unique messages. Events tagged for the other environment are ignored.
+  - A spam complaint unsubscribes the account; a permanent bounce flags it (`email_bounced_at`).
+- **Weekly snapshot** (`snap#<date>`, never expires): saved by the Thursday report. Needed because logs expire (30–90 days) and deleted accounts take their history with them. Powers "vs last week" and the trend charts, which start two reports after release.
+- **Weekly admin report email** (`lambda/report.py`): Thursday 14:00 UTC (9 AM Eastern in winter, 10 AM in summer) via EventBridge rule `cartwise-admin-report` → API Lambda. Sent only to the admin address in SSM (`/publix/feedback-to`); the address never appears in the page, the email body or logs. "Email me this report" on the Reports tab sends one now (no snapshot). Staging gets the rule DISABLED.
+- New table `cartwise-metrics` (key `pk`, TTL `expires_at`); deploy.sh creates it, grants access, sets `METRICS_TABLE` on both Lambdas; teardown.sh removes it and the rule.
+- One-time setup in Resend (see the test plan): add the email events to the existing webhook; turn on open tracking for the domain. Click tracking is optional and off by default.
+- Fix: a sign-in request with no email returned a server error; it now gets the normal "Invalid email or PIN".
+- Tests: `tests/test_v912.py` (35).
+
 ### v9.11: Forgot PIN + verification reminders ✅ built 2026-11-13 — test plan `docs/v9.11-test-plan.md`
 - **Forgot PIN?** on the sign-in card → email a one-time link → "Choose a new PIN" (enter twice).
   - Request never confirms an account exists: one message for every outcome, minimum 1.5 s response, rate limits 3/hour per email and 10/hour per IP.

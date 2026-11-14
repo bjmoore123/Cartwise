@@ -18,6 +18,7 @@ from helpers import (
 from logging_utils import _log_app_event
 from shared import unsub as _unsub
 from shared import email_layout as L
+from shared import mailmeta
 from html import escape as _esc
 
 
@@ -211,14 +212,15 @@ def send_test_email(event):
                "html": html, "text": text}
         if hdrs:
             msg["headers"] = hdrs
+        msg["tags"] = mailmeta.tags("test")
         _resend.Emails.send(msg)
         _log_app_event("email", "info", ok=True,
-                       to=notify_email, subject="test-email",
+                       to=notify_email, subject="test-email", kind="test",
                        trigger="manual", user=sess["email"])
         return ok({"message": f"Test email sent to {notify_email}."})
     except Exception as e:
         _log_app_event("email", "error", ok=False,
-                       to=notify_email, subject="test-email",
+                       to=notify_email, subject="test-email", kind="test",
                        trigger="manual", user=sess["email"], message=str(e)[:200])
         print(f"[CW] send_test_email: {e}")
         return err("Failed to send email.", 500)

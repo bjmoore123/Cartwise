@@ -22,6 +22,8 @@ from helpers import (
     ADMIN_COOKIE_NAME, make_cookie, read_cookie,
 )
 from auth import register
+import metrics          # v9.12: top-level, so the deploy smoke test catches a missing module
+import report
 
 
 import secrets as _secrets
@@ -319,53 +321,15 @@ def admin_resend_verification(event, email: str):
 
 
 @require_admin
-def admin_stats(event):
-    items, resp = [], users_table.scan()
-    items.extend(resp.get("Items", []))
-    while "LastEvaluatedKey" in resp:
-        resp = users_table.scan(ExclusiveStartKey=resp["LastEvaluatedKey"])
-        items.extend(resp.get("Items", []))
-    users = [u for u in _to_py(items) if u.get("email") != "__meta__"]
-    total = len(users)
+def admin_metrics(event):
+    """GET /admin/metrics -- every number on Admin -> Reports (v9.12; replaces /admin/stats)."""
+    return metrics.admin_metrics(event)
 
-    by_month   = Counter()
-    by_store   = Counter()
-    all_items  = Counter()
-    item_counts = []
 
-    for u in users:
-        ts = u.get("created_at", "")
-        if ts: by_month[ts[:7]] += 1
-        p    = u.get("prefs") or {}
-        name = p.get("store_name") or ""
-        sid  = p.get("store_id") or ""
-        if name:
-            parts = [x.strip() for x in name.split(",")]
-            city  = parts[-2] if len(parts) >= 2 else (parts[-1] if parts else sid or "Unknown")
-            by_store[city] += 1
-        elif sid:
-            by_store[f"Store #{sid}"] += 1
-        else:
-            by_store["No store set"] += 1
-        item_list = p.get("items") or []
-        item_counts.append(len(item_list))
-        for item in item_list:
-            if item and isinstance(item, str):
-                all_items[item.strip().lower()] += 1
-
-    avg_items = round(sum(item_counts) / total, 1) if total else 0
-    no_items  = sum(1 for c in item_counts if c == 0)
-    meta      = _to_py(users_table.get_item(Key={"email": "__meta__"}).get("Item") or {})
-
-    return ok({
-        "total_users":   total,
-        "deleted_users": int(meta.get("deleted_count", 0)),
-        "avg_items":     avg_items,
-        "no_items_count": no_items,
-        "by_month":      [{"month": k, "count": v} for k, v in sorted(by_month.items())],
-        "by_geography":  [{"location": k, "count": v} for k, v in by_store.most_common(20)],
-        "popular_items": [{"item": k, "count": v} for k, v in all_items.most_common(25)],
-    })
+@require_admin
+def admin_send_report(event, body=None):
+    """POST /admin/report/send -- email the weekly report to the admin address now."""
+    return report.admin_send_report(event, body)
 
 
 # ── Scrape logs & triggers ────────────────────────────────────────────────────

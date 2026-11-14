@@ -21,13 +21,20 @@ from admin    import (
     admin_list_users, admin_create_user, admin_get_user, admin_delete_user,
     admin_reset_pin, admin_reset_email, admin_patch_prefs, admin_clear_items,
     admin_resend_verification,
-    admin_stats, admin_inbound_logs, admin_feedback_list, admin_feedback_update,
+    admin_metrics, admin_send_report, admin_inbound_logs, admin_feedback_list, admin_feedback_update,
     get_scrape_logs, invoke_scraper, get_log_tail,
     get_auth_logs, get_app_logs,
 )
 
 
 def handler(event, context):
+    # v9.12: the Thursday EventBridge rule calls this Lambda directly (not through API Gateway).
+    # Only a direct invoke can look like this: HTTP requests always carry requestContext.
+    if event.get("source") == "admin-weekly-report" and "requestContext" not in event:
+        from report import send_report
+        import json as _json
+        return {"statusCode": 200, "body": _json.dumps(send_report(scheduled=True))}
+
     http_ctx = event.get("requestContext", {}).get("http", {})
     method   = (http_ctx.get("method") or event.get("httpMethod", "GET")).upper()
     path     = http_ctx.get("path") or event.get("rawPath") or event.get("path", "")
@@ -85,7 +92,8 @@ def handler(event, context):
     if path == "/admin/scrape-logs"  and method == "GET":  return get_scrape_logs(event)
     if path == "/admin/scrape-now"   and method == "POST": return invoke_scraper(event)
     if path == "/admin/logs/tail"    and method == "GET":  return get_log_tail(event)
-    if path == "/admin/stats"        and method == "GET":  return admin_stats(event)
+    if path == "/admin/metrics"      and method == "GET":  return admin_metrics(event)
+    if path == "/admin/report/send"  and method == "POST": return admin_send_report(event, body)
     if path == "/admin/auth-logs"    and method == "GET":  return get_auth_logs(event)
     if path == "/admin/app-logs"     and method == "GET":  return get_app_logs(event)
     if path == "/admin/inbound-logs" and method == "GET":  return admin_inbound_logs(event)

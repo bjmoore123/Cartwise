@@ -199,6 +199,7 @@ create_table "${APP_NAME}-auth-logs"      "log_id"
 create_table "${APP_NAME}-app-logs"       "log_id"
 create_table "${APP_NAME}-deal-corpus"    "corpus_id"
 create_table "${APP_NAME}-feedback"       "feedback_id"   # v9.9: in-app feedback
+create_table "${APP_NAME}-metrics"        "pk"            # v9.12: email events, weekly run totals, weekly snapshots
 
 # deal-history uses a composite key (PK=store_id, SK=sk) so we can Query by store
 # instead of scanning the entire table. If the table exists with only a hash key,
@@ -289,6 +290,7 @@ enable_ttl "auth-logs"
 enable_ttl "app-logs"
 enable_ttl "scrape-logs"
 enable_ttl "feedback"            # v9.9: kept 1 year
+enable_ttl "metrics"             # v9.12: email events 120 days, run totals 400 days; snapshots have no expiry
 
 # ── STEP 2: IAM role ──────────────────────────────────────────────────────────
 echo "▶  2/15  IAM role"
@@ -319,7 +321,8 @@ aws iam put-role-policy --role-name "${LAMBDA_ROLE}" \
        \"arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${APP_NAME}-app-logs\",
        \"arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${APP_NAME}-deal-history\",
        \"arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${APP_NAME}-deal-corpus\",
-       \"arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${APP_NAME}-feedback\"
+       \"arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${APP_NAME}-feedback\",
+       \"arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${APP_NAME}-metrics\"
      ]},
     {\"Effect\":\"Allow\",\"Action\":[\"lambda:InvokeFunction\"],
      \"Resource\":\"arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:${APP_NAME}-scraper\"},
@@ -431,6 +434,7 @@ if ! exists aws lambda get-function --function-name "${LAMBDA_API}" --region "${
     "RESEND_WEBHOOK_SECRET" "${RESEND_WEBHOOK_SECRET}" \
     "RESEND_RECEIVING_KEY" "${RESEND_RECEIVING_KEY_VAL}" \
     "FEEDBACK_TABLE" "${APP_NAME}-feedback" \
+    "METRICS_TABLE" "${APP_NAME}-metrics" \
     "FEEDBACK_TO" "${FEEDBACK_TO_VAL}" \
     "ACM_CERT_ARN" "${ACM_CERT_ARN}" \
     "CF_LOG_BUCKET" "${CF_LOG_BUCKET}" \
@@ -475,6 +479,7 @@ else
     "RESEND_WEBHOOK_SECRET" "${RESEND_WEBHOOK_SECRET}" \
     "RESEND_RECEIVING_KEY" "${RESEND_RECEIVING_KEY_VAL}" \
     "FEEDBACK_TABLE" "${APP_NAME}-feedback" \
+    "METRICS_TABLE" "${APP_NAME}-metrics" \
     "FEEDBACK_TO" "${FEEDBACK_TO_VAL}" \
     "ACM_CERT_ARN" "${ACM_CERT_ARN}" \
     "CF_LOG_BUCKET" "${CF_LOG_BUCKET}" \
@@ -571,6 +576,7 @@ if ! exists aws lambda get-function --function-name "${LAMBDA_SCRAPER}" --region
     "APP_LOGS_TABLE" "${APP_NAME}-app-logs" \
     "HISTORY_TABLE" "${APP_NAME}-deal-history" \
     "CORPUS_TABLE" "${APP_NAME}-deal-corpus" \
+    "METRICS_TABLE" "${APP_NAME}-metrics" \
     "RESEND_API_KEY" "${RESEND_KEY_VAL}" \
     "RESEND_FROM_NAME" "${RESEND_FROM_NAME}" \
     "RESEND_FROM_ADDR" "${RESEND_FROM_ADDR}" \
@@ -594,6 +600,7 @@ else
     "APP_LOGS_TABLE" "${APP_NAME}-app-logs" \
     "HISTORY_TABLE" "${APP_NAME}-deal-history" \
     "CORPUS_TABLE" "${APP_NAME}-deal-corpus" \
+    "METRICS_TABLE" "${APP_NAME}-metrics" \
     "RESEND_API_KEY" "${RESEND_KEY_VAL}" \
     "RESEND_FROM_NAME" "${RESEND_FROM_NAME}" \
     "RESEND_FROM_ADDR" "${RESEND_FROM_ADDR}" \
@@ -907,6 +914,36 @@ aws events put-targets \
   --region "${AWS_REGION}" > /dev/null
 ok "EventBridge → verification reminders target set (daily, 15:00 UTC)"
 
+# ── STEP 8d: Weekly admin report (v9.12) ──────────────────────────────────────
+# Thursday 14:00 UTC = 9 AM Eastern in winter, 10 AM in summer: the morning after the
+# Wednesday deal emails. Targets the API Lambda (it can read every table) with a marker
+# event; lambda/handler.py only accepts it on a direct invoke. Staging gets the rule too,
+# but DISABLED, so staging doesn't email a report every week (use Admin → Reports → Send now).
+REPORT_RULE="${APP_NAME}-admin-report"
+REPORT_STATE="ENABLED"; [ "${ENV}" = "staging" ] && REPORT_STATE="DISABLED"
+REPORT_ARN=$(aws events put-rule \
+  --name "${REPORT_RULE}" \
+  --schedule-expression "cron(0 14 ? * THU *)" \
+  --state "${REPORT_STATE}" \
+  --description "Cartwise — weekly admin report email (Thursday morning ET)" \
+  --region "${AWS_REGION}" \
+  --query 'RuleArn' --output text)
+ok "EventBridge rule: ${REPORT_RULE} (${REPORT_STATE})"
+
+aws lambda add-permission \
+  --function-name "${LAMBDA_API}" \
+  --statement-id "eventbridge-admin-report-invoke" \
+  --action lambda:InvokeFunction \
+  --principal events.amazonaws.com \
+  --source-arn "${REPORT_ARN}" \
+  --region "${AWS_REGION}" > /dev/null 2>&1 || true
+
+aws events put-targets \
+  --rule "${REPORT_RULE}" \
+  --targets "Id=admin-report,Arn=${LAMBDA_API_ARN},Input=\"{\\\"source\\\":\\\"admin-weekly-report\\\"}\"" \
+  --region "${AWS_REGION}" > /dev/null
+ok "EventBridge → weekly admin report target set (Thursday 14:00 UTC)"
+
 # ── Final env update: re-apply both Lambda configs now that API_URL and FRONTEND_URL are known ──
 # On first deploy these were empty; this pass fills them in correctly.
 # env applied via apply_env (supports special chars in ADMIN_SECRET)
@@ -934,6 +971,7 @@ apply_env "${LAMBDA_API}" \
     "RESEND_WEBHOOK_SECRET" "${RESEND_WEBHOOK_SECRET}" \
     "RESEND_RECEIVING_KEY" "${RESEND_RECEIVING_KEY_VAL}" \
     "FEEDBACK_TABLE" "${APP_NAME}-feedback" \
+    "METRICS_TABLE" "${APP_NAME}-metrics" \
     "FEEDBACK_TO" "${FEEDBACK_TO_VAL}" \
     "ACM_CERT_ARN" "${ACM_CERT_ARN}" \
     "CF_LOG_BUCKET" "${CF_LOG_BUCKET}" \
@@ -953,6 +991,7 @@ apply_env "${LAMBDA_SCRAPER}" \
     "APP_LOGS_TABLE" "${APP_NAME}-app-logs" \
     "HISTORY_TABLE" "${APP_NAME}-deal-history" \
     "CORPUS_TABLE" "${APP_NAME}-deal-corpus" \
+    "METRICS_TABLE" "${APP_NAME}-metrics" \
     "RESEND_API_KEY" "${RESEND_KEY_VAL}" \
     "RESEND_FROM_NAME" "${RESEND_FROM_NAME}" \
     "RESEND_FROM_ADDR" "${RESEND_FROM_ADDR}" \

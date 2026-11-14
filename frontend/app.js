@@ -650,7 +650,7 @@ async function recheckVerified() {
 // ═══════════════════════════════════════════════════════════════════
 // FEEDBACK (v9.9)
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = '9.9';
+const APP_VERSION = '9.12';
 const FB_MAX = 2000;
 function openFeedback() {
   closeMobileNav && closeMobileNav();
@@ -2733,85 +2733,227 @@ function adminHdrs(){return{'Content-Type':'application/json'};}
 function adminFetchOpts(extra={}){return{credentials:'include',headers:adminHdrs(),...extra};}
 
 
+// ── Admin → Reports (v9.12) ──────────────────────────────────────────────────
+// One call (GET /admin/metrics) returns every number; the weekly admin email is built
+// from the same data. Charts are small single-measure SVGs (never two scales on one
+// chart) with a hover tooltip; every chart's numbers also appear in a table or tile.
+let _rptData = null;
+const rptN = v => (v === null || v === undefined || v === '') ? '–' : (typeof v === 'number' ? v.toLocaleString('en-US') : escH(String(v)));
+const rptP = v => (v === null || v === undefined) ? '–' : v + '%';
+function rptDay(s){
+  if(!s) return '–';
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(s + 'T12:00:00Z') : new Date(s);
+  return isNaN(d) ? '–' : d.toLocaleDateString('en-US',{timeZone:'America/New_York',month:'short',day:'numeric'});
+}
+function rptMonth(ym){ const d=new Date(ym+'-15T12:00:00Z'); return isNaN(d)?ym:d.toLocaleDateString('en-US',{timeZone:'UTC',month:'short',year:'numeric'}); }
+function rptDelta(cur, prev, unit){
+  if(cur === null || cur === undefined || prev === null || prev === undefined) return '';
+  const d = Number(cur) - Number(prev);
+  if(isNaN(d)) return '';
+  if(d === 0) return 'same as last week';
+  return (d > 0 ? '+' : '−') + Math.abs(d).toLocaleString('en-US') + (unit || '') + ' vs last week';
+}
+function rptTile(label, value, note){
+  return `<div class="rpt-tile"><div class="rpt-tile-lbl">${escH(label)}</div><div class="rpt-tile-val">${value}</div><div class="rpt-tile-note">${escH(note || '') || '&nbsp;'}</div></div>`;
+}
+function rptRows(pairs){
+  return `<table class="rpt-kv"><tbody>${pairs.filter(Boolean).map(([k,v,sub])=>`<tr><td>${k}${sub?`<div class="rpt-sub">${sub}</div>`:''}</td><td>${v}</td></tr>`).join('')}</tbody></table>`;
+}
+function rptBars(list, labelKey, countKey, color){
+  const max = Math.max(1, ...list.map(x => x[countKey]));
+  return `<ul class="stat-list">${list.map(x => `<li><span class="rpt-barlbl" title="${escH(x[labelKey])}">${escH(x[labelKey])}</span>
+    <div class="sl-bar-wrap"><div class="sl-bar" style="width:${Math.round(x[countKey]/max*100)}%${color?`;background:${color}`:''}"></div></div>
+    <span class="sl-ct">${rptN(x[countKey])}</span></li>`).join('')}</ul>`;
+}
+// One small chart: a single measure over the weekly snapshots. type: 'bar' (counts per week)
+// or 'line' (a level over time). Hover or focus a week for its value.
+function rptChart(title, points, type, fmt){
+  const pts = points.filter(p => p.v !== null && p.v !== undefined);
+  const last = pts.length ? pts[pts.length-1] : null;
+  const head = `<div class="rpt-chart-hd"><span class="rpt-chart-title">${escH(title)}</span><span class="rpt-chart-now">${last ? fmt(last.v) : '–'}</span></div>`;
+  if(pts.length < 2) return `<div class="rpt-chart">${head}<div class="rpt-empty">Needs two weekly reports to draw a trend.</div></div>`;
+  const W=300, H=84, padT=10, padB=4, n=pts.length, slot=W/n;
+  const lo = type==='bar' ? 0 : Math.min(...pts.map(p=>p.v)), hi = Math.max(...pts.map(p=>p.v));
+  const span = (hi-lo) || 1, base = H-padB;
+  const y = v => type==='bar' ? base - (v/(hi||1))*(base-padT) : base - 6 - ((v-lo)/span)*(base-padT-6);
+  let marks = '';
+  if(type==='bar'){
+    const bw = Math.min(22, slot*0.62);
+    marks = pts.map((p,i)=>{ const x=i*slot+(slot-bw)/2, top=y(p.v), h=Math.max(1.5, base-top), r=Math.min(3,h);
+      return `<path class="rpt-mark" data-i="${i}" d="M${x} ${base}V${top+r}a${r} ${r} 0 0 1 ${r} ${-r}h${bw-2*r}a${r} ${r} 0 0 1 ${r} ${r}V${base}Z"/>`; }).join('');
+  } else {
+    const xy = pts.map((p,i)=>[i*slot+slot/2, y(p.v)]);
+    marks = `<polyline class="rpt-line" points="${xy.map(a=>a.join(',')).join(' ')}"/>` +
+      xy.map((a,i)=>`<circle class="rpt-dot${i===n-1?' on':''}" data-i="${i}" cx="${a[0]}" cy="${a[1]}" r="4"/>`).join('');
+  }
+  const hits = pts.map((p,i)=>`<rect class="rpt-hit" tabindex="0" data-i="${i}" x="${i*slot}" y="0" width="${slot}" height="${H}" data-tip="${escH('Week ending '+rptDay(p.week)+': '+fmt(p.v))}"><title>${escH('Week ending '+rptDay(p.week)+': '+fmt(p.v))}</title></rect>`).join('');
+  return `<div class="rpt-chart">${head}
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${escH(title)}: ${escH(pts.map(p=>rptDay(p.week)+' '+fmt(p.v)).join(', '))}">
+      <line class="rpt-axis" x1="0" x2="${W}" y1="${base}" y2="${base}"/>${marks}${hits}</svg>
+    <div class="rpt-chart-x"><span>${rptDay(pts[0].week)}</span><span>${rptDay(last.week)}</span></div></div>`;
+}
+function rptRender(m){
+  const h=m.headline, prev=m.previous||{}, g=m.growth, ver=m.verification, act=m.activity, em=m.email,
+        eng=m.engagement, val=m.value, hl=m.health, ls=m.lists;
+  const first = m.previous ? '' : 'no earlier report yet';
+  const period = `${rptDay(m.window.start)} – ${rptDay(m.window.end)}`;
+
+  const tiles = [
+    rptTile('Total users', rptN(h.total), rptDelta(h.total, prev.total) || first),
+    rptTile('New sign-ups', rptN(h.new), (h.new||g.new_prev) ? rptDelta(h.new, g.new_prev) : 'none last week either'),
+    rptTile('Verified', rptP(h.verified_rate), rptDelta(h.verified_rate, prev.verified_rate, ' pts') || `${rptN(h.verified)} of ${rptN(h.total)}`),
+    rptTile('Active this week', rptN(h.active_7d), rptDelta(h.active_7d, prev.active_7d) || `${rptP(act.active_7d_rate)} of users`),
+    rptTile('Emails sent', rptN(h.emails_sent), h.emails_failed ? `${h.emails_failed} failed` : (rptDelta(h.emails_sent, prev.emails_sent) || 'none failed')),
+    rptTile('Opened', eng.has_opens ? rptP(h.open_rate) : '–', eng.has_opens ? (rptDelta(h.open_rate, prev.open_rate, ' pts') || 'of delivered') : (eng.has_data ? 'open tracking is off' : 'no tracking data yet')),
+    rptTile('Users with a match', rptN(h.users_matched), val.last ? `${rptP(val.last.match_rate)} of users with a list` : 'after the next weekly run'),
+    rptTile('Open feedback', rptN(h.feedback_open), `${hl.feedback_new} new this week`),
+  ].join('');
+
+  const attn = m.attention.length
+    ? `<div class="rpt-attn ${m.attention.some(a=>a.level==='bad')?'bad':'warn'}"><div class="rpt-attn-hd">Needs attention</div><ul>${m.attention.map(a=>`<li class="${escH(a.level)}">${escH(a.text)}</li>`).join('')}</ul></div>`
+    : `<div class="rpt-attn ok"><strong>Nothing needs attention this week.</strong></div>`;
+
+  const T = m.trend;
+  const series = k => T.map(t => ({week:t.week, v:(t[k]===undefined?null:t[k])}));
+  const trend = T.length < 2
+    ? `<div class="rpt-note" style="margin-top:0">A snapshot is saved each Thursday with the weekly report. The trend charts (total users, new sign-ups, verified, active users) appear once two have been saved${T.length?` (1 so far, ${rptDay(T[0].week)})`:''}.</div>`
+    : `<div class="rpt-charts">
+      ${rptChart('Total users', series('total'), 'line', v=>rptN(v))}
+      ${rptChart('New sign-ups per week', series('new'), 'bar', v=>rptN(v))}
+      ${rptChart('Verified', series('verified_rate'), 'line', v=>rptP(v))}
+      ${rptChart('Active users per week', series('active_7d'), 'bar', v=>rptN(v))}
+    </div>`;
+
+  const maxMonth = Math.max(1, ...g.by_month.map(x=>x.count));
+  const months = g.by_month.length ? `<div class="rpt-months">${g.by_month.map(x=>`<div class="rpt-mon" title="${escH(rptMonth(x.month))}: ${x.count} sign-up${x.count===1?'':'s'} still on file"><div class="rpt-mon-ct">${x.count}</div><div class="rpt-mon-bar" style="height:${Math.max(2,Math.round(x.count/maxMonth*64))}px"></div><div class="rpt-mon-lbl">${escH(rptMonth(x.month).slice(0,3))}</div></div>`).join('')}</div>` : '<div class="rpt-empty">No data yet</div>';
+
+  const top = Math.max(1, m.funnel[0].count);
+  const funnel = m.funnel.map(s=>`<div class="rpt-fun"><div class="rpt-fun-row"><span>${escH(s.step)}</span><span><strong>${rptN(s.count)}</strong> · ${rptP(s.pct)}${s.lost?` <em>(−${s.lost})</em>`:''}</span></div><div class="rpt-fun-track"><div class="rpt-fun-bar" style="width:${Math.max(1,Math.round(s.count/top*100))}%"></div></div></div>`).join('');
+
+  const byRem = ver.by_reminder.filter(r=>r.after&&r.count).map(r=>`reminder ${r.after}: ${r.count}`).join(', ');
+  const pending = ver.reminders_pending.filter(r=>r.count).map(r=>`${r.count} at ${r.sent} sent`).join(', ');
+  const verification = rptRows([
+    [`Sign-ups in the last ${ver.cohort_days} days`, rptN(ver.cohort)],
+    ['Verified within 24 hours', `${rptN(ver.within_24h)} · ${rptP(ver.within_24h_rate)}`],
+    ['Verified within 7 days', `${rptN(ver.within_24h+ver.within_7d)} · ${rptP(ver.within_7d_rate)}`],
+    ver.verified_time_unknown ? ['Verified, time not recorded', rptN(ver.verified_time_unknown), 'verified before v9.12 started recording it'] : null,
+    ['Still unverified', rptN(ver.still_unverified)],
+    ['Unverified accounts (all)', rptN(g.unverified), pending ? 'reminders: ' + escH(pending) : ''],
+    ['Unverified more than 28 days', rptN(ver.unverified_over_28d)],
+    ['Unverified and unsubscribed', rptN(ver.unverified_unsubscribed)],
+    ver.tracked ? ['Verified with no reminder / after a reminder', `${ver.by_reminder[0].count} / ${ver.tracked-ver.by_reminder[0].count}`, byRem ? 'after ' + escH(byRem) : ''] : null,
+  ]);
+
+  const activity = rptRows([
+    ['Signed in during the last 7 days', `${rptN(act.active_7d)} · ${rptP(act.active_7d_rate)}`],
+    ['Signed in during the last 30 days', `${rptN(act.active_30d)} · ${rptP(act.active_30d_rate)}`],
+    ['No sign-in for 60+ days', rptN(act.dormant_60d)],
+    ['Never signed in (on record)', rptN(act.never_signed_in)],
+    ['Sign-ins this week', rptN(act.sign_ins)],
+    ['Failed sign-ins / lockouts', `${act.failed_sign_ins} / ${act.lockouts}`],
+    ['PIN resets requested / completed', `${act.pin_resets_requested} / ${act.pin_resets_done}`],
+  ]);
+
+  const byEng = {}; eng.by_kind.forEach(k => byEng[k.kind] = k);
+  const kinds = em.by_kind.slice();
+  eng.by_kind.forEach(k => { if(!kinds.some(x=>x.kind===k.kind)) kinds.push({kind:k.kind,label:k.label,sent:k.sent,failed:0}); });
+  const cell = (k, f, pct) => { const e=byEng[k]; return e ? (pct ? rptP(e[f]) : rptN(e[f])) : '–'; };
+  const emailTbl = kinds.length ? `<div style="overflow-x:auto"><table class="rpt-tbl"><thead><tr><th>Email</th><th>Sent</th><th>Failed</th><th>Delivered</th><th>Opened</th><th>Clicked</th><th>Bounced</th></tr></thead><tbody>
+      ${kinds.map(k=>`<tr><td>${escH(k.label)}</td><td>${rptN(k.sent)}</td><td>${rptN(k.failed)}</td><td>${cell(k.kind,'delivered_rate',1)}</td><td>${eng.has_opens?cell(k.kind,'open_rate',1):'–'}</td><td>${eng.has_clicks?cell(k.kind,'click_rate',1):'–'}</td><td>${cell(k.kind,'bounced')}</td></tr>`).join('')}
+      <tr class="tot"><td>All</td><td>${rptN(em.sent)}</td><td>${rptN(em.failed)}</td><td>${rptP(eng.delivered_rate)}</td><td>${eng.has_opens?rptP(eng.open_rate):'–'}</td><td>${eng.has_clicks?rptP(eng.click_rate):'–'}</td><td>${rptN(eng.bounced)}</td></tr>
+    </tbody></table></div>` : '<div class="rpt-empty">No emails were sent this week.</div>';
+  const engNote = !eng.has_data ? '<div class="rpt-note">Delivered, opened and bounced need the email events turned on in Resend (one-time setup in the v9.12 test plan). Sent and failed come from our own log.</div>'
+    : (!eng.has_opens ? '<div class="rpt-note">No opens recorded: open tracking is off for the sending domain in Resend.</div>' : '<div class="rpt-note">Rates count each message once: delivered ÷ sent, opened and clicked ÷ delivered. Opens are approximate (mail apps that preload images count as opened).</div>');
+  const emailKv = rptRows([
+    ['Unsubscribed this week', rptN(em.unsubscribes)],
+    ['Unsubscribed in total', `${rptN(em.unsubscribed_total)} · ${rptP(em.unsubscribed_rate)}`],
+    ['Marked as spam this week', rptN(Math.max(eng.complained, em.spam_complaints))],
+    ['Accounts with a bounced address', rptN(em.bounced_accounts)],
+  ]);
+  const problems = eng.problems.length ? `<div class="rpt-h3">Bounces and spam complaints this week</div><div style="overflow-x:auto"><table class="rpt-tbl left"><thead><tr><th>Address</th><th>Email</th><th>What happened</th><th>When</th></tr></thead><tbody>${eng.problems.map(p=>`<tr><td>${escH(p.to)}</td><td>${escH(p.kind)}</td><td>${escH(p.what)}</td><td>${rptDay(p.when)}</td></tr>`).join('')}</tbody></table></div>` : '';
+
+  let deals;
+  if(val.last){
+    const r=val.last, p=val.previous;
+    deals = `<div class="rpt-two"><div>${rptRows([
+      [`Users with a list checked (${rptDay(r.date)})`, rptN(r.users_with_list), `${r.stores} store${r.stores===1?'':'s'}`],
+      ['Users with at least one match', `${rptN(r.users_matched)} · ${rptP(r.match_rate)}`, p ? escH(rptDelta(r.users_matched, p.users_matched)) : ''],
+      ['Users with a list but no match', rptN(r.zero_match)],
+      ['Matches found', rptN(r.matches_total), r.avg_matches!==null ? `${r.avg_matches} per matched user` : ''],
+      ['Alert emails sent', rptN(r.emails_sent), r.send_failed ? `${r.send_failed} failed` : ''],
+      ['Matched but not emailed', `${r.skipped_unverified} / ${r.skipped_opted_out}`, 'unverified / opted out'],
+    ])}</div><div><div class="rpt-h3" style="margin-top:0">Most matched items this week</div>${val.top_items.length ? rptBars(val.top_items,'item','count') : '<div class="rpt-empty">No matches recorded.</div>'}</div></div>`;
+  } else {
+    deals = '<div class="rpt-empty">No weekly run recorded yet. This fills in after the next Wednesday deal email.</div>';
+  }
+
+  const last = hl.last_scrape;
+  const health = rptRows([
+    ['Deal-fetch runs this week', rptN(hl.scrape_runs), hl.scrape_runs_with_errors ? `${hl.scrape_runs_with_errors} with errors` : 'no errors'],
+    ['Last deal fetch', last ? `${rptDay(last.started_at)}` : '–', last ? `${last.stores} stores, ${rptN(last.deals)} deals, ${last.emails_sent} emails${last.errors?`, ${last.errors} errors`:''}` : ''],
+    ['Errors logged this week', rptN(hl.errors), `${hl.errors_prev} last week` + (hl.errors_by_source.length ? ' · ' + hl.errors_by_source.map(e=>`${escH(e.source)} ${e.count}`).join(', ') : '')],
+    ['Feedback received / still open', `${hl.feedback_new} / ${hl.feedback_open}`],
+    ['Accounts deleted (all time)', rptN(g.deleted_total)],
+  ]);
+  const lists = rptRows([
+    ['Users with a list', `${rptN(ls.with_list)} of ${rptN(h.total)}`],
+    ['Average list size', rptN(ls.avg_items_nonempty), `${ls.avg_items} counting empty lists`],
+    ['Empty lists', rptN(ls.empty_lists)],
+    ['Stores in use', rptN(ls.stores), `${ls.single_user_stores} with one user · ${ls.no_store} users with no store`],
+  ]);
+
+  const sec = (title, body) => `<div class="rpt-sec"><div class="rpt-sec-title">${title}</div>${body}</div>`;
+  return `<div class="rpt-period">Last 7 days: <strong>${period}</strong>${m.env==='staging'?' · staging':''} <span>Compared with the weekly report saved ${m.previous?rptDay(m.previous.week):'(none yet)'}.</span></div>
+    <div class="rpt-tiles">${tiles}</div>${attn}
+    ${sec('Twelve-week trend', trend)}
+    <div class="rpt-two">${sec('Setup funnel', funnel + '<div class="rpt-note">Each step counts users who also completed every step above it.</div>')}${sec('Verification', verification)}</div>
+    <div class="rpt-two">${sec('Activity', activity)}${sec('Site health', health)}</div>
+    ${sec('Email', emailTbl + engNote + '<div style="max-width:520px;margin-top:14px">' + emailKv + '</div>' + problems)}
+    ${sec('This week’s deals', deals)}
+    <div class="rpt-two">${sec('Lists and stores', lists)}${sec('Sign-ups by month', months + '<div class="rpt-note">Accounts still on file, by the month they signed up.</div>')}</div>
+    <div class="rpt-two">${sec('Users by location', ls.by_geography.length ? rptBars(ls.by_geography,'location','count') : '<div class="rpt-empty">No store data</div>')}${sec('Most popular list items', ls.popular_items.length ? rptBars(ls.popular_items,'item','count') : '<div class="rpt-empty">No list data yet</div>')}</div>`;
+}
 async function adminLoadStats(){
   const el=document.getElementById('admin-stats-body');
   if(!el) return;
   el.innerHTML='<div style="color:var(--ink-soft);font-size:13px">Loading…</div>';
   try{
-    const res=await fetch(API+'/admin/stats',{credentials:'include',headers:adminHdrs()});
+    const res=await fetch(API+'/admin/metrics',{credentials:'include',headers:adminHdrs()});
     const data=await res.json();
     if(!res.ok) throw new Error(data.error||'Failed');
-
-    const s=data;
-    const totalUsers=s.total_users||0;
-    const deletedUsers=s.deleted_users||0;
-    const avgItems=s.avg_items||0;
-    const noItems=s.no_items_count||0;
-    const byMonth=s.by_month||[];
-    const byGeo=s.by_geography||[];
-    const popular=s.popular_items||[];
-
-    // Monthly chart
-    const maxMonth=Math.max(1,...byMonth.map(m=>m.count));
-    const monthBars=byMonth.slice(-12).map(m=>{
-      const pct=Math.round((m.count/maxMonth)*100);
-      const lbl=m.month.slice(5); // "MM"
-      return `<div class="smc-bar-wrap" title="${m.month}: ${m.count} users">
-        <div class="smc-bar" style="height:${pct}%;flex:1"></div>
-        <div class="smc-lbl">${lbl}</div>
-      </div>`;
-    }).join('');
-
-    // Geography bars
-    const maxGeo=Math.max(1,...byGeo.map(g=>g.count));
-    const geoBars=byGeo.map(g=>{
-      const pct=Math.round((g.count/maxGeo)*100);
-      return `<li><span style="flex:0 0 130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escH(g.location)}">${escH(g.location)}</span>
-        <div class="sl-bar-wrap"><div class="sl-bar" style="width:${pct}%"></div></div>
-        <span class="sl-ct">${g.count}</span></li>`;
-    }).join('');
-
-    // Popular items bars
-    const maxPop=Math.max(1,...popular.map(p=>p.count));
-    const popBars=popular.map(p=>{
-      const pct=Math.round((p.count/maxPop)*100);
-      return `<li><span style="flex:0 0 160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escH(p.item)}">${escH(p.item)}</span>
-        <div class="sl-bar-wrap"><div class="sl-bar" style="width:${pct}%;background:var(--amber)"></div></div>
-        <span class="sl-ct">${p.count}</span></li>`;
-    }).join('');
-
-    el.innerHTML=`
-      <div class="stats-grid">
-        <div class="stat-card"><div class="stat-val">${totalUsers}</div><div class="stat-lbl">Total Users</div></div>
-        <div class="stat-card"><div class="stat-val">${avgItems}</div><div class="stat-lbl">Avg List Items</div></div>
-        <div class="stat-card"><div class="stat-val">${totalUsers-noItems}</div><div class="stat-lbl">Active Lists</div></div>
-        <div class="stat-card"><div class="stat-val">${noItems}</div><div class="stat-lbl">Empty Lists</div></div>
-        <div class="stat-card"><div class="stat-val">${deletedUsers}</div><div class="stat-lbl">Users Deleted</div></div>
-      </div>
-
-      <div style="margin-bottom:8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft)">Users Added by Month</div>
-      ${byMonth.length
-        ? `<div class="stat-month-chart">${monthBars}</div>`
-        : '<div style="font-size:13px;color:var(--ink-soft)">No data yet</div>'}
-
-      <div class="stats-two" style="margin-top:20px">
-        <div>
-          <div style="margin-bottom:8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft)">Users by Geography</div>
-          ${byGeo.length
-            ? `<ul class="stat-list">${geoBars}</ul>`
-            : '<div style="font-size:13px;color:var(--ink-soft)">No store data</div>'}
-        </div>
-        <div>
-          <div style="margin-bottom:8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft)">Most Popular List Items</div>
-          ${popular.length
-            ? `<ul class="stat-list">${popBars}</ul>`
-            : '<div style="font-size:13px;color:var(--ink-soft)">No list data yet</div>'}
-        </div>
-      </div>`;
+    _rptData=data;
+    el.innerHTML=rptRender(data);
   }catch(e){
-    el.innerHTML=`<div style="color:var(--red);font-size:13px">Failed to load stats: ${escH(e.message)}</div>`;
+    el.innerHTML=`<div style="color:var(--red);font-size:13px">Failed to load the report: ${escH(e.message)}</div>`;
   }
 }
+async function adminSendReport(btn){
+  const msg=document.getElementById('rpt-send-msg');
+  if(btn) btn.disabled=true;
+  if(msg){ msg.textContent='Sending…'; msg.className='rpt-send-msg'; }
+  try{
+    const res=await fetch(API+'/admin/report/send',{method:'POST',credentials:'include',headers:adminHdrs(),body:'{}'});
+    const data=await res.json().catch(()=>({}));
+    if(msg){ msg.textContent=res.ok ? (data.message||'Sent.') : (data.error||'Could not send.'); msg.className='rpt-send-msg '+(res.ok?'ok':'err'); }
+  }catch(e){ if(msg){ msg.textContent='Could not reach the server.'; msg.className='rpt-send-msg err'; } }
+  if(btn) setTimeout(()=>{btn.disabled=false;},4000);
+}
+// Chart hover / keyboard focus: one floating tooltip, highlight the hovered week's mark.
+function rptTip(ev){
+  const hit = ev.target.closest ? ev.target.closest('.rpt-hit') : null;
+  let tip = document.getElementById('rpt-tip');
+  document.querySelectorAll('.rpt-mark.hov,.rpt-dot.hov').forEach(x=>x.classList.remove('hov'));
+  if(!hit || ev.type==='mouseout' || ev.type==='focusout'){ if(tip) tip.style.display='none'; return; }
+  if(!tip){ tip=document.createElement('div'); tip.id='rpt-tip'; tip.className='rpt-tip'; tip.setAttribute('role','status'); document.body.appendChild(tip); }
+  tip.textContent = hit.getAttribute('data-tip') || '';
+  hit.parentNode.querySelectorAll(`.rpt-mark[data-i="${hit.dataset.i}"],.rpt-dot[data-i="${hit.dataset.i}"]`).forEach(x=>x.classList.add('hov'));
+  const r = hit.getBoundingClientRect();
+  tip.style.display='block';
+  const w = tip.offsetWidth, left = Math.min(window.innerWidth - w - 8, Math.max(8, r.left + r.width/2 - w/2));
+  tip.style.left = (left + window.scrollX) + 'px';
+  tip.style.top = (r.top + window.scrollY - tip.offsetHeight - 6) + 'px';
+}
+['mouseover','mouseout','focusin','focusout'].forEach(t => document.addEventListener(t, rptTip));
 async function adminLoadLogs(){
   document.getElementById('admin-logs-el').innerHTML='<div style="color:var(--ink-soft);font-size:13px;padding:12px 0">Loading…</div>';
   try{
@@ -3648,6 +3790,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // -- Admin actions --
     if (action === 'admin-load-auth-logs')  return adminLoadAuthLogs();
     if (action === 'admin-load-stats')      return adminLoadStats();
+    if (action === 'admin-send-report')     return adminSendReport(el);
     if (action === 'admin-run-scrape')      return adminRunScrape(el);
     if (action === 'admin-load-logs')       return adminLoadLogs();
     if (action === 'admin-load-tail')       return adminLoadTail();

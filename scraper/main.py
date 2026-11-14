@@ -25,6 +25,7 @@ from scraper import get_deals_with_status
 from shared import email_render
 from shared import unsub as _unsub
 from shared import email_layout as L
+from shared import mailmeta
 from shared.deal_parser import effective_bogo_mode
 from shared.matcher import match_deals_for_user
 
@@ -52,6 +53,7 @@ deals_table     = dynamodb.Table(DEALS_TABLE)
 scrape_logs_tbl = dynamodb.Table(SCRAPE_LOGS_TBL)
 APP_LOGS_TBL    = os.environ.get("APP_LOGS_TABLE", "cartwise-app-logs")
 app_logs_tbl    = dynamodb.Table(APP_LOGS_TBL)
+metrics_tbl     = dynamodb.Table(os.environ.get("METRICS_TABLE", "cartwise-metrics"))   # v9.12
 
 
 # ── DynamoDB helpers ──────────────────────────────────────────────────────────
@@ -64,7 +66,7 @@ def to_python(obj):
     return obj
 
 
-def _log_email(to: str, subject: str, ok: bool, user: str = "", message: str = ""):
+def _log_email(to: str, subject: str, ok: bool, user: str = "", message: str = "", kind: str = "weekly"):
     """Log an email delivery attempt to app_logs DynamoDB table."""
     try:
         import secrets as _sec
@@ -77,6 +79,7 @@ def _log_email(to: str, subject: str, ok: bool, user: str = "", message: str = "
             "ok":      ok,
             "to":      to,
             "subject": subject[:120],
+            "kind":    kind,                    # v9.12: for the admin report
             "trigger": "scheduled",
             "user":    user,
             "message": message[:200],
@@ -343,6 +346,7 @@ def send_alert(notify_email: str, matches: list[dict], store_id: str, store_name
             "List-Unsubscribe":      f"<{unsub_url}>",
             "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
         }
+    msg["tags"] = mailmeta.tags("weekly")
     try:
         resend.Emails.send(msg)
         _log_email(notify_email, subject, ok=True, user=account_email)
@@ -559,14 +563,16 @@ def send_verify_reminders(now: datetime | None = None) -> dict:
         msg = {"from": RESEND_FROM, "to": [email], "subject": subject, "html": html, "text": text}
         if unsub_url:
             msg["headers"] = _unsub.headers(unsub_url)
+        msg["tags"] = mailmeta.tags("reminder")
         try:
             resend.Emails.send(msg)
             sent.append(email)
-            _log_email(email, subject, True, user=email, message=f"verification reminder {n} of {VERIFY_REMINDERS_MAX}")
+            _log_email(email, subject, True, user=email, kind="reminder",
+                       message=f"verification reminder {n} of {VERIFY_REMINDERS_MAX}")
             print(f"  Reminder {n}/{VERIFY_REMINDERS_MAX} -> {email}")
         except Exception as e:
             failed.append(email)
-            _log_email(email, subject, False, user=email, message=str(e))
+            _log_email(email, subject, False, user=email, message=str(e), kind="reminder")
             print(f"  ERROR sending reminder to {email}: {e}")
     summary = {"sent": len(sent), "failed": len(failed), "skipped": skipped}
     try:
@@ -716,6 +722,9 @@ def _store_worker(event):
     # corpus row is no longer written (it hit the 400 KB item limit on 2026-04-08).
 
     emails_sent = 0
+    run = {"users_with_list": 0, "users_matched": 0, "matches_total": 0, "emails_sent": 0,
+           "skipped_unverified": 0, "skipped_opted_out": 0, "send_failed": 0}
+    matched_items: dict = {}
     for user in store_users:
         account_email  = user["email"]
         prefs          = user.get("prefs") or {}
@@ -728,15 +737,23 @@ def _store_worker(event):
         if not items:
             continue
 
+        run["users_with_list"] += 1
         matches = match_deals_for_user(deals, items, matching)
         if not matches:
             continue
+        run["users_matched"] += 1
+        run["matches_total"] += len(matches)
+        for name in {str(m.get("my_item") or "").strip().lower() for m in matches}:
+            if name:
+                matched_items[name] = matched_items.get(name, 0) + 1
 
         if not send_emails:
             print(f"    {len(matches)} match(es) for {account_email} — skipping (manual run)")
         elif not email_verified:
+            run["skipped_unverified"] += 1
             print(f"    {len(matches)} match(es) for {account_email} — skipping (not verified)")
         elif not email_enabled:
+            run["skipped_opted_out"] += 1
             print(f"    {len(matches)} match(es) for {account_email} — skipping (opted out)")
         else:
             try:
@@ -744,9 +761,49 @@ def _store_worker(event):
                            bogo_mode=effective_bogo_mode(prefs))   # v9.8: store's BOGO rule
                 emails_sent += 1
             except Exception as e:
+                run["send_failed"] += 1
                 print(f"    ERROR sending email to {notify_email}: {e}")
 
+    run["emails_sent"] = emails_sent
+    if send_emails and job_id:            # the weekly run only, not a manual scrape or one-user resend
+        _record_run_summary(job_id, run, matched_items)
     print(f"  Worker done: {emails_sent} email(s) sent")
+
+
+RUN_TOP_ITEMS = 40
+
+
+def _record_run_summary(job_id: str, run: dict, matched_items: dict):
+    """v9.12: add this store's numbers to the week's totals in the metrics table.
+    Workers run in parallel (one per store), so everything is an atomic ADD:
+        pk = run#YYYY-MM-DD        users_with_list, users_matched, matches_total, emails_sent, ...
+        pk = runitems#YYYY-MM-DD   one counter per matched list item (how many users it matched for)
+    Never raises: reporting must not break the weekly email run."""
+    try:
+        day = f"{job_id[0:4]}-{job_id[4:6]}-{job_id[6:8]}"
+        exp = int((datetime.now(timezone.utc) + timedelta(days=400)).timestamp())
+        names, vals, adds = {}, {":exp": exp, ":job": job_id, ":one": 1}, ["stores :one"]
+        for i, (k, v) in enumerate(run.items()):
+            names[f"#f{i}"] = k
+            vals[f":v{i}"] = int(v)
+            adds.append(f"#f{i} :v{i}")
+        metrics_tbl.update_item(
+            Key={"pk": f"run#{day}"},
+            UpdateExpression="SET expires_at = :exp, job_id = :job ADD " + ", ".join(adds),
+            ExpressionAttributeNames=names, ExpressionAttributeValues=vals)
+        top = sorted(matched_items.items(), key=lambda kv: -kv[1])[:RUN_TOP_ITEMS]
+        if top:
+            names, vals, adds = {}, {":exp": exp}, []
+            for i, (k, v) in enumerate(top):
+                names[f"#i{i}"] = "i:" + k[:80]
+                vals[f":c{i}"] = int(v)
+                adds.append(f"#i{i} :c{i}")
+            metrics_tbl.update_item(
+                Key={"pk": f"runitems#{day}"},
+                UpdateExpression="SET expires_at = :exp ADD " + ", ".join(adds),
+                ExpressionAttributeNames=names, ExpressionAttributeValues=vals)
+    except Exception as e:
+        print(f"  WARNING: run summary not saved: {e}")
 
 
 def _orchestrator(send_emails: bool = False):

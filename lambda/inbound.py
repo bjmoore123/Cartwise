@@ -29,6 +29,7 @@ from helpers import (
     RESEND_WEBHOOK_SECRET, INBOUND_EMAIL_ADDR,
 )
 from logging_utils import _log_app_event
+import engagement
 import boto3
 
 # ── Spam filter config ────────────────────────────────────────────────────────
@@ -184,8 +185,13 @@ def inbound_email_list(event):
 
     body     = get_body(event)
     evt_type = body.get("type", "")
-    _log_app_event("api", "info", action="inbound-webhook-received",
-                   event_type=evt_type, has_data=bool(body.get("data")))
+    if not engagement.is_engagement_event(evt_type):          # engagement events are too many to log one by one
+        _log_app_event("api", "info", action="inbound-webhook-received",
+                       event_type=evt_type, has_data=bool(body.get("data")))
+
+    # v9.12: the same webhook also carries delivery / open / bounce events for mail we sent
+    if engagement.is_engagement_event(evt_type):
+        return engagement.record_event(body)
 
     if evt_type != "email.received":
         return ok({"skipped": True, "reason": "event type not email.received"})
