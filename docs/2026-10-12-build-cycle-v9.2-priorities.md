@@ -341,8 +341,9 @@ Test plan: `docs/v9.4-test-plan.md`.
 - **Weekly admin report email** (`lambda/report.py`): Thursday 14:00 UTC (9 AM Eastern in winter, 10 AM in summer) via EventBridge rule `cartwise-admin-report` → API Lambda. Sent only to the admin address in SSM (`/publix/feedback-to`); the address never appears in the page, the email body or logs. "Email me this report" on the Reports tab sends one now (no snapshot). Staging gets the rule DISABLED.
 - New table `cartwise-metrics` (key `pk`, TTL `expires_at`); deploy.sh creates it, grants access, sets `METRICS_TABLE` on both Lambdas; teardown.sh removes it and the rule.
 - One-time setup in Resend (see the test plan): add the email events to the existing webhook; turn on open tracking for the domain. Click tracking is optional and off by default.
+- v9.12.1: the Email table has an "Admin emails" row (weekly report and feedback notices sent to the admin), with its own delivered/opened, kept out of the user totals. The note under the table now tells apart "Resend events not set up", "set up but no user email tracked yet" and "no opens recorded". Report dates are converted to Eastern time without the time zone database (not present on Windows).
 - Fix: a sign-in request with no email returned a server error; it now gets the normal "Invalid email or PIN".
-- Tests: `tests/test_v912.py` (35).
+- Tests: `tests/test_v912.py` (37).
 
 ### v9.11: Forgot PIN + verification reminders ✅ built 2026-11-13 — test plan `docs/v9.11-test-plan.md`
 - **Forgot PIN?** on the sign-in card → email a one-time link → "Choose a new PIN" (enter twice).

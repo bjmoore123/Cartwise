@@ -125,6 +125,21 @@ class TestMetrics:
                                   "what": "Bounced (Permanent)", "when": iso(2)}]
         assert [k["kind"] for k in g["by_kind"]] == ["weekly", "reminder"]
 
+    def test_admin_mail_is_tracked_on_its_own_line(self, m, M):
+        ad = m["engagement"]["admin"]
+        assert (ad["logged_sent"], ad["sent"], ad["delivered"], ad["delivered_rate"]) == (1, 1, 1, 100)
+        assert m["engagement"]["sent"] == 3 and m["email"]["sent"] == 3          # totals unchanged
+        # only an admin email has been tracked: tracking is on, but there is no user data yet
+        only_admin = M.build(NOW, [user("a@x.com", 100, login=1)], [],
+                             [{"ts": iso(1), "source": "email", "level": "info", "ok": True, "kind": "test"}],
+                             [{"started_at": iso(1), "errors": []}], [],
+                             [{"pk": "em#9", "kind": "admin_report", "sent_at": iso(0, 1), "delivered_at": iso(0, 1),
+                               "opened_at": iso(0, 1)}])
+        g = only_admin["engagement"]
+        assert g["tracking_seen"] is True and g["has_data"] is False and g["opens_seen"] is True
+        assert g["admin"]["open_rate"] == 100
+        assert not any("Turn on the email events" in a["text"] for a in only_admin["attention"])
+
     def test_value_from_the_weekly_run(self, m):
         v = m["value"]
         assert v["last"]["date"] == "2026-11-18" and v["previous"]["date"] == "2026-11-11"
@@ -404,6 +419,10 @@ class TestReportsPage:
         assert 'role="img"' in chart and "aria-label" in chart and "data-tip" in chart and "<title>" in chart
         assert "rpt-hit" in chart and 'tabindex="0"' in chart          # keyboard reachable
         assert self.js.count("rptChart('") == 4                        # four small charts, one measure each
+
+    def test_admin_row_and_accurate_tracking_note(self):
+        assert "Admin emails" in self.js and "not in the totals" in self.js
+        assert "!eng.tracking_seen ?" in self.js and "Tracking is working, but no email to a user" in self.js
 
     def test_untrusted_text_is_escaped(self):
         body = self.js[self.js.index("function rptRender(m){"):self.js.index("async function adminLoadStats(){")]

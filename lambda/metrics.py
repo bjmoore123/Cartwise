@@ -165,7 +165,7 @@ def build(now, users, auth_logs, app_logs, scrape_logs, feedback, metric_rows,
     }
 
     # ── Email sent (app log) ─────────────────────────────────────────────────
-    sent, failed = Counter(), Counter()
+    sent, failed, admin_log = Counter(), Counter(), Counter()
     errors_by_source, errors_prev = Counter(), 0
     for row in app_logs:
         ts = _dt(row.get("ts"))
@@ -177,7 +177,8 @@ def build(now, users, auth_logs, app_logs, scrape_logs, feedback, metric_rows,
         if row.get("source") != "email" or "ok" not in row or row.get("action") or not _in(ts, start, now):
             continue
         kind = row.get("kind") or mailmeta.kind_from_subject(row.get("subject") or "")
-        if kind in ADMIN_KINDS:
+        if kind in ADMIN_KINDS:                      # mail to the admin: shown on its own line
+            admin_log["sent" if row.get("ok") else "failed"] += 1
             continue
         (sent if row.get("ok") else failed)[kind] += 1
     kinds = [k for k in mailmeta.KINDS + ("other",) if sent.get(k) or failed.get(k)]
@@ -194,21 +195,21 @@ def build(now, users, auth_logs, app_logs, scrape_logs, feedback, metric_rows,
     }
 
     # ── Email engagement (Resend events) ─────────────────────────────────────
-    eng_kind, problems = {}, []
+    eng_kind, problems, admin_eng = {}, [], Counter()
     for row in metric_rows:
         if not str(row.get("pk", "")).startswith("em#"):
             continue
         first = _dt(row.get("sent_at")) or _dt(row.get("first_seen")) or _dt(row.get("delivered_at"))
         kind = row.get("kind") or "other"
-        if not _in(first, start, now) or kind in ADMIN_KINDS:
+        if not _in(first, start, now):
             continue
-        k = eng_kind.setdefault(kind, Counter())
+        k = admin_eng if kind in ADMIN_KINDS else eng_kind.setdefault(kind, Counter())
         k["sent"] += 1
         for field, name in (("delivered_at", "delivered"), ("opened_at", "opened"), ("clicked_at", "clicked"),
                             ("bounced_at", "bounced"), ("complained_at", "complained")):
             if row.get(field):
                 k[name] += 1
-        if row.get("bounced_at") or row.get("complained_at"):
+        if kind not in ADMIN_KINDS and (row.get("bounced_at") or row.get("complained_at")):
             problems.append({"to": row.get("to", ""), "kind": mailmeta.KIND_LABELS.get(kind, kind),
                              "what": "Marked as spam" if row.get("complained_at")
                                      else f"Bounced ({row.get('bounce_type') or 'unknown'})",
@@ -224,6 +225,11 @@ def build(now, users, auth_logs, app_logs, scrape_logs, feedback, metric_rows,
     engagement = {
         "has_data": tot["sent"] > 0, **_eng(tot),
         "has_opens": tot["opened"] > 0, "has_clicks": tot["clicked"] > 0,
+        # v9.12.1: has any event arrived at all this week (user or admin mail)? Tells "Resend isn't
+        # set up" apart from "set up, but no user email has been tracked yet".
+        "tracking_seen": tot["sent"] + admin_eng["sent"] > 0,
+        "opens_seen": tot["opened"] + admin_eng["opened"] > 0,
+        "admin": {"logged_sent": admin_log["sent"], "logged_failed": admin_log["failed"], **_eng(admin_eng)},
         "by_kind": [{"kind": k, "label": mailmeta.KIND_LABELS.get(k, k), **_eng(v)}
                     for k, v in sorted(eng_kind.items(), key=lambda kv: -kv[1]["sent"])],
         "problems": sorted(problems, key=lambda p: p["when"] or "", reverse=True)[:20],
@@ -354,7 +360,7 @@ def _attention(m: dict, now) -> list:
     if m["verification"]["unverified_over_28d"]:
         n = m["verification"]["unverified_over_28d"]
         add("info", f'{n} account{"s" if n != 1 else ""} still unverified after 28 days and all reminders.')
-    if not g["has_data"] and e["sent"]:
+    if not g["tracking_seen"] and e["sent"]:
         add("info", "No delivery or open data yet. Turn on the email events in Resend (see the v9.12 test plan).")
     return out
 

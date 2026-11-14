@@ -2858,12 +2858,18 @@ function rptRender(m){
   const kinds = em.by_kind.slice();
   eng.by_kind.forEach(k => { if(!kinds.some(x=>x.kind===k.kind)) kinds.push({kind:k.kind,label:k.label,sent:k.sent,failed:0}); });
   const cell = (k, f, pct) => { const e=byEng[k]; return e ? (pct ? rptP(e[f]) : rptN(e[f])) : '–'; };
+  // v9.12.1: mail to the admin (weekly report, feedback notices) on its own line, outside the totals
+  const ad = eng.admin || {};
+  const adSent = Math.max(ad.logged_sent || 0, ad.sent || 0);
+  const adminRow = (adSent || ad.logged_failed) ? `<tr class="adm"><td>Admin emails <span class="rpt-sub">to you: weekly report, feedback notices · not in the totals</span></td><td>${rptN(adSent)}</td><td>${rptN(ad.logged_failed||0)}</td><td>${ad.sent?rptP(ad.delivered_rate):'–'}</td><td>${ad.opened?rptP(ad.open_rate):'–'}</td><td>${ad.clicked?rptP(ad.click_rate):'–'}</td><td>${ad.sent?rptN(ad.bounced):'–'}</td></tr>` : '';
   const emailTbl = kinds.length ? `<div style="overflow-x:auto"><table class="rpt-tbl"><thead><tr><th>Email</th><th>Sent</th><th>Failed</th><th>Delivered</th><th>Opened</th><th>Clicked</th><th>Bounced</th></tr></thead><tbody>
       ${kinds.map(k=>`<tr><td>${escH(k.label)}</td><td>${rptN(k.sent)}</td><td>${rptN(k.failed)}</td><td>${cell(k.kind,'delivered_rate',1)}</td><td>${eng.has_opens?cell(k.kind,'open_rate',1):'–'}</td><td>${eng.has_clicks?cell(k.kind,'click_rate',1):'–'}</td><td>${cell(k.kind,'bounced')}</td></tr>`).join('')}
       <tr class="tot"><td>All</td><td>${rptN(em.sent)}</td><td>${rptN(em.failed)}</td><td>${rptP(eng.delivered_rate)}</td><td>${eng.has_opens?rptP(eng.open_rate):'–'}</td><td>${eng.has_clicks?rptP(eng.click_rate):'–'}</td><td>${rptN(eng.bounced)}</td></tr>
-    </tbody></table></div>` : '<div class="rpt-empty">No emails were sent this week.</div>';
-  const engNote = !eng.has_data ? '<div class="rpt-note">Delivered, opened and bounced need the email events turned on in Resend (one-time setup in the v9.12 test plan). Sent and failed come from our own log.</div>'
-    : (!eng.has_opens ? '<div class="rpt-note">No opens recorded: open tracking is off for the sending domain in Resend.</div>' : '<div class="rpt-note">Rates count each message once: delivered ÷ sent, opened and clicked ÷ delivered. Opens are approximate (mail apps that preload images count as opened).</div>');
+      ${adminRow}
+    </tbody></table></div>` : (adminRow ? `<div style="overflow-x:auto"><table class="rpt-tbl"><thead><tr><th>Email</th><th>Sent</th><th>Failed</th><th>Delivered</th><th>Opened</th><th>Clicked</th><th>Bounced</th></tr></thead><tbody>${adminRow}</tbody></table></div>` : '<div class="rpt-empty">No emails were sent this week.</div>');
+  const engNote = !eng.tracking_seen ? '<div class="rpt-note">Delivered, opened and bounced need the email events turned on in Resend (one-time setup in the v9.12 test plan). Sent and failed come from our own log.</div>'
+    : (!eng.has_data ? '<div class="rpt-note">Tracking is working, but no email to a user has been tracked yet this week. Delivered and opened fill in for emails sent from now on; a “–” means no tracking data for that row.</div>'
+    : (!eng.opens_seen ? '<div class="rpt-note">Delivery is being tracked, but no opens have been recorded. If you have opened one of these emails, open tracking is probably off for the sending domain in Resend (Domains → your domain).</div>' : '<div class="rpt-note">Rates count each message once: delivered ÷ sent, opened and clicked ÷ delivered. Opens are approximate (mail apps that preload images count as opened).</div>'));
   const emailKv = rptRows([
     ['Unsubscribed this week', rptN(em.unsubscribes)],
     ['Unsubscribed in total', `${rptN(em.unsubscribed_total)} · ${rptP(em.unsubscribed_rate)}`],
