@@ -650,7 +650,7 @@ async function recheckVerified() {
 // ═══════════════════════════════════════════════════════════════════
 // FEEDBACK (v9.9)
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = '9.13';
+const APP_VERSION = '9.14.2';
 const FB_MAX = 2000;
 function openFeedback() {
   closeMobileNav && closeMobileNav();
@@ -2686,7 +2686,9 @@ async function initAdmin(){
     _adminLoggedIn=true;
     document.getElementById('admin-login-sec').style.display='none';
     document.getElementById('admin-dash').style.display='block';
-    adminLoadUsers();
+    const saved=history.state&&history.state.cwAdmin;
+    if(saved){ adminLoadUsers().then(()=>adminApplyState(saved,false)); }   // reload: come back to the same view
+    else { adminLoadUsers(); adminReplaceState(); }
     adminPostLogin();
     return;
   }
@@ -2759,11 +2761,15 @@ function rptTile(label, value, note){
 function rptRows(pairs){
   return `<table class="rpt-kv"><tbody>${pairs.filter(Boolean).map(([k,v,sub])=>`<tr><td>${k}${sub?`<div class="rpt-sub">${sub}</div>`:''}</td><td>${v}</td></tr>`).join('')}</tbody></table>`;
 }
-function rptBars(list, labelKey, countKey, color){
+function rptBars(list, labelKey, countKey, color, filterType){
+  // v9.14.2: with filterType ('item' | 'loc') each row's count opens those users
   const max = Math.max(1, ...list.map(x => x[countKey]));
+  const ct = x => filterType
+    ? `<a href="#" class="rpt-link" data-action="admin-open-filter" data-type="${filterType}" data-value="${escH(x[labelKey])}" title="Show these users">${rptN(x[countKey])}</a>`
+    : rptN(x[countKey]);
   return `<ul class="stat-list">${list.map(x => `<li><span class="rpt-barlbl" title="${escH(x[labelKey])}">${escH(x[labelKey])}</span>
     <div class="sl-bar-wrap"><div class="sl-bar" style="width:${Math.round(x[countKey]/max*100)}%${color?`;background:${color}`:''}"></div></div>
-    <span class="sl-ct">${rptN(x[countKey])}</span></li>`).join('')}</ul>`;
+    <span class="sl-ct">${ct(x)}</span></li>`).join('')}</ul>`;
 }
 // One small chart: a single measure over the weekly snapshots. type: 'bar' (counts per week)
 // or 'line' (a level over time). Hover or focus a week for its value.
@@ -2794,24 +2800,33 @@ function rptChart(title, points, type, fmt, unit){
     <div class="rpt-chart-x"><span>${rptDay(pts[0].week)}</span><span>${rptDay(last.week)}</span></div></div>`;
 }
 function rptRender(m){
+  // v9.14: a number that is the size of a user group links to that list on Admin → Users. The
+  // number shown is the group's own count (m.segments), so it always matches the list it opens.
+  const S = m.segments || {};
+  const L = (key, text) => (key in S)
+    ? `<a href="#" class="rpt-link" data-action="admin-open-segment" data-seg="${key}" title="Show these users">${text===undefined?rptN(S[key]):text}</a>`
+    : (text===undefined?'–':text);
+  const LALL = text => `<a href="#" class="rpt-link" data-action="admin-open-segment" data-seg="" title="Show all users">${text}</a>`;
+  const LOG = (kind, filter, text) => `<a href="#" class="rpt-link" data-action="admin-open-log" data-log="${kind}" data-filter="${filter||''}" title="Open the log">${text}</a>`;
+  const TAB = (tab, text) => `<a href="#" class="rpt-link" data-action="admin-open-tab" data-tab="${tab}" title="Open ${tab}">${text}</a>`;
   const h=m.headline, prev=m.previous||{}, g=m.growth, ver=m.verification, act=m.activity, em=m.email,
         eng=m.engagement, val=m.value, hl=m.health, ls=m.lists;
   const first = m.previous ? '' : 'no earlier report yet';
   const period = `${rptDay(m.window.start)} – ${rptDay(m.window.end)}`;
 
   const tiles = [
-    rptTile('Total users', rptN(h.total), rptDelta(h.total, prev.total) || first),
-    rptTile('New sign-ups', rptN(h.new), (h.new||g.new_prev) ? rptDelta(h.new, g.new_prev) : 'none last week either'),
-    rptTile('Verified', rptP(h.verified_rate), rptDelta(h.verified_rate, prev.verified_rate, ' pts') || `${rptN(h.verified)} of ${rptN(h.total)}`),
-    rptTile('Engaged this week', rptN(h.engaged_7d), rptDelta(h.engaged_7d, prev.engaged_7d) || `${m.usage.d7.by_email} by email · ${m.usage.d7.by_site} on the site`),
-    rptTile('Emails sent', rptN(h.emails_sent), h.emails_failed ? `${h.emails_failed} failed` : (rptDelta(h.emails_sent, prev.emails_sent) || 'none failed')),
+    rptTile('Total users', LALL(rptN(h.total)), rptDelta(h.total, prev.total) || first),
+    rptTile('New sign-ups', L('new_7'), (h.new||g.new_prev) ? rptDelta(h.new, g.new_prev) : 'none last week either'),
+    rptTile('Verified', L('verified', rptP(h.verified_rate)), rptDelta(h.verified_rate, prev.verified_rate, ' pts') || `${rptN(h.verified)} of ${rptN(h.total)}`),
+    rptTile('Engaged this week', L('engaged_7'), rptDelta(h.engaged_7d, prev.engaged_7d) || `${m.usage.d7.by_email} by email · ${m.usage.d7.by_site} on the site`),
+    rptTile('Emails sent', LOG('app','email',rptN(h.emails_sent)), h.emails_failed ? `${h.emails_failed} failed` : (rptDelta(h.emails_sent, prev.emails_sent) || 'none failed')),
     rptTile('Opened', eng.has_opens ? rptP(h.open_rate) : '–', eng.has_opens ? (rptDelta(h.open_rate, prev.open_rate, ' pts') || 'of delivered') : (eng.has_data ? 'open tracking is off' : 'no tracking data yet')),
     rptTile('Users with a match', rptN(h.users_matched), val.last ? `${rptP(val.last.match_rate)} of users with a list` : 'after the next weekly run'),
-    rptTile('Open feedback', rptN(h.feedback_open), `${hl.feedback_new} new this week`),
+    rptTile('Open feedback', TAB('feedback', rptN(h.feedback_open)), `${hl.feedback_new} new this week`),
   ].join('');
 
   const attn = m.attention.length
-    ? `<div class="rpt-attn ${m.attention.some(a=>a.level==='bad')?'bad':'warn'}"><div class="rpt-attn-hd">Needs attention</div><ul>${m.attention.map(a=>`<li class="${escH(a.level)}">${escH(a.text)}</li>`).join('')}</ul></div>`
+    ? `<div class="rpt-attn ${m.attention.some(a=>a.level==='bad')?'bad':'warn'}"><div class="rpt-attn-hd">Needs attention</div><ul>${m.attention.map(a=>`<li class="${escH(a.level)}">${escH(a.text)}${a.seg&&(a.seg in S)?` ${L(a.seg,'Show')}`:a.log?` ${LOG(a.log.split(':')[0], a.log.split(':')[1]||'', 'Show')}`:a.tab?` ${TAB(a.tab,'Show')}`:''}</li>`).join('')}</ul></div>`
     : `<div class="rpt-attn ok"><strong>Nothing needs attention this week.</strong></div>`;
 
   const T = m.trend;
@@ -2826,35 +2841,35 @@ function rptRender(m){
     </div>`;
 
   const maxMonth = Math.max(1, ...g.by_month.map(x=>x.count));
-  const months = g.by_month.length ? `<div class="rpt-months">${g.by_month.map(x=>`<div class="rpt-mon" title="${escH(rptMonth(x.month))}: ${x.count} sign-up${x.count===1?'':'s'} still on file"><div class="rpt-mon-ct">${x.count}</div><div class="rpt-mon-bar" style="height:${Math.max(2,Math.round(x.count/maxMonth*64))}px"></div><div class="rpt-mon-lbl">${escH(rptMonth(x.month).slice(0,3))}</div></div>`).join('')}</div>` : '<div class="rpt-empty">No data yet</div>';
+  const months = g.by_month.length ? `<div class="rpt-months">${g.by_month.map(x=>`<div class="rpt-mon" title="${escH(rptMonth(x.month))}: ${x.count} sign-up${x.count===1?'':'s'} still on file"><div class="rpt-mon-ct"><a href="#" class="rpt-link" data-action="admin-open-filter" data-type="month" data-value="${escH(x.month)}" title="Show these users">${x.count}</a></div><div class="rpt-mon-bar" style="height:${Math.max(2,Math.round(x.count/maxMonth*64))}px"></div><div class="rpt-mon-lbl">${escH(rptMonth(x.month).slice(0,3))}</div></div>`).join('')}</div>` : '<div class="rpt-empty">No data yet</div>';
 
   const top = Math.max(1, m.funnel[0].count);
-  const funnel = m.funnel.map(s=>`<div class="rpt-fun"><div class="rpt-fun-row"><span>${escH(s.step)}</span><span><strong>${rptN(s.count)}</strong> · ${rptP(s.pct)}${s.lost?` <em>(−${s.lost})</em>`:''}</span></div><div class="rpt-fun-track"><div class="rpt-fun-bar" style="width:${Math.max(1,Math.round(s.count/top*100))}%"></div></div></div>`).join('');
+  const funnel = m.funnel.map((s,i)=>`<div class="rpt-fun"><div class="rpt-fun-row"><span>${escH(s.step)}</span><span><strong>${i?L(['','verified','reach_store','reach_list','alert_recipient'][i], rptN(s.count)):LALL(rptN(s.count))}</strong> · ${rptP(s.pct)}${s.lost?` <em>(−${L(['','stop_verify','stop_store','stop_list','stop_alerts'][i]||'', String(s.lost))})</em>`:''}</span></div><div class="rpt-fun-track"><div class="rpt-fun-bar" style="width:${Math.max(1,Math.round(s.count/top*100))}%"></div></div></div>`).join('');
 
   const byRem = ver.by_reminder.filter(r=>r.after&&r.count).map(r=>`reminder ${r.after}: ${r.count}`).join(', ');
   const pending = ver.reminders_pending.filter(r=>r.count).map(r=>`${r.count} at ${r.sent} sent`).join(', ');
   const verification = rptRows([
-    [`Sign-ups in the last ${ver.cohort_days} days`, rptN(ver.cohort)],
-    ['Verified within 24 hours', `${rptN(ver.within_24h)} · ${rptP(ver.within_24h_rate)}`],
-    ['Verified within 7 days', `${rptN(ver.within_24h+ver.within_7d)} · ${rptP(ver.within_7d_rate)}`],
-    ver.verified_time_unknown ? ['Verified, time not recorded', rptN(ver.verified_time_unknown), 'verified before v9.12 started recording it'] : null,
-    ['Still unverified', rptN(ver.still_unverified)],
-    ['Unverified accounts (all)', rptN(g.unverified), pending ? 'reminders: ' + escH(pending) : ''],
-    ['Unverified, reminders still going', rptN(ver.reminders_in_progress), 'one reminder a week, 4 in all'],
-    ['Unverified after all 4 reminders', rptN(ver.reminders_finished), 'the last link has expired'],
-    ver.verify_emails_known ? ['Unverified with no verification email on record', rptN(ver.no_verify_email), 'counts in Admin → Users'] : null,
-    ['Unverified and unsubscribed', rptN(ver.unverified_unsubscribed)],
+    [`Sign-ups in the last ${ver.cohort_days} days`, L('new_30')],
+    ['Verified within 24 hours', `${L('verified_24h_30')} · ${rptP(ver.within_24h_rate)}`],
+    ['Verified within 7 days', `${L('verified_7d_30')} · ${rptP(ver.within_7d_rate)}`],
+    ver.verified_time_unknown ? ['Verified, time not recorded', L('verified_unknown_30', rptN(ver.verified_time_unknown)), 'verified before v9.12 started recording it'] : null,
+    ['Still unverified', L('unverified_new_30')],
+    ['Unverified accounts (all)', L('unverified'), pending ? 'reminders: ' + escH(pending) : ''],
+    ['Unverified, reminders still going', L('unverified_reminding'), 'one reminder a week, 4 in all'],
+    ['Unverified after all 4 reminders', L('unverified_finished'), 'the last link has expired'],
+    ver.verify_emails_known ? ['Unverified with no verification email on record', L('unverified_no_email'), 'counts in Admin → Users'] : null,
+    ['Unverified and unsubscribed', L('unverified_unsub')],
     ver.tracked ? ['Verified with no reminder / after a reminder', `${ver.by_reminder[0].count} / ${ver.tracked-ver.by_reminder[0].count}`, byRem ? 'after ' + escH(byRem) : ''] : null,
   ]);
 
   const activity = rptRows([
-    ['Signed in during the last 7 days', `${rptN(act.active_7d)} · ${rptP(act.active_7d_rate)}`],
-    ['Signed in during the last 30 days', `${rptN(act.active_30d)} · ${rptP(act.active_30d_rate)}`],
-    ['No sign-in for 60+ days', rptN(act.dormant_60d)],
-    ['Never signed in (on record)', rptN(act.never_signed_in)],
-    ['Sign-ins this week', rptN(act.sign_ins)],
-    ['Failed sign-ins / lockouts', `${act.failed_sign_ins} / ${act.lockouts}`],
-    ['PIN resets requested / completed', `${act.pin_resets_requested} / ${act.pin_resets_done}`],
+    ['Signed in during the last 7 days', `${L('signed_in_7')} · ${rptP(act.active_7d_rate)}`],
+    ['Signed in during the last 30 days', `${L('signed_in_30')} · ${rptP(act.active_30d_rate)}`],
+    ['Not seen for 60+ days', L('dormant_60'), 'no site use or alert opened; accounts older than 60 days'],
+    ['Never signed in (on record)', L('never_signed_in')],
+    ['Sign-ins this week', LOG('auth','success',rptN(act.sign_ins)), 'events in the sign-in log'],
+    ['Failed sign-ins / lockouts', `${LOG('auth','fail',String(act.failed_sign_ins))} / ${LOG('auth','fail',String(act.lockouts))}`],
+    ['PIN resets requested / completed', `${LOG('auth','pin',String(act.pin_resets_requested))} / ${LOG('auth','pin',String(act.pin_resets_done))}`],
   ]);
 
   const byEng = {}; eng.by_kind.forEach(k => byEng[k.kind] = k);
@@ -2866,18 +2881,18 @@ function rptRender(m){
   const adSent = Math.max(ad.logged_sent || 0, ad.sent || 0);
   const adminRow = (adSent || ad.logged_failed) ? `<tr class="adm"><td>Admin emails <span class="rpt-sub">to you: weekly report, feedback notices · not in the totals</span></td><td>${rptN(adSent)}</td><td>${rptN(ad.logged_failed||0)}</td><td>${ad.sent?rptP(ad.delivered_rate):'–'}</td><td>${ad.opened?rptP(ad.open_rate):'–'}</td><td>${ad.clicked?rptP(ad.click_rate):'–'}</td><td>${ad.sent?rptN(ad.bounced):'–'}</td></tr>` : '';
   const emailTbl = kinds.length ? `<div style="overflow-x:auto"><table class="rpt-tbl"><thead><tr><th>Email</th><th>Sent</th><th>Failed</th><th>Delivered</th><th>Opened</th><th>Clicked</th><th>Bounced</th></tr></thead><tbody>
-      ${kinds.map(k=>`<tr><td>${escH(k.label)}</td><td>${rptN(k.sent)}</td><td>${rptN(k.failed)}</td><td>${cell(k.kind,'delivered_rate',1)}</td><td>${eng.has_opens?cell(k.kind,'open_rate',1):'–'}</td><td>${eng.has_clicks?cell(k.kind,'click_rate',1):'–'}</td><td>${cell(k.kind,'bounced')}</td></tr>`).join('')}
-      <tr class="tot"><td>All</td><td>${rptN(em.sent)}</td><td>${rptN(em.failed)}</td><td>${rptP(eng.delivered_rate)}</td><td>${eng.has_opens?rptP(eng.open_rate):'–'}</td><td>${eng.has_clicks?rptP(eng.click_rate):'–'}</td><td>${rptN(eng.bounced)}</td></tr>
+      ${kinds.map(k=>`<tr><td>${escH(k.label)}</td><td>${LOG('app','email',rptN(k.sent))}</td><td>${k.failed?LOG('app','email',rptN(k.failed)):rptN(k.failed)}</td><td>${cell(k.kind,'delivered_rate',1)}</td><td>${eng.has_opens?cell(k.kind,'open_rate',1):'–'}</td><td>${eng.has_clicks?cell(k.kind,'click_rate',1):'–'}</td><td>${cell(k.kind,'bounced')}</td></tr>`).join('')}
+      <tr class="tot"><td>All</td><td>${LOG('app','email',rptN(em.sent))}</td><td>${em.failed?LOG('app','email',rptN(em.failed)):rptN(em.failed)}</td><td>${rptP(eng.delivered_rate)}</td><td>${eng.has_opens?rptP(eng.open_rate):'–'}</td><td>${eng.has_clicks?rptP(eng.click_rate):'–'}</td><td>${rptN(eng.bounced)}</td></tr>
       ${adminRow}
     </tbody></table></div>` : (adminRow ? `<div style="overflow-x:auto"><table class="rpt-tbl"><thead><tr><th>Email</th><th>Sent</th><th>Failed</th><th>Delivered</th><th>Opened</th><th>Clicked</th><th>Bounced</th></tr></thead><tbody>${adminRow}</tbody></table></div>` : '<div class="rpt-empty">No emails were sent this week.</div>');
   const engNote = !eng.tracking_seen ? '<div class="rpt-note">Delivered, opened and bounced need the email events turned on in Resend (one-time setup in the v9.12 test plan). Sent and failed come from our own log.</div>'
     : (!eng.has_data ? '<div class="rpt-note">Tracking is working, but no email to a user has been tracked yet this week. Delivered and opened fill in for emails sent from now on; a “–” means no tracking data for that row.</div>'
     : (!eng.opens_seen ? '<div class="rpt-note">Delivery is being tracked, but no opens have been recorded. If you have opened one of these emails, open tracking is probably off for the sending domain in Resend (Domains → your domain).</div>' : '<div class="rpt-note">Rates count each message once: delivered ÷ sent, opened and clicked ÷ delivered. Opens are approximate (mail apps that preload images count as opened).</div>'));
   const emailKv = rptRows([
-    ['Unsubscribed this week', rptN(em.unsubscribes)],
-    ['Unsubscribed in total', `${rptN(em.unsubscribed_total)} · ${rptP(em.unsubscribed_rate)}`],
-    ['Marked as spam this week', rptN(Math.max(eng.complained, em.spam_complaints))],
-    ['Accounts with a bounced address', rptN(em.bounced_accounts)],
+    ['Alerts turned off this week', L('unsub_7'), 'unsubscribe link, Notifications, admin or spam complaint'],
+    ['Alerts off in total', `${L('alerts_off')} · ${rptP(em.unsubscribed_rate)}`],
+    ['Marked as spam this week', L('spam_7')],
+    ['Accounts with a bounced address', L('bounced')],
   ]);
   const problems = eng.problems.length ? `<div class="rpt-h3">Bounces and spam complaints this week</div><div style="overflow-x:auto"><table class="rpt-tbl left"><thead><tr><th>Address</th><th>Email</th><th>What happened</th><th>When</th></tr></thead><tbody>${eng.problems.map(p=>`<tr><td>${escH(p.to)}</td><td>${escH(p.kind)}</td><td>${escH(p.what)}</td><td>${rptDay(p.when)}</td></tr>`).join('')}</tbody></table></div>` : '';
 
@@ -2891,24 +2906,25 @@ function rptRender(m){
       ['Matches found', rptN(r.matches_total), r.avg_matches!==null ? `${r.avg_matches} per matched user` : ''],
       ['Alert emails sent', rptN(r.emails_sent), r.send_failed ? `${r.send_failed} failed` : ''],
       ['Matched but not emailed', `${r.skipped_unverified} / ${r.skipped_opted_out}`, 'unverified / opted out'],
-    ])}</div><div><div class="rpt-h3" style="margin-top:0">Most matched items this week</div>${val.top_items.length ? rptBars(val.top_items,'item','count') : '<div class="rpt-empty">No matches recorded.</div>'}</div></div>`;
+    ])}</div><div><div class="rpt-h3" style="margin-top:0">Most matched items this week</div>${val.top_items.length ? rptBars(val.top_items,'item','count',null,'item') : '<div class="rpt-empty">No matches recorded.</div>'}</div></div>`;
   } else {
     deals = '<div class="rpt-empty">No weekly run recorded yet. This fills in after the next Wednesday deal email.</div>';
   }
 
   const last = hl.last_scrape;
   const health = rptRows([
-    ['Deal-fetch runs this week', rptN(hl.scrape_runs), hl.scrape_runs_with_errors ? `${hl.scrape_runs_with_errors} with errors` : 'no errors'],
+    ['Deal-fetch runs this week', LOG('scrape','',rptN(hl.scrape_runs)), hl.scrape_runs_with_errors ? `${hl.scrape_runs_with_errors} with errors` : 'no errors'],
     ['Last deal fetch', last ? `${rptDay(last.started_at)}` : '–', last ? `${last.stores} stores, ${rptN(last.deals)} deals, ${last.emails_sent} emails${last.errors?`, ${last.errors} errors`:''}` : ''],
-    ['Errors logged this week', rptN(hl.errors), `${hl.errors_prev} last week` + (hl.errors_by_source.length ? ' · ' + hl.errors_by_source.map(e=>`${escH(e.source)} ${e.count}`).join(', ') : '')],
-    ['Feedback received / still open', `${hl.feedback_new} / ${hl.feedback_open}`],
+    ['Errors logged this week', LOG('app','all',rptN(hl.errors)), `${hl.errors_prev} last week` + (hl.errors_by_source.length ? ' · ' + hl.errors_by_source.map(e=>`${escH(e.source)} ${e.count}`).join(', ') : '')],
+    ['Feedback received / still open', `${TAB('feedback',String(hl.feedback_new))} / ${TAB('feedback',String(hl.feedback_open))}`],
     ['Accounts deleted (all time)', rptN(g.deleted_total)],
   ]);
   const lists = rptRows([
-    ['Users with a list', `${rptN(ls.with_list)} of ${rptN(h.total)}`],
+    ['Users with a list', `${L('with_list')} of ${LALL(rptN(h.total))}`],
     ['Average list size', rptN(ls.avg_items_nonempty), `${ls.avg_items} counting empty lists`],
-    ['Empty lists', rptN(ls.empty_lists)],
-    ['Stores in use', rptN(ls.stores), `${ls.single_user_stores} with one user · ${ls.no_store} users with no store`],
+    ['Empty lists', L('empty_list')],
+    ['Users with no store', L('no_store')],
+    ['Stores in use', rptN(ls.stores), `${ls.single_user_stores} with one user`],
   ]);
 
   const U=m.usage, u7=U.d7, u30=U.d30;
@@ -2917,12 +2933,13 @@ function rptRender(m){
     return `<div class="use-bar" role="img" aria-label="Last ${d.days} days: ${d.both} email and site, ${d.email_only} email only, ${d.site_only} site only, ${d.none} not seen">${part(d.both,'b','Email and site')}${part(d.email_only,'e','Email only')}${part(d.site_only,'s','Site only')}${part(d.none,'n','Not seen')}</div>`; };
   const usageTbl = `<div style="overflow-x:auto"><table class="rpt-tbl"><thead><tr><th></th><th>Last 7 days</th><th>Last 30 days</th></tr></thead><tbody>
       <tr><td colspan="3" style="padding-top:2px">${seg(u7)}<div class="use-legend"><span style="font-weight:700;color:var(--ink-soft)">Last 7 days:</span><span><i class="b"></i>Email and site</span><span><i class="e"></i>Email only</span><span><i class="s"></i>Site only</span><span><i class="n"></i>Not seen</span></div></td></tr>
-      <tr><td>Email and site</td><td>${rptN(u7.both)}</td><td>${rptN(u30.both)}</td></tr>
-      <tr><td>Email only <span class="rpt-sub">opened or clicked a weekly deal alert</span></td><td>${rptN(u7.email_only)}</td><td>${rptN(u30.email_only)}</td></tr>
-      <tr><td>Site only <span class="rpt-sub">signed in, or visited while signed in</span></td><td>${rptN(u7.site_only)}</td><td>${rptN(u30.site_only)}</td></tr>
-      <tr class="tot"><td>Engaged</td><td>${rptN(u7.engaged)} · ${rptP(u7.engaged_rate)}</td><td>${rptN(u30.engaged)} · ${rptP(u30.engaged_rate)}</td></tr>
-      <tr><td>Not seen</td><td>${rptN(u7.none)}</td><td>${rptN(u30.none)}</td></tr>
-      <tr><td>Alert recipients who engaged <span class="rpt-sub">verified, alerts on, store and list set</span></td><td>${rptN(u7.recipients_engaged)} of ${rptN(u7.recipients)}</td><td>${rptN(u30.recipients_engaged)} of ${rptN(u30.recipients)}</td></tr>
+      <tr><td>Email and site</td><td>${L('use_both_7')}</td><td>${L('use_both_30')}</td></tr>
+      <tr><td>Email only <span class="rpt-sub">opened or clicked a weekly deal alert</span></td><td>${L('use_email_7')}</td><td>${L('use_email_30')}</td></tr>
+      <tr><td>Site only <span class="rpt-sub">signed in, or visited while signed in</span></td><td>${L('use_site_7')}</td><td>${L('use_site_30')}</td></tr>
+      <tr class="tot"><td>Engaged</td><td>${L('engaged_7')} · ${rptP(u7.engaged_rate)}</td><td>${L('engaged_30')} · ${rptP(u30.engaged_rate)}</td></tr>
+      <tr><td>Not seen</td><td>${L('use_none_7')}</td><td>${L('use_none_30')}</td></tr>
+      <tr><td>Alert recipients who engaged <span class="rpt-sub">verified, alerts on, store and list set</span></td><td>${L('recipient_engaged_7')} of ${L('alert_recipient')}</td><td>${L('recipient_engaged_30')} of ${L('alert_recipient')}</td></tr>
+      <tr><td>Alert recipients not seen <span class="rpt-sub">getting alerts, but no open and no site use in 30 days</span></td><td>–</td><td>${L('recipient_unengaged_30')}</td></tr>
     </tbody></table></div>`;
   const daySeries = k => U.daily.map(d=>({week:d.day, v:d[k]}));
   const usageDaily = U.tracking_since
@@ -2931,6 +2948,7 @@ function rptRender(m){
   const usageNote = `<div class="rpt-note">Either route counts. Site use is recorded on any signed-in visit from v9.13 (before that, only sign-ins). Email use is an opened or clicked weekly deal alert; opens are approximate, because some mail apps load images automatically and others block them.${U.tracking_since?` Daily counts start ${rptDay(U.tracking_since)}.`:''}</div>`;
   const sec = (title, body) => `<div class="rpt-sec"><div class="rpt-sec-title">${title}</div>${body}</div>`;
   return `<div class="rpt-period">Last 7 days: <strong>${period}</strong>${m.env==='staging'?' · staging':''} <span>Compared with the weekly report saved ${m.previous?rptDay(m.previous.week):'(none yet)'}.</span></div>
+    <div class="rpt-hint">Click an <span class="rpt-link">underlined number</span> to see those users.</div>
     <div class="rpt-tiles">${tiles}</div>${attn}
     ${sec('How people use Cartwise', usageTbl + usageDaily + usageNote)}
     ${sec('Twelve-week trend', trend)}
@@ -2939,7 +2957,7 @@ function rptRender(m){
     ${sec('Email', emailTbl + engNote + '<div style="max-width:520px;margin-top:14px">' + emailKv + '</div>' + problems)}
     ${sec('This week’s deals', deals)}
     <div class="rpt-two">${sec('Lists and stores', lists)}${sec('Sign-ups by month', months + '<div class="rpt-note">Accounts still on file, by the month they signed up.</div>')}</div>
-    <div class="rpt-two">${sec('Users by location', ls.by_geography.length ? rptBars(ls.by_geography,'location','count') : '<div class="rpt-empty">No store data</div>')}${sec('Most popular list items', ls.popular_items.length ? rptBars(ls.popular_items,'item','count') : '<div class="rpt-empty">No list data yet</div>')}</div>`;
+    <div class="rpt-two">${sec('Users by location', ls.by_geography.length ? rptBars(ls.by_geography,'location','count',null,'loc') : '<div class="rpt-empty">No store data</div>')}${sec('Most popular list items', ls.popular_items.length ? rptBars(ls.popular_items,'item','count',null,'item') : '<div class="rpt-empty">No list data yet</div>')}</div>`;
 }
 async function adminLoadStats(){
   const el=document.getElementById('admin-stats-body');
@@ -3074,7 +3092,116 @@ const ADMIN_USER_SORT={
   joined:     u=>u.created_at||'',
   last_login: u=>adminLastActive(u).ts||'',
   verify:     u=>u.email_verified===false ? (u.verify_emails==null ? -1 : u.verify_emails) : '',
+  seg:        u=>{ const c=adminSegColumn(); if(!c) return ''; const v=u[c.field]; return Array.isArray(v)?v.length:(v==null?'':v); },
 };
+// v9.14: groups of users (same definitions as Admin → Reports; tags come from the server)
+let _segCatalog={}, _adminSeg='';
+function adminSegColumn(){ const c=_segCatalog[_adminSeg]; return c&&c.column ? c.column : null; }
+function adminSegCell(u){
+  const c=adminSegColumn(); if(!c) return '';
+  const v=u[c.field];
+  if(v==null||v===''||(Array.isArray(v)&&!v.length)) return '<span style="color:var(--ink-soft)">—</span>';
+  if(Array.isArray(v)) return escH(v.join(', ').replace(/_/g,' '));
+  if(typeof v==='number') return escH(String(v));
+  if(/^\d{4}-\d{2}-\d{2}T/.test(v)){ const d=new Date(v); return isNaN(d)?escH(v):`<span title="${escH(d.toLocaleString())}">${escH(d.toLocaleDateString([], {month:'short',day:'numeric',year:'numeric'}))}</span>`+(c.field==='alerts_off'&&u.alerts_off_via?`<br><span style="color:var(--ink-soft)">${escH(u.alerts_off_via)}</span>`:''); }
+  return escH(String(v));
+}
+function adminFillSegSelect(){
+  const sel=document.getElementById('admin-user-seg'); if(!sel) return;
+  const groups={};
+  Object.values(_segCatalog).forEach(c=>{ (groups[c.group]=groups[c.group]||[]).push(c); });
+  const counts={}; _allAdminUsers.forEach(u=>(u.segments||[]).forEach(k=>counts[k]=(counts[k]||0)+1));
+  sel.innerHTML='<option value="">All users</option>'+Object.entries(groups).map(([g,list])=>
+    `<optgroup label="${escH(g)}">${list.map(c=>`<option value="${escH(c.key)}">${escH(c.label)} (${counts[c.key]||0})</option>`).join('')}</optgroup>`).join('');
+  sel.value=_segCatalog[_adminSeg]?_adminSeg:'';
+}
+// v9.14.2: lists opened from Reports rows that aren't a group: an item, a location, a sign-up month
+let _adminFilter=null;            // {type:'item'|'loc'|'month', value}
+function adminFilterLabel(f){
+  if(!f) return '';
+  if(f.type==='item')  return `with “${f.value}” on their list`;
+  if(f.type==='loc')   return `in ${f.value}`;
+  if(f.type==='month'){ const d=new Date(f.value+'-15T12:00:00Z'); return `who signed up in ${isNaN(d)?f.value:d.toLocaleDateString('en-US',{month:'long',year:'numeric',timeZone:'UTC'})}`; }
+  return '';
+}
+function adminMatchesFilter(u,f){
+  if(!f) return true;
+  if(f.type==='item')  return (u.items||[]).some(i=>String(i).trim().toLowerCase()===f.value);
+  if(f.type==='loc')   return (u.location||'')===f.value;
+  if(f.type==='month') return (u.created_at||'').startsWith(f.value);
+  return true;
+}
+function adminSetFilter(type,value){
+  _adminFilter=type?{type,value:String(value||'')}:null;
+  _adminSeg=''; const sel=document.getElementById('admin-user-seg'); if(sel) sel.value='';
+  if(_adminUserSort.key==='seg') _adminUserSort={key:'last_login',dir:-1};
+  _adminUserPage=0; adminRenderUsers();
+}
+async function adminOpenFilter(type,value){
+  adminNav('users');
+  if(!_allAdminUsers.length) await adminLoadUsers();
+  document.getElementById('admin-user-search').value='';
+  adminSetFilter(type,value);
+  window.scrollTo(0,0);
+}
+// Event counts (sign-ins, errors, emails, deal-fetch runs) open the matching log.
+async function adminOpenLog(kind,filter){
+  if(kind==='auth'){
+    adminNav('users');
+    const sel=document.getElementById('auth-log-filter'); if(sel&&filter) sel.value=filter;
+    if(typeof _allAuthLogs==='undefined'||!_allAuthLogs.length) await adminLoadAuthLogs(); else adminRenderAuthLogs();
+    document.getElementById('auth-log-wrap').closest('.adm-sec').scrollIntoView({block:'start'});
+    return;
+  }
+  adminNav('logging');
+  if(kind==='app'){
+    const sel=document.getElementById('app-log-filter'); if(sel&&filter) sel.value=filter;
+    if(typeof _allAppLogs==='undefined'||!_allAppLogs.length) await adminLoadAppLogs(); else adminRenderAppLogs();
+    document.getElementById('app-log-wrap').closest('.adm-sec').scrollIntoView({block:'start'});
+  } else {
+    document.getElementById('admin-logs-el').closest('.adm-sec').scrollIntoView({block:'start'});
+  }
+}
+
+function adminSetSeg(key){
+  _adminFilter=null;
+  _adminSeg=_segCatalog[key]?key:'';
+  const sel=document.getElementById('admin-user-seg'); if(sel) sel.value=_adminSeg;
+  if(_adminSeg && adminSegColumn()) _adminUserSort={key:'seg',dir:-1};
+  else if(_adminUserSort.key==='seg') _adminUserSort={key:'last_login',dir:-1};
+  _adminUserPage=0;
+  adminRenderUsers();
+}
+async function adminOpenSegment(key){
+  adminNav('users');
+  if(!_allAdminUsers.length) await adminLoadUsers();
+  document.getElementById('admin-user-search').value='';
+  adminSetSeg(key);
+  document.getElementById('apage-users').scrollIntoView({block:'start'});
+}
+function adminFilteredUsers(){
+  const q=(document.getElementById('admin-user-search').value||'').toLowerCase();
+  return adminSortedUsers(_allAdminUsers).filter(u=>
+    (!_adminSeg || (u.segments||[]).includes(_adminSeg)) && adminMatchesFilter(u,_adminFilter) && (
+    !q ||
+    (u.email||'').toLowerCase().includes(q) ||
+    (u.notify_email||'').toLowerCase().includes(q) ||
+    (u.store_id||'').includes(q) ||
+    (u.store_name||'').toLowerCase().includes(q)));
+}
+function adminUsersCsv(){
+  const list=adminFilteredUsers();
+  const col=adminSegColumn();
+  const head=['email','notify_to','verified','store_id','store_name','items','alerts_on','joined','last_active','last_site_use','last_alert_opened','site_days','alert_open_days','verify_emails','reminders_sent','alerts_off_at','alerts_off_via','bounced_at','spam_at','groups'];
+  const q=v=>{ const t=v==null?'':String(v); return /[",\n]/.test(t)?'"'+t.replace(/"/g,'""')+'"':t; };
+  const rows=list.map(u=>{ const a=adminLastActive(u); return [u.email,u.notify_email||u.email,u.email_verified!==false?'yes':'no',u.store_id,u.store_name,u.item_count,u.alerts_on===false?'no':'yes',u.created_at,a.ts,a.site,a.mail,u.site_days,u.alert_open_days,u.verify_emails,u.verify_reminders,u.alerts_off,u.alerts_off_via,u.email_bounced_at,u.complained_at,(u.segments||[]).join(' ')].map(q).join(','); });
+  const csv=[head.join(',')].concat(rows).join('\r\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  const tag=_adminSeg||(_adminFilter?`${_adminFilter.type}-${_adminFilter.value}`.replace(/[^a-z0-9-]+/gi,'_').slice(0,40):'');
+  a.download=`cartwise-users${tag?'-'+tag:''}-${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},500);
+}
 const ADMIN_SORT_FIRST_DIR={email:1,notify:1,store:1,items:-1,joined:-1,last_login:-1,verify:1};
 // v9.13: the latest of site use (any signed-in visit, or a sign-in) and opening a weekly alert
 function adminLastActive(u){
@@ -3137,6 +3264,7 @@ async function adminLoadUsers(){
       const data=await res.json();
       if(!res.ok) throw new Error(data.error||'Failed');
       allUsers=allUsers.concat(data.users||[]);
+      if(data.segment_catalog) data.segment_catalog.forEach(c=>{_segCatalog[c.key]=c;});
       if(!data.next_cursor) break;
       cursor=data.next_cursor;
     }
@@ -3144,6 +3272,7 @@ async function adminLoadUsers(){
     _adminUserPage=0;
     document.getElementById('admin-user-ct').textContent=`(${_allAdminUsers.length})`;
     document.getElementById('admin-user-search').value='';
+    adminFillSegSelect();
     adminRenderUsers();
   }catch(e){document.getElementById('admin-tbody').innerHTML=`<tr><td colspan="8" style="color:var(--red);font-size:13px">Error: ${escH(e.message)}</td></tr>`;}
 }
@@ -3155,18 +3284,22 @@ function adminFilterUsers(){
 
 function adminRenderUsers(){
   const q=(document.getElementById('admin-user-search').value||'').toLowerCase();
+  const segc=_segCatalog[_adminSeg], col=adminSegColumn();
+  const th=document.getElementById('admin-seg-th');
+  if(th){ th.style.display=col?'':'none'; document.getElementById('admin-seg-th-lbl').textContent=col?col.header:''; }
+  const ncols=col?9:8;
   document.querySelectorAll('#admin-users-head th.sortable').forEach(th=>{
     const on=th.dataset.sort===_adminUserSort.key;
     th.classList.toggle('sorted',on); th.classList.toggle('asc',on&&_adminUserSort.dir>0); th.classList.toggle('desc',on&&_adminUserSort.dir<0);
     th.setAttribute('aria-sort', on?(_adminUserSort.dir>0?'ascending':'descending'):'none');
   });
-  const filtered=adminSortedUsers(_allAdminUsers).filter(u=>
-    !q ||
-    (u.email||'').toLowerCase().includes(q) ||
-    (u.notify_email||'').toLowerCase().includes(q) ||
-    (u.store_id||'').includes(q) ||
-    (u.store_name||'').toLowerCase().includes(q)
-  );
+  const filtered=adminFilteredUsers();
+  const banner=document.getElementById('admin-seg-banner');
+  if(banner){
+    banner.style.display=(segc||_adminFilter)?'flex':'none';
+    if(segc) banner.innerHTML=`<span>Showing <strong>${filtered.length} user${filtered.length===1?'':'s'}</strong>: ${escH(segc.label)}${segc.help?` <span style="color:var(--ink-soft)">· ${escH(segc.help)}</span>`:''}</span><button class="abn g" data-action="admin-user-seg-clear">Show all users</button>`;
+    else if(_adminFilter) banner.innerHTML=`<span>Showing <strong>${filtered.length} user${filtered.length===1?'':'s'}</strong> ${escH(adminFilterLabel(_adminFilter))}</span><button class="abn g" data-action="admin-user-seg-clear">Show all users</button>`;
+  }
 
   const total=filtered.length;
   const totalPages=Math.max(1,Math.ceil(total/ADMIN_PAGE_SIZE));
@@ -3182,13 +3315,14 @@ function adminRenderUsers(){
         : '<span style="color:var(--red);font-size:11px" title="Email not verified">✗ unverified</span>';
       return `
       <tr>
-        <td><strong>${escH(u.email)}</strong><br><span style="font-size:11px;color:var(--ink-soft)">${escH(u.created_at?.slice(0,10)||'')}</span></td>
+        <td><button type="button" class="user-link" data-action="admin-timeline" data-email="${escH(u.email)}" title="Show this person's history">${escH(u.email)}</button><br><span style="font-size:11px;color:var(--ink-soft)">${escH(u.created_at?.slice(0,10)||'')}</span></td>
         <td><span style="font-size:12px">${escH(u.notify_email||u.email)}</span><br>${vBadge}</td>
         <td>${u.store_id?`<span style="font-family:var(--mono);font-size:12px">#${escH(u.store_id)}</span><br><span style="font-size:11px;color:var(--ink-soft)">${escH(u.store_name||'')}</span>`:'<span style="color:var(--ink-soft);font-size:12px">—</span>'}</td>
         <td><button class="abn a" data-email="${escH(u.email)}" data-items="${escH(JSON.stringify(u.items))}" data-action="admin-show-items">${u.item_count} item${u.item_count!==1?'s':''}</button></td>
         <td style="text-align:center">${adminVerifyHtml(u)}</td>
         <td style="font-size:11px;color:var(--ink-soft)">${escH(u.created_at?.slice(0,10)||'—')}</td>
         <td style="font-size:11px;white-space:nowrap">${adminUsageHtml(u)}</td>
+        ${col?`<td style="font-size:12px;white-space:nowrap">${adminSegCell(u)}</td>`:''}
         <td><div style="display:flex;gap:5px;flex-wrap:wrap">
           <button class="abn g" data-email="${escH(u.email)}" data-action="admin-show-pin">Reset PIN</button>
           <button class="abn a" data-email="${escH(u.email)}" data-action="admin-show-email">Reset Email</button>
@@ -3196,7 +3330,7 @@ function adminRenderUsers(){
           <button class="abn r" data-email="${escH(u.email)}" data-action="admin-del-user">Delete</button>
         </div></td>
       </tr>`}).join('')
-    : `<tr><td colspan="8" style="color:var(--ink-soft);font-size:13px;padding:16px">${q?'No users match your search.':'No users found.'}</td></tr>`;
+    : `<tr><td colspan="${ncols}" style="color:var(--ink-soft);font-size:13px;padding:16px">${q||segc||_adminFilter?'No users match.':'No users found.'}</td></tr>`;
 
   // Pagination controls
   const pages=document.getElementById('admin-user-pages');
@@ -3208,6 +3342,112 @@ function adminRenderUsers(){
       <span style="padding:4px 8px">${_adminUserPage+1} / ${totalPages}</span>
       <button class="abn g" data-action="admin-user-page" data-dir="1" ${_adminUserPage>=totalPages-1?'disabled':''}>Next →</button>
     </div>`;
+}
+
+// ── v9.14.2: Back / Forward inside Admin ──────────────────────────────────────
+// Each step (tab, group or filter opened from Reports, a log, a person's history) is a
+// browser-history entry with the same #admin address, so Back returns to where you were,
+// scroll position included. The address never changes, so the #admin and reset-link
+// handling (hashchange) is untouched.
+let _navRestoring=false, _tlOpenEmail=null;
+function adminNavState(){
+  const sel=id=>{ const e=document.getElementById(id); return e?e.value:''; };
+  return {tab:_adminActivePage||'users', seg:_adminSeg, filter:_adminFilter, q:sel('admin-user-search'),
+          authFilter:sel('auth-log-filter'), appFilter:sel('app-log-filter'), tl:_tlOpenEmail};
+}
+function adminRemember(){                      // save where we are (and the scroll) on the current entry
+  if(_navRestoring) return;
+  try{ const cur=(history.state&&history.state.cwAdmin)||adminNavState();
+       history.replaceState({...(history.state||{}), cwAdmin:{...cur, y:window.scrollY}}, '', location.href); }catch(_){}
+}
+function adminPushState(){
+  if(_navRestoring) return;
+  try{ history.pushState({cwAdmin:{...adminNavState(), y:window.scrollY}}, '', location.href); }catch(_){}
+}
+function adminReplaceState(){
+  if(_navRestoring) return;
+  try{ history.replaceState({...(history.state||{}), cwAdmin:{...adminNavState(), y:window.scrollY}}, '', location.href); }catch(_){}
+}
+async function adminGo(step){                  // remember here → do the step → new history entry
+  adminRemember();
+  await step();
+  adminPushState();
+}
+async function adminApplyState(st, scroll){
+  _navRestoring=true;
+  try{
+    adminNav(st.tab||'users');
+    if(st.tab==='users'){
+      if(!_allAdminUsers.length) await adminLoadUsers();
+      document.getElementById('admin-user-search').value=st.q||'';
+      if(st.filter) adminSetFilter(st.filter.type, st.filter.value); else adminSetSeg(st.seg||'');
+      const af=document.getElementById('auth-log-filter');
+      if(af && st.authFilter && af.value!==st.authFilter){ af.value=st.authFilter; if(typeof _allAuthLogs!=='undefined'&&_allAuthLogs.length) adminRenderAuthLogs(); }
+    }
+    if(st.tab==='logging'){
+      const ap=document.getElementById('app-log-filter');
+      if(ap && st.appFilter && ap.value!==st.appFilter){ ap.value=st.appFilter; if(typeof _allAppLogs!=='undefined'&&_allAppLogs.length) adminRenderAppLogs(); }
+    }
+    if(st.tl){ if(_tlOpenEmail!==st.tl) await adminShowTimeline(st.tl); }
+    else if(_tlOpenEmail){ _tlOpenEmail=null; closeOv('admin-tl-ov'); }
+    if(scroll) requestAnimationFrame(()=>window.scrollTo(0, st.y||0));
+  } finally { _navRestoring=false; }
+}
+window.addEventListener('popstate', e=>{
+  const st=e.state&&e.state.cwAdmin;
+  if(!st || !_adminLoggedIn) return;
+  const panel=document.getElementById('panel-admin');
+  if(!panel || !panel.classList.contains('active')) return;      // only while the admin panel is open
+  adminApplyState(st, true);
+});
+function adminCloseTimeline(){
+  // opened as its own history entry: going back closes it (and keeps Back/Forward in step)
+  if(history.state&&history.state.cwAdmin&&history.state.cwAdmin.tl) history.back();
+  else { _tlOpenEmail=null; closeOv('admin-tl-ov'); }
+}
+
+// ── v9.14: one person's history ──────────────────────────────────────────────
+let _tlData=null, _tlFilter='';
+const TL_KINDS=[['','All'],['site','Site'],['email','Email'],['account','Account'],['alerts','Alerts'],['security','Sign-in & PIN'],['feedback','Feedback']];
+async function adminShowTimeline(email){
+  _tlData=null; _tlFilter=''; _tlOpenEmail=email;
+  document.getElementById('tl-email').textContent=email;
+  const body=document.getElementById('tl-body');
+  body.innerHTML='<div style="color:var(--ink-soft);font-size:13px">Loading…</div>';
+  document.getElementById('admin-tl-ov').classList.add('vis');
+  try{
+    const res=await fetch(API+'/admin/users/'+encodeURIComponent(email)+'/timeline',{credentials:'include',headers:adminHdrs()});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Failed');
+    _tlData=data; adminRenderTimeline();
+  }catch(e){ body.innerHTML=`<div style="color:var(--red);font-size:13px">Could not load this history: ${escH(e.message)}</div>`; }
+}
+function adminRenderTimeline(){
+  const d=_tlData, body=document.getElementById('tl-body'); if(!d) return;
+  const sm=d.summary, use={both:'Email and site',email:'Email only',site:'Site only',none:'Not seen'}[sm.usage_30]||'—';
+  const fmtDay=t=>{ const x=new Date(t); return isNaN(x)?'':x.toLocaleDateString([], {month:'short',day:'numeric',year:'numeric'}); };
+  const sum=`<div class="tl-sum">
+    <div>Joined<strong>${escH(fmtDay(sm.created_at)||'—')}</strong></div>
+    <div>Last 30 days<strong>${escH(use)}</strong></div>
+    <div>Days on the site<strong>${sm.site_days||0}</strong></div>
+    <div>Days opening alerts<strong>${sm.alert_open_days||0}</strong></div>
+    <div>Email<strong>${sm.verified?'Verified':'Unverified'}${sm.verify_emails!=null&&!sm.verified?` · ${sm.verify_emails} sent`:''}</strong></div>
+    <div>Alerts<strong>${sm.alerts_on?'On':'Off'}</strong></div>
+    <div>Store<strong title="${escH(sm.store)}">${escH(sm.store||'—')}</strong></div>
+    <div>List<strong>${sm.items} item${sm.items===1?'':'s'}</strong></div></div>`;
+  const gaps=d.gaps&&d.gaps.length?`<div class="tl-gaps"><strong>Incomplete history</strong><ul>${d.gaps.map(g=>`<li>${escH(g.note)}</li>`).join('')}</ul>${d.history_since?`<div style="margin-top:4px">Complete from ${escH(fmtDay(d.history_since))}.</div>`:''}</div>`
+    :(!d.history_since?`<div class="tl-gaps"><strong>History not preserved yet</strong>Older sign-ins come from the 90-day log until the next deploy runs the one-time history step.</div>`:'');
+  const filters=`<div class="tl-filters" role="group" aria-label="Filter the history">${TL_KINDS.map(([k,l])=>{ const n=k?d.events.filter(e=>e.kind===k).length:d.events.length; return `<button type="button" class="${_tlFilter===k?'on':''}" data-action="tl-filter" data-kind="${k}" aria-pressed="${_tlFilter===k}">${l} ${n}</button>`; }).join('')}</div>`;
+  const evs=d.events.filter(e=>!_tlFilter||e.kind===_tlFilter);
+  let month='', rows='';
+  evs.forEach(e=>{
+    const t=new Date(e.ts);
+    const m=e.dated&&!isNaN(t)?t.toLocaleDateString([], {month:'long',year:'numeric',timeZone:e.day_only?'UTC':undefined}):'Date not recorded';
+    if(m!==month){ month=m; rows+=`<div class="tl-month">${escH(m)}</div>`; }
+    const when=!e.dated||isNaN(t)?'—':e.day_only?t.toLocaleDateString([], {month:'short',day:'numeric',timeZone:'UTC'}):t.toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+    rows+=`<div class="tl-ev"><span class="tl-when">${escH(when)}</span><span class="tl-dot ${escH(e.kind)}" aria-hidden="true"></span><div><div class="tl-title ${escH(e.tone||'')}">${escH(e.title)}</div>${e.detail?`<div class="tl-detail">${escH(e.detail)}</div>`:''}</div></div>`;
+  });
+  body.innerHTML=sum+gaps+filters+(rows||'<div style="color:var(--ink-soft);font-size:13px;padding:8px 0">Nothing recorded.</div>');
 }
 
 function adminUserPage(dir){
@@ -3311,6 +3551,7 @@ function adminRenderAuthLogs(){
   let logs=_allAuthLogs;
   if(filter==='success') logs=logs.filter(l=>l.success);
   if(filter==='fail')    logs=logs.filter(l=>!l.success);
+  if(filter==='pin')     logs=logs.filter(l=>String(l.reason||'').startsWith('pin_reset'));
   if(!logs.length){
     document.getElementById('auth-log-wrap').innerHTML='<div style="color:var(--ink-soft);font-size:13px;padding:10px">No auth events found.</div>';
     return;
@@ -3578,7 +3819,9 @@ function closeOv(id){document.getElementById(id).classList.remove('vis');}
 })();
 
 document.querySelectorAll('.overlay').forEach(o=>{
-  o.addEventListener('click',e=>{if(e.target===o) o.classList.remove('vis');});
+  o.addEventListener('click',e=>{if(e.target!==o) return;
+    if(o.id==='admin-tl-ov') return adminCloseTimeline();      // v9.14.2: keeps Back/Forward in step
+    o.classList.remove('vis');});
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -3829,14 +4072,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (action === 'wlc-next')          return wlcNext();
 
     // -- Overlays --
-    if (action === 'close-overlay')     return closeOv(el.dataset.ov);
+    if (action === 'close-overlay')     return el.dataset.ov==='admin-tl-ov' ? adminCloseTimeline() : closeOv(el.dataset.ov);
 
     // -- Admin auth --
     if (action === 'admin-login')       return adminLogin();
     if (action === 'admin-sign-out')    return adminSignOut();
 
     // -- Admin nav --
-    if (action === 'admin-nav')         return adminNav(el.dataset.tab);
+    if (action === 'admin-nav')         return adminGo(()=>adminNav(el.dataset.tab));
     if (action === 'show-create-user')  return showCreateUser();
     if (action === 'admin-refresh-users') return adminLoadUsers();
     if (action === 'admin-sort-users')    return adminSortUsers(el.dataset.sort);
@@ -3845,6 +4088,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (action === 'admin-load-auth-logs')  return adminLoadAuthLogs();
     if (action === 'admin-load-stats')      return adminLoadStats();
     if (action === 'admin-send-report')     return adminSendReport(el);
+    if (action === 'admin-open-segment')    { e.preventDefault(); return adminGo(()=>adminOpenSegment(el.dataset.seg)); }
+    if (action === 'admin-open-filter')     { e.preventDefault(); return adminGo(()=>adminOpenFilter(el.dataset.type, el.dataset.value)); }
+    if (action === 'admin-open-log')        { e.preventDefault(); return adminGo(()=>adminOpenLog(el.dataset.log, el.dataset.filter)); }
+    if (action === 'admin-open-tab')        { e.preventDefault(); return adminGo(()=>{ adminNav(el.dataset.tab); window.scrollTo(0,0); }); }
+    if (action === 'admin-user-seg-clear')  { adminSetSeg(''); return adminReplaceState(); }
+    if (action === 'admin-users-csv')       return adminUsersCsv();
+    if (action === 'admin-timeline')        return adminGo(()=>adminShowTimeline(el.dataset.email));
+    if (action === 'tl-filter')             { _tlFilter=el.dataset.kind||''; return adminRenderTimeline(); }
     if (action === 'admin-run-scrape')      return adminRunScrape(el);
     if (action === 'admin-load-logs')       return adminLoadLogs();
     if (action === 'admin-load-tail')       return adminLoadTail();
@@ -3897,9 +4148,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (fn === 'renderDeals')       renderDeals();
       return;
     }
-    if (action === 'admin-render-auth-logs') return adminRenderAuthLogs();
-    if (action === 'admin-render-app-logs')  return adminRenderAppLogs();
+    if (action === 'admin-render-auth-logs') { adminRenderAuthLogs(); return adminReplaceState(); }
+    if (action === 'admin-render-app-logs')  { adminRenderAppLogs(); return adminReplaceState(); }
     if (action === 'admin-feedback-filter')  return adminRenderFeedback();
+    if (action === 'admin-user-seg')         { adminSetSeg(el.value); return adminReplaceState(); }
   });
 
   // ── Input delegation ──────────────────────────────────────────────
@@ -3922,6 +4174,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── Keydown delegation ────────────────────────────────────────────
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.getElementById('admin-tl-ov')?.classList.contains('vis')) return adminCloseTimeline();
     const el = e.target.closest('[data-action]');
     if (!el) return;
     const action = el.dataset.action;

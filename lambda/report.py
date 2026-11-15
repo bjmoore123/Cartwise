@@ -225,8 +225,8 @@ def build_html(m: dict, site: str = "") -> str:
     else:
         email_html = L.p("No emails were sent this week.", small=True, muted=True)
     email_html += _rows([
-        ("Unsubscribed this week", _num(em["unsubscribes"])),
-        ("Unsubscribed in total", f'{em["unsubscribed_total"]} · {_num(em["unsubscribed_rate"], "%")}'),
+        ("Alerts turned off this week", _num(em["unsubscribes"])),
+        ("Alerts off in total", f'{em["unsubscribed_total"]} · {_num(em["unsubscribed_rate"], "%")}'),
         ("Bounced / marked as spam this week", f'{eng["bounced"]} / {max(eng["complained"], em["spam_complaints"])}'),
     ])
 
@@ -254,7 +254,7 @@ def build_html(m: dict, site: str = "") -> str:
     last = hl["last_scrape"]
     health = _rows([
         ("Signed in during the last 30 days", f'{act["active_30d"]} · {_num(act["active_30d_rate"], "%")}'),
-        ("No sign-in for 60+ days", _num(act["dormant_60d"])),
+        ("Not seen for 60+ days", _num(act["dormant_60d"])),
         ("Sign-ins / failed sign-ins / lockouts", f'{act["sign_ins"]} / {act["failed_sign_ins"]} / {act["lockouts"]}'),
         ("PIN resets requested / completed", f'{act["pin_resets_requested"]} / {act["pin_resets_done"]}'),
         ("Deal-fetch runs (with errors)", f'{hl["scrape_runs"]} ({hl["scrape_runs_with_errors"]})'),
@@ -300,7 +300,7 @@ def build_text(m: dict, site: str = "") -> str:
     verify = (f"Verification (sign-ups in the last {ver['cohort_days']} days: {ver['cohort']}): "
               f"{ver['within_24h']} within 24 hours, {ver['within_24h'] + ver['within_7d']} within 7 days, "
               f"{ver['still_unverified']} still unverified.")
-    email = (f"Email: {em['sent']} sent, {em['failed']} failed, {em['unsubscribes']} unsubscribed"
+    email = (f"Email: {em['sent']} sent, {em['failed']} failed, {em['unsubscribes']} turned alerts off"
              + (f", {_num(eng['delivered_rate'], '%')} delivered, {_num(eng['open_rate'], '%')} opened, "
                 f"{eng['bounced']} bounced" if eng["has_data"] else "") + ".")
     if val["last"]:

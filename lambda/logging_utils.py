@@ -47,8 +47,41 @@ def _log_auth_event(event: dict, email: str, success: bool, reason: str = ""):
         if region:  item["region"]  = region
         if city:    item["city"]    = city
         auth_logs_tbl.put_item(Item=item)
+        _keep_on_account(email, now, success, reason, city or region or country)
     except Exception as e:
         print(f"[CW] _log_auth_event failed: {e}")  # never let logging break auth
+
+
+# v9.14: the sign-in log expires after 90 days, so each account also keeps its own sign-in
+# history (the per-user timeline's source). Only for accounts that exist: guesses at unknown
+# emails are not stored on anything. Compact "ts|event|place" strings; capped per account.
+AUTH_HISTORY_MAX = 1000
+_KEEP_REASONS = {"": "sign_in", "bad_pin": "bad_pin", "locked_out": "locked_out",
+                 "pin_reset_requested": "pin_reset_requested", "pin_reset": "pin_reset"}
+
+
+def auth_history_entry(ts: str, success: bool, reason: str, place: str = "") -> str:
+    kind = _KEEP_REASONS.get(reason or "")
+    if kind == "sign_in" and not success:
+        kind = "bad_pin"
+    return f"{ts}|{kind}|{(place or '')[:60].replace('|', ' ')}" if kind else ""
+
+
+def _keep_on_account(email: str, now, success: bool, reason: str, place: str):
+    entry = auth_history_entry(now.isoformat(), success, reason, place)
+    if not entry or not email or email.startswith("__"):
+        return
+    try:
+        from helpers import users_table
+        users_table.update_item(
+            Key={"email": email},
+            UpdateExpression="SET auth_history = list_append(if_not_exists(auth_history, :empty), :e)",
+            ConditionExpression="attribute_exists(email) AND "
+                                "(attribute_not_exists(auth_history) OR size(auth_history) < :max)",
+            ExpressionAttributeValues={":e": [entry], ":empty": [], ":max": AUTH_HISTORY_MAX})
+    except Exception as e:
+        if "ConditionalCheckFailed" not in str(e):
+            print(f"[CW] auth history not kept: {e}")
 
 
 def _log_app_event(source: str, level: str = "info", **fields):

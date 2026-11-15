@@ -24,6 +24,8 @@ from helpers import (
 from auth import register
 import metrics          # v9.12: top-level, so the deploy smoke test catches a missing module
 import report
+import segments         # v9.14
+import timeline
 
 
 import secrets as _secrets
@@ -150,6 +152,7 @@ def admin_list_users(event):
         items = _to_py(resp.get("Items", []))
 
         users = []
+        _now = datetime.now(timezone.utc)
         for u in items:
             if u.get("email") == "__meta__": continue
             p = u.get("prefs") or {}
@@ -175,6 +178,17 @@ def admin_list_users(event):
                 "last_verify_email_at": u.get("last_verify_email_at", ""),
                 "email_bounced_at":     u.get("email_bounced_at", ""),
                 "alerts_on":            p.get("email_enabled", True) is not False,
+                # v9.14: groups this account is in (same definitions as Admin → Reports), and the
+                # fields those groups' extra column shows
+                "segments":             segments.tags(u, _now),
+                "alerts_off":           (segments.alerts_off_at(u).isoformat() if segments.alerts_off_at(u) else ""),
+                "alerts_off_via":       u.get("alerts_off_via", ""),
+                "complained_at":        u.get("complained_at", ""),
+                "last_verify_reminder_at": u.get("last_verify_reminder_at", ""),
+                "site_last":            (segments.site_last(u).isoformat() if segments.site_last(u) else ""),
+                "history_gaps":         sorted((u.get("history_gaps") or {}).keys()),
+                "location":             metrics._city(p),            # same label as Reports → Users by location
+                "verified_at":          u.get("verified_at", ""),
             })
 
         # v9.8.3: users with no last_login yet get it from the auth log, saved once
@@ -203,7 +217,7 @@ def admin_list_users(event):
         elif "LastEvaluatedKey" in resp:
             next_cursor = resp["LastEvaluatedKey"].get("email", "")
 
-        result = {"users": users, "total": len(users)}
+        result = {"users": users, "total": len(users), "segment_catalog": segments.catalog_json()}
         if next_cursor:
             result["next_cursor"] = next_cursor
         return ok(result)
@@ -287,10 +301,12 @@ def admin_patch_prefs(event, body, email: str):
     incoming = body.get("prefs", body)
     filtered = {k: v for k, v in incoming.items() if k in ALLOWED_PREF_KEYS}
     merged   = {**existing, **filtered}
+    from shared import usage
+    expr, vals = usage.alerts_change(existing.get("email_enabled"), merged.get("email_enabled"), "admin")
     users_table.update_item(
         Key={"email": email},
-        UpdateExpression="SET prefs = :p",
-        ExpressionAttributeValues={":p": merged},
+        UpdateExpression="SET prefs = :p" + (", " + expr if expr else ""),
+        ExpressionAttributeValues={":p": merged, **vals},
     )
     return ok({"message": f"Prefs updated for {email}.", "prefs": merged})
 
@@ -335,6 +351,12 @@ def admin_resend_verification(event, email: str):
 def admin_metrics(event):
     """GET /admin/metrics -- every number on Admin -> Reports (v9.12; replaces /admin/stats)."""
     return metrics.admin_metrics(event)
+
+
+@require_admin
+def admin_user_timeline(event, email: str):
+    """GET /admin/users/{email}/timeline -- one person's history (v9.14)."""
+    return timeline.admin_timeline(event, email)
 
 
 @require_admin

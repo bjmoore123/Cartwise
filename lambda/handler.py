@@ -21,7 +21,7 @@ from admin    import (
     admin_list_users, admin_create_user, admin_get_user, admin_delete_user,
     admin_reset_pin, admin_reset_email, admin_patch_prefs, admin_clear_items,
     admin_resend_verification,
-    admin_metrics, admin_send_report, admin_inbound_logs, admin_feedback_list, admin_feedback_update,
+    admin_metrics, admin_send_report, admin_user_timeline, admin_inbound_logs, admin_feedback_list, admin_feedback_update,
     get_scrape_logs, invoke_scraper, get_log_tail,
     get_auth_logs, get_app_logs,
 )
@@ -30,6 +30,12 @@ from admin    import (
 def handler(event, context):
     # v9.12: the Thursday EventBridge rule calls this Lambda directly (not through API Gateway).
     # Only a direct invoke can look like this: HTTP requests always carry requestContext.
+    # v9.14: deploy.sh calls this once per deploy to preserve each account's history (idempotent).
+    if event.get("source") == "history-migration" and "requestContext" not in event:
+        from timeline import migrate
+        import json as _json
+        return {"statusCode": 200, "body": _json.dumps(migrate())}
+
     if event.get("source") == "admin-weekly-report" and "requestContext" not in event:
         from report import send_report
         import json as _json
@@ -114,5 +120,6 @@ def handler(event, context):
         if action == "prefs"       and method == "PUT":  return admin_patch_prefs(event, body, uemail)
         if action == "items"       and method == "DELETE": return admin_clear_items(event, uemail)
         if action == "resend-verification" and method == "POST": return admin_resend_verification(event, uemail)
+        if action == "timeline"    and method == "GET":  return admin_user_timeline(event, uemail)
 
     return err("Not found.", 404)

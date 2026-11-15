@@ -12,6 +12,8 @@ Pure helpers + two small writers that never raise (usage tracking must never bre
 from datetime import datetime, timezone, timedelta
 
 DAY_ROW_DAYS = 400
+MAX_DAYS = 1000                             # site-use days kept per account (~3 years of daily use)
+ALERT_VIAS = ("settings", "unsubscribe link", "spam complaint", "admin")
 SEEN_EVERY = timedelta(minutes=30)          # refresh last_seen_at at most this often per user
 
 
@@ -67,9 +69,15 @@ def touch_site(users_table, metrics_table, user: dict, now=None) -> None:
             Key={"email": email}, UpdateExpression="SET last_seen_at = :now",
             ConditionExpression="attribute_exists(email)", ExpressionAttributeValues={":now": now.isoformat()})
         user["last_seen_at"] = now.isoformat()
-        if not last or day_key(last) != day_key(now):
-            users_table.update_item(Key={"email": email}, UpdateExpression="ADD site_days :one",
-                                    ExpressionAttributeValues={":one": 1})
+        today = day_key(now)
+        days = list(user.get("site_day_list") or [])
+        if today not in days:
+            # v9.14: every day this person used the site, kept on the account (the timeline's source).
+            # Kept to the last MAX_DAYS days used; site_days stays the all-time count.
+            days = (days + [today])[-MAX_DAYS:]
+            users_table.update_item(Key={"email": email}, UpdateExpression="SET site_day_list = :d ADD site_days :one",
+                                    ExpressionAttributeValues={":d": days, ":one": 1})
+            user["site_day_list"] = days
             _bump_day(metrics_table, "site_users", now)
     except Exception as e:
         print(f"[CW] usage.touch_site: {e}")
@@ -96,3 +104,17 @@ def credit_alert(users_table, metrics_table, account: str, event: str, when: str
     except Exception as e:
         if "ConditionalCheckFailed" not in str(e):
             print(f"[CW] usage.credit_alert: {e}")
+
+
+def alerts_change(old_enabled, new_enabled, via: str, now=None):
+    """(UpdateExpression fragment, values) recording when and how weekly alerts were turned
+    off or back on (v9.14), or ("", {}) if nothing changed. `old_enabled` None = unknown/default on."""
+    now = now or datetime.now(timezone.utc)
+    was_on, is_on = old_enabled is not False, new_enabled is not False
+    if was_on == is_on:
+        return "", {}
+    if not is_on:
+        return "alerts_off_at = :ao_t, alerts_off_via = :ao_v", {":ao_t": now.isoformat(),
+                                                                   ":ao_v": via if via in ALERT_VIAS else "settings"}
+    return "alerts_on_at = :ao_t, alerts_on_via = :ao_v", {":ao_t": now.isoformat(),
+                                                             ":ao_v": via if via in ALERT_VIAS else "settings"}

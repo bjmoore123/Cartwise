@@ -6,7 +6,7 @@ One row per message in the metrics table, keyed by Resend's email id:
 
     pk = em#<email_id>   kind, to, sent_at, delivered_at, opened_at, clicked_at,
                          bounced_at (+ bounce_type), complained_at, opens, clicks
-                         (first time each thing happened; kept 120 days)
+                         (first time each thing happened; kept 3 years)
 
 Counting unique messages (not raw events) is what makes "open rate" mean something: one
 person opening a mail five times is one open.
@@ -32,7 +32,7 @@ EVENTS = {
     "email.bounced": "bounced_at", "email.complained": "complained_at",
     "email.opened": "opened_at", "email.clicked": "clicked_at",
 }
-KEEP_DAYS = 120
+KEEP_DAYS = 1095                 # v9.14: 3 years (was 120 days), so each person's email history stays complete
 
 
 def is_engagement_event(evt_type: str) -> bool:
@@ -125,8 +125,9 @@ def _on_complaint(address: str, kind: str):
         now = datetime.now(timezone.utc).isoformat()
         users_table.update_item(
             Key={"email": address},
-            UpdateExpression="SET prefs = :p, complained_at = :t, unsubscribed_at = if_not_exists(unsubscribed_at, :t)",
-            ExpressionAttributeValues={":p": prefs, ":t": now})
+            UpdateExpression="SET prefs = :p, complained_at = :t, unsubscribed_at = if_not_exists(unsubscribed_at, :t), "
+                             "alerts_off_at = :t, alerts_off_via = :v",
+            ExpressionAttributeValues={":p": prefs, ":t": now, ":v": "spam complaint"})
         _log_app_event("email", "warn", action="spam-complaint", user=address, kind=kind,
                        message="Marked as spam; account unsubscribed")
     except Exception as e:

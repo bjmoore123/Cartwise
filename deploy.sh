@@ -507,6 +507,18 @@ else
   ok "API smoke test passed (handler starts and answers)"
 fi
 
+# v9.14: preserve each account's history (copies the 90-day sign-in log and 30-day email log
+# onto accounts and records what's missing). Runs every deploy; accounts already done are
+# skipped, so after the first time it does nothing. Never fails the deploy.
+HIST_OUT="${TMPDIR_PY}/history_migration.json"
+if MSYS_NO_PATHCONV=1 aws lambda invoke --function-name "${LAMBDA_API}" --region "${AWS_REGION}" \
+     --cli-binary-format raw-in-base64-out --payload '{"source":"history-migration"}' \
+     "${HIST_OUT}" > /dev/null 2>&1; then
+  ok "Account history preserved: $(cat "${HIST_OUT}" 2>/dev/null | head -c 300)"
+else
+  echo "   ⚠️  Account history step didn't run (the site is fine). Re-run deploy.sh later to retry."
+fi
+
 LAMBDA_API_ARN=$(aws lambda get-function --function-name "${LAMBDA_API}" --region "${AWS_REGION}" --query 'Configuration.FunctionArn' --output text)
 
 # ── STEP 4: Scraper Lambda ────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ here is unit-tested without AWS. collect() does the reading. Definitions, in one
   active            signed in within N days (users.last_login)
   setup funnel      cumulative: signed up -> verified -> store chosen -> list started -> alerts on
   email sent        rows in the app log (kept 30 days) with source=email, grouped by kind
-  engagement        one row per message from Resend's events (kept 120 days); rates are over
+  engagement        one row per message from Resend's events (kept 3 years from v9.14); rates are over
                     unique messages: delivered / sent, opened / delivered, clicked / delivered
   value             the weekly run's own totals (run#<date> rows written by the scraper workers)
 
@@ -27,6 +27,7 @@ from helpers import (ok, err, _to_py, _scan_all, users_table, auth_logs_tbl, app
                      scrape_logs_tbl, dynamodb)
 from shared import mailmeta
 from shared import usage as usage_mod
+import segments
 
 metrics_tbl = dynamodb.Table(os.environ.get("METRICS_TABLE", "cartwise-metrics"))
 feedback_tbl = dynamodb.Table(os.environ.get("FEEDBACK_TABLE", "cartwise-feedback"))
@@ -395,6 +396,30 @@ def build(now, users, auth_logs, app_logs, scrape_logs, feedback, metric_rows,
         "email": email, "engagement": engagement, "value": value, "lists": lists, "health": health,
         "trend": trend,
     }
+    # v9.14: group sizes, one definition (segments.py). Numbers that link to a list on
+    # Admin → Users are taken from here, so the count and the list always agree.
+    seg = segments.counts(users, now)
+    out["segments"] = seg
+    out["segment_catalog"] = segments.catalog_json()
+    activity["dormant_60d"] = seg["dormant_60"]
+    email["unsubscribes"] = seg["unsub_7"]
+    email["spam_complaints"] = seg["spam_7"]
+    email["bounced_accounts"] = seg["bounced"]
+    email["unsubscribed_total"] = seg["alerts_off"]
+    lists["empty_lists"] = seg["empty_list"]
+    lists["no_store"] = seg["no_store"]
+    lists["with_list"] = seg["with_list"]
+    activity["active_7d"], activity["active_30d"] = seg["signed_in_7"], seg["signed_in_30"]
+    activity["never_signed_in"] = seg["never_signed_in"]
+    verification["cohort"] = seg["new_30"]
+    verification["within_24h"] = seg["verified_24h_30"]
+    verification["within_7d"] = seg["verified_7d_30"] - seg["verified_24h_30"]       # 24 h – 7 days
+    verification["verified_time_unknown"] = seg["verified_unknown_30"]
+    usage["d7"]["recipients_engaged"], usage["d30"]["recipients_engaged"] = seg["recipient_engaged_7"], seg["recipient_engaged_30"]
+    reach = [total, seg["verified"], seg["reach_store"], seg["reach_list"], seg["alert_recipient"]]
+    for i, f in enumerate(funnel):
+        f["count"], f["pct"] = reach[i], _pct(reach[i], total)
+        f["lost"] = (reach[i - 1] - reach[i]) if i else 0
     out["attention"] = _attention(out, now)
     return out
 
@@ -402,12 +427,14 @@ def build(now, users, auth_logs, app_logs, scrape_logs, feedback, metric_rows,
 def _attention(m: dict, now) -> list:
     """Only the things worth acting on this week. Empty list = nothing to do."""
     out = []
-    def add(level, text):
-        out.append({"level": level, "text": text})
+    def add(level, text, seg=None, log=None, tab=None):
+        # seg: a list on Admin → Users; log: "scrape" | "app:<source>"; tab: an Admin tab
+        out.append({"level": level, "text": text, **({"seg": seg} if seg else {}),
+                    **({"log": log} if log else {}), **({"tab": tab} if tab else {})})
     h, e, g, v = m["health"], m["email"], m["engagement"], m["value"]
     if h["scrape_runs_with_errors"]:
         add("bad", f'{h["scrape_runs_with_errors"]} of {h["scrape_runs"]} deal-fetch runs had errors '
-                   f'(Admin → Logging → scrape log).')
+                   f'(Admin → Logging → scrape log).', log="scrape")
     # v9.13: by the age of the last run. "No run in the 7-day window" fired falsely every Wednesday
     # just before the new run was logged (last week's run is then exactly 7 days old).
     if h["last_scrape_days"] is None:
@@ -417,24 +444,24 @@ def _attention(m: dict, now) -> list:
                    f'The Wednesday job may not be running.')
     if e["failed"]:
         add("bad", f'{e["failed"]} email{"s" if e["failed"] != 1 else ""} failed to send '
-                   f'(Admin → Logging → email).')
+                   f'(Admin → Logging → email).', log="app:email")
     elif v["last"] and v["last"]["send_failed"]:
         add("bad", f'{v["last"]["send_failed"]} weekly alert(s) failed to send in the last run.')
     if e["spam_complaints"] or g["complained"]:
         n = max(e["spam_complaints"], g["complained"])
-        add("bad", f'{n} spam complaint{"s" if n != 1 else ""}. Those accounts were unsubscribed automatically.')
+        add("bad", f'{n} spam complaint{"s" if n != 1 else ""}. Those accounts were unsubscribed automatically.', "spam_7")
     if g["bounced"]:
         add("warn", f'{g["bounced"]} email{"s" if g["bounced"] != 1 else ""} bounced '
-                    f'({g["bounce_rate"]}% of sent). The addresses are listed in Admin → Reports.')
+                    f'({g["bounce_rate"]}% of sent). The addresses are listed in Admin → Reports.', "bounced")
     if h["errors"] >= 10 and h["errors"] > 2 * max(1, h["errors_prev"]):
-        add("warn", f'Errors jumped to {h["errors"]} this week from {h["errors_prev"]} last week.')
+        add("warn", f'Errors jumped to {h["errors"]} this week from {h["errors_prev"]} last week.', log="app:all")
     if h["feedback_open"]:
         add("warn", f'{h["feedback_open"]} feedback message{"s" if h["feedback_open"] != 1 else ""} '
-                    f'waiting in Admin → Feedback.')
+                    f'waiting in Admin → Feedback.', tab="feedback")
     if m["verification"]["reminders_finished"]:
         n = m["verification"]["reminders_finished"]
         add("info", f'{n} account{"s" if n != 1 else ""} still unverified after all 4 reminders '
-                    f'(the last link has expired).')
+                    f'(the last link has expired).', "unverified_finished")
     if not g["tracking_seen"] and e["sent"]:
         add("info", "No delivery or open data yet. Turn on the email events in Resend (see the v9.12 test plan).")
     return out

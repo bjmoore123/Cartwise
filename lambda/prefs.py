@@ -19,6 +19,7 @@ from logging_utils import _log_app_event
 from shared import unsub as _unsub
 from shared import email_layout as L
 from shared import mailmeta
+from shared import usage
 from html import escape as _esc
 
 
@@ -72,11 +73,21 @@ def save_prefs(event, body):
             for i in prefs["items"][:200]
             if (i.get("name") if isinstance(i, dict) else i)
         ]
-    users_table.update_item(
+    old = users_table.update_item(
         Key={"email": sess["email"]},
         UpdateExpression="SET prefs = :p",
         ExpressionAttributeValues={":p": prefs},
-    )
+        ReturnValues="UPDATED_OLD",
+    ).get("Attributes") or {}
+    # v9.14: when and how alerts were turned off / on (Admin → Users timeline and segments)
+    old_on = (_to_py(old.get("prefs") or {}) or {}).get("email_enabled") if old.get("prefs") else None
+    expr, vals = usage.alerts_change(old_on, prefs.get("email_enabled"), "settings")
+    if expr:
+        try:
+            users_table.update_item(Key={"email": sess["email"]}, UpdateExpression="SET " + expr,
+                                    ExpressionAttributeValues=vals)
+        except Exception as e:
+            print(f"[CW] alerts change not recorded: {e}")
     return ok({"message": "Preferences saved.", "prefs": prefs})
 
 
@@ -126,10 +137,11 @@ def unsubscribe(event):
     if method == "POST":
         prefs = _to_py(item.get("prefs") or {}) or {**DEFAULT_PREFS, "notify_email": email}
         prefs["email_enabled"] = False
+        now_iso = datetime.now(timezone.utc).isoformat()
         users_table.update_item(
             Key={"email": email},
-            UpdateExpression="SET prefs = :p, unsubscribed_at = :t",
-            ExpressionAttributeValues={":p": prefs, ":t": datetime.now(timezone.utc).isoformat()},
+            UpdateExpression="SET prefs = :p, unsubscribed_at = :t, alerts_off_at = :t, alerts_off_via = :v",
+            ExpressionAttributeValues={":p": prefs, ":t": now_iso, ":v": "unsubscribe link"},
         )
         _log_app_event("api", "info", action="unsubscribe", email=email,
                        verified=bool(_to_py(item).get("email_verified", True)))

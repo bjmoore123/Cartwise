@@ -42,7 +42,7 @@ def kind_from_subject(subject: str) -> str:
 
 
 ENGAGEMENT_KINDS = ("weekly",)       # opening/clicking these counts as "using Cartwise by email"
-SEND_ROW_DAYS = 120
+SEND_ROW_DAYS = 1095             # v9.14: 3 years (was 120 days): the per-user timeline lists every email
 
 
 def message_id(resp) -> str:
