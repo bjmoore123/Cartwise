@@ -28,6 +28,7 @@ from shared import email_layout as L
 from shared import mailmeta
 from shared.deal_parser import effective_bogo_mode
 from shared.matcher import match_deals_for_user
+from shared.usage import eastern
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -189,14 +190,9 @@ def _parse_valid_date(vf: str, today: date):
         return None
 
 
-def _week_start(deals: list[dict], today: date | None = None) -> str:
-    """Monday of the ad week, from the weekly ad's valid_from dates (v9.6).
-
-    The old version only parsed formats Publix no longer sends, looked at the first
-    deal (often a TPR with a "1/1" placeholder) and fell back to "this Monday". A
-    manual scrape on Monday or Tuesday therefore filed LAST week's ad under the new
-    week. Now: the most common real valid_from among weekly-ad deals decides.
-    """
+def _ad_start(deals: list[dict], today: date | None = None):
+    """The day this store's weekly ad started (most common real valid_from), or None.
+    Publix runs two cycles: Wednesday–Tuesday and Thursday–Wednesday (v9.15)."""
     from collections import Counter
     today = today or date.today()
     votes = Counter()
@@ -211,7 +207,19 @@ def _week_start(deals: list[dict], today: date | None = None) -> str:
             dt = _parse_valid_date(d.get("valid_from", ""), today)
             if dt:
                 votes[dt] += 1
-    start = votes.most_common(1)[0][0] if votes else today
+    return votes.most_common(1)[0][0] if votes else None
+
+
+def _week_start(deals: list[dict], today: date | None = None) -> str:
+    """Monday of the ad week, from the weekly ad's valid_from dates (v9.6).
+
+    The old version only parsed formats Publix no longer sends, looked at the first
+    deal (often a TPR with a "1/1" placeholder) and fell back to "this Monday". A
+    manual scrape on Monday or Tuesday therefore filed LAST week's ad under the new
+    week. Now: the most common real valid_from among weekly-ad deals decides.
+    """
+    today = today or date.today()
+    start = _ad_start(deals, today) or today
     monday = start - timedelta(days=start.weekday())
     return monday.strftime("%Y-%m-%d")
 
@@ -736,6 +744,16 @@ def _store_worker(event):
     # v9.8.4: autocomplete now comes from the 52-week history index; the global
     # corpus row is no longer written (it hit the 400 KB item limit on 2026-04-08).
 
+    # v9.15: the weekly run fires Wednesday AND Thursday. Each store emails once per ad, on the
+    # run when its new ad has just started (Wednesday-cycle stores on Wednesday, Thursday-cycle
+    # stores on Thursday). One-user resends (no job_id) always send.
+    if send_emails and job_id:
+        go, why = _should_send_ad(store_id, deals)
+        print(f"  Alerts: {why}")
+        if not go:
+            print("  Worker done: cache refreshed, no emails this run")
+            return
+
     emails_sent = 0
     run = {"users_with_list": 0, "users_matched": 0, "matches_total": 0, "emails_sent": 0,
            "skipped_unverified": 0, "skipped_opted_out": 0, "send_failed": 0}
@@ -786,6 +804,48 @@ def _store_worker(event):
 
 
 RUN_TOP_ITEMS = 40
+AD_SENT_KEEP_DAYS = 60
+
+
+def _should_send_ad(store_id: str, deals: list[dict], now: datetime | None = None):
+    """(send?, reason) for the scheduled run. Send when this store's ad started today or yesterday
+    (Eastern) and no run has emailed this store for this ad yet. The claim is taken before sending,
+    so an overlapping or retried run can't email twice. If the ad's start can't be read, fall back
+    to the old rule: Wednesday only, once per week."""
+    now = now or datetime.now(timezone.utc)
+    today = eastern(now).date()
+    start = _ad_start(deals, today)
+    if start is None:
+        if today.weekday() != 2:
+            return False, "ad start date unknown; sending on Wednesday only"
+        key = f"adsent#{store_id}#week-{(today - timedelta(days=today.weekday())).isoformat()}"
+        why = "ad start date unknown; Wednesday fallback"
+    else:
+        age = (today - start).days
+        if age < 0 or age > 1:
+            return False, (f"ad started {start.isoformat()} ({start.strftime('%A')}); "
+                           f"alerts go out when the next ad starts")
+        key = f"adsent#{store_id}#{start.isoformat()}"
+        why = f"new ad started {start.isoformat()} ({start.strftime('%A')})"
+    try:
+        metrics_tbl.update_item(
+            Key={"pk": key},
+            UpdateExpression="SET claimed_at = :t, expires_at = :e",
+            ConditionExpression="attribute_not_exists(pk)",
+            ExpressionAttributeValues={":t": now.isoformat(),
+                                       ":e": int((now + timedelta(days=AD_SENT_KEEP_DAYS)).timestamp())})
+    except Exception as e:
+        if "ConditionalCheckFailed" in type(e).__name__ or "ConditionalCheckFailed" in str(e):
+            return False, why + "; already emailed for this ad"
+        print(f"  WARNING: could not record the ad send ({e}); sending anyway")
+    return True, why
+
+
+def _run_day(job_id: str) -> str:
+    """The run summary row for a job: the Wednesday on or before it, so the Wednesday and
+    Thursday runs of one ad week add up in one run#<date> row (v9.15)."""
+    d = date(int(job_id[0:4]), int(job_id[4:6]), int(job_id[6:8]))
+    return (d - timedelta(days=(d.weekday() - 2) % 7)).isoformat()
 
 
 def _record_run_summary(job_id: str, run: dict, matched_items: dict):
@@ -795,7 +855,7 @@ def _record_run_summary(job_id: str, run: dict, matched_items: dict):
         pk = runitems#YYYY-MM-DD   one counter per matched list item (how many users it matched for)
     Never raises: reporting must not break the weekly email run."""
     try:
-        day = f"{job_id[0:4]}-{job_id[4:6]}-{job_id[6:8]}"
+        day = _run_day(job_id)
         exp = int((datetime.now(timezone.utc) + timedelta(days=400)).timestamp())
         names, vals, adds = {}, {":exp": exp, ":job": job_id, ":one": 1}, ["stores :one"]
         for i, (k, v) in enumerate(run.items()):

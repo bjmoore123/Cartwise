@@ -427,3 +427,10 @@ Test plan: `docs/v9.4-test-plan.md`.
 - [x] Simulate a Publix fetch failure in the scraper: the previous week's cache is retained (pytest `TestStoreWorkerSafety`).
 - [x] Admin auth log's newest row equals the latest login (v9.3).
 - [x] Mobile (≤ 600px): filters reachable (v9.4 sheet), autocomplete tap works, Enter in store search works (v9.2.2).
+
+## v9.15 — Wednesday and Thursday ad cycles
+
+- Publix runs two weekly ad cycles (Wednesday–Tuesday and Thursday–Wednesday). Every store used to be checked and emailed on Wednesday, so Thursday-cycle stores got last week's ad on its final day.
+- The weekly rule now fires Wednesday and Thursday 12:00 UTC. A store emails when its ad started today or yesterday (Eastern), once per ad (`adsent#<store>#<ad start>`, 60 days). Wednesday-cycle stores skip Thursday; Thursday-cycle stores skip Wednesday; a store missed Wednesday is retried Thursday. Unknown start date → old rule (Wednesday, once a week).
+- Run totals for both days go into one `run#<Wednesday>` row. One-user resends are unchanged. Test plan: `docs/v9.15-test-plan.md`.
+- v9.15: one-time popup "Your deal alert day may change", naming the user's store and its ad day (from the loaded weekly-ad dates). Only for accounts with a store and alerts on, once per account per browser, never for new accounts, not after 2027-02-01.

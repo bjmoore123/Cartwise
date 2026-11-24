@@ -393,6 +393,11 @@ textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(26,107,60,.1)
 .dialog{background:white;border-radius:14px;padding:28px;max-width:420px;width:100%;box-shadow:var(--sh-lg)}
 .dialog h3{font-size:18px;font-weight:700;margin-bottom:10px}
 .dialog p{font-size:14px;color:var(--ink-mid);margin-bottom:20px;line-height:1.5}
+.adday-dialog{text-align:left}
+.adday-ico{font-size:30px;line-height:1;margin-bottom:10px}
+.adday-dialog p{margin-bottom:14px}
+.adday-you{background:var(--green-dim,#e0efe7);border-radius:10px;padding:12px 14px;color:var(--ink,#1a1a1a)!important;font-size:14px}
+.adday-dialog .dlg-btns{margin-top:18px}
 /* Welcome modal */
 .wlc-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:600;align-items:center;justify-content:center;padding:20px}
 .wlc-overlay.vis{display:flex}
@@ -1494,6 +1499,17 @@ a.deal-card-save.is-clip:hover{text-decoration:underline}
       <p class="fb-sub" style="font-size:15px">✅ Thanks, we got it. We'll reply to your sign-in email if needed.</p>
       <div class="dlg-btns"><button class="btn-save" data-action="close-overlay" data-ov="feedback-ov">Done</button></div>
     </div>
+  </div>
+</div>
+<!-- v9.15: one-time notice — alerts now arrive the morning each store's ad starts -->
+<div class="overlay" id="adday-ov">
+  <div class="dialog adday-dialog" role="dialog" aria-modal="true" aria-labelledby="adday-title">
+    <div class="adday-ico" aria-hidden="true">📬</div>
+    <h3 id="adday-title">Your deal alert day may change</h3>
+    <p>Publix starts its weekly ad on <strong>Wednesday</strong> at some stores and <strong>Thursday</strong> at others.
+       Your Cartwise email now arrives the morning <em>your</em> store's new ad starts, so you always get this week's deals.</p>
+    <p class="adday-you" id="adday-you" style="display:none"></p>
+    <div class="dlg-btns"><button class="btn-save" data-action="adday-ok">Got it</button></div>
   </div>
 </div>
 <div class="overlay" id="del-overlay">

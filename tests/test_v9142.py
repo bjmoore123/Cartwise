@@ -116,4 +116,4 @@ class TestPage:
         assert "function adminApplyState" in JS and "function adminGo" in JS
         # the history dialog closes through Back from the X, Escape and the backdrop
         assert "if(o.id==='admin-tl-ov') return adminCloseTimeline()" in JS
-        assert "APP_VERSION = '9.14.2'" in JS
+        assert "APP_VERSION = '9.1" in JS

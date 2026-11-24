@@ -438,10 +438,10 @@ def _attention(m: dict, now) -> list:
     # v9.13: by the age of the last run. "No run in the 7-day window" fired falsely every Wednesday
     # just before the new run was logged (last week's run is then exactly 7 days old).
     if h["last_scrape_days"] is None:
-        add("bad", "No deal-fetch run has been recorded. The Wednesday job may not be running.")
+        add("bad", "No deal-fetch run has been recorded. The weekly job may not be running.")
     elif h["last_scrape_days"] > 8:
         add("bad", f'The last deal-fetch run was {h["last_scrape_days"]:.0f} days ago. '
-                   f'The Wednesday job may not be running.')
+                   f'The weekly job may not be running.')
     if e["failed"]:
         add("bad", f'{e["failed"]} email{"s" if e["failed"] != 1 else ""} failed to send '
                    f'(Admin → Logging → email).', log="app:email")

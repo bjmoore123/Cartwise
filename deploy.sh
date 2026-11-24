@@ -854,12 +854,12 @@ echo "▶  8/15  EventBridge weekly trigger"
 RULE_NAME="${APP_NAME}-weekly"
 RULE_ARN=$(aws events put-rule \
   --name "${RULE_NAME}" \
-  --schedule-expression "cron(0 12 ? * WED *)" \
+  --schedule-expression "cron(0 12 ? * WED,THU *)" \
   --state ENABLED \
-  --description "Cartwise — weekly scraper" \
+  --description "Cartwise — weekly deals: Wednesday and Thursday (each store emails once, when its ad starts)" \
   --region "${AWS_REGION}" \
   --query 'RuleArn' --output text)
-ok "EventBridge rule: ${RULE_NAME}"
+ok "EventBridge rule: ${RULE_NAME} (Wednesday + Thursday 12:00 UTC)"
 
 aws lambda add-permission \
   --function-name "${LAMBDA_SCRAPER}" \

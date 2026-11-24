@@ -650,7 +650,7 @@ async function recheckVerified() {
 // ═══════════════════════════════════════════════════════════════════
 // FEEDBACK (v9.9)
 // ═══════════════════════════════════════════════════════════════════
-const APP_VERSION = '9.14.2';
+const APP_VERSION = '9.15';
 const FB_MAX = 2000;
 function openFeedback() {
   closeMobileNav && closeMobileNav();
@@ -708,6 +708,7 @@ function enterApp(opts) {
   document.getElementById('acct-email-disp').textContent=userEmail;
   document.getElementById('acct-avatar').textContent=(userEmail[0]||'?').toUpperCase();
   loadPrefs();
+  if(isFirstLogin) _adDaySeen(true);    // v9.15: new accounts start on the new schedule; nothing changed for them
   if(isFirstLogin){
     // Show welcome wizard; on dismiss it will navigate to Store
     showPanel('store');
@@ -1366,6 +1367,8 @@ async function loadDeals(forceRefresh=false){
     // Validity sublabels on banner
     const wa=_allDeals.find(d=>d.saving_type==='WeeklyAd'&&hasValidDates(d));
     const ex=_allDeals.find(d=>d.is_extra&&hasValidDates(d));
+
+    adDayNoticeMaybe(wa);   // v9.15
 
     // Validity banner
     if(wa){
@@ -3802,6 +3805,48 @@ function escH(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')
 function closeOv(id){document.getElementById(id).classList.remove('vis');}
 
 // ═══════════════════════════════════════════════════════════════════
+// v9.15: ONE-TIME NOTICE — alerts now arrive the morning the store's ad starts
+// ═══════════════════════════════════════════════════════════════════
+const ADDAY_KEY = 'cw_notice_adday_';
+const ADDAY_UNTIL = '2027-02-01';          // stop showing it to people who come back after this
+function _adDaySeen(mark){
+  try {
+    if (mark) { localStorage.setItem(ADDAY_KEY + userEmail, '1'); return true; }
+    return !!localStorage.getItem(ADDAY_KEY + userEmail);
+  } catch (_) { return true; }             // no storage: don't nag on every visit
+}
+// "11/26" (no year) -> weekday name, choosing the year that puts the date nearest today
+function _adWeekday(vf){
+  const m = String(vf || '').trim().match(/^(\d{1,2})\/(\d{1,2})/);
+  if (!m) return '';
+  const now = new Date(); let best = null;
+  for (const y of [now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1]) {
+    const d = new Date(y, +m[1] - 1, +m[2]);
+    if (d.getMonth() !== +m[1] - 1) continue;
+    if (!best || Math.abs(d - now) < Math.abs(best - now)) best = d;
+  }
+  return best ? ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][best.getDay()] : '';
+}
+function adDayNoticeMaybe(wa){
+  if (!userEmail || !prefs || !prefs.store_id || prefs.email_enabled === false) return;
+  if (new Date().toISOString().slice(0, 10) >= ADDAY_UNTIL || _adDaySeen()) return;
+  if (window.location.hash === '#admin') return;
+  if (document.querySelector('.overlay.vis, .wlc-overlay.vis')) return;   // never on top of another popup
+  const day = _adWeekday(wa && wa.valid_from);
+  const you = document.getElementById('adday-you');
+  if (day === 'Wednesday' || day === 'Thursday') {
+    const store = escH(prefs.store_name || 'Your store');
+    you.innerHTML = day === 'Thursday'
+      ? `<strong>${store}</strong> starts its ad on <strong>Thursdays</strong>, so your alert will now arrive on <strong>Thursday mornings</strong>.`
+      : `<strong>${store}</strong> starts its ad on <strong>Wednesdays</strong>, so your alert keeps arriving on <strong>Wednesday mornings</strong>.`;
+    you.style.display = '';
+  } else {
+    you.style.display = 'none';
+  }
+  document.getElementById('adday-ov').classList.add('vis');
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // AUTO-LOGIN
 // ═══════════════════════════════════════════════════════════════════
 (async function init(){
@@ -3821,6 +3866,7 @@ function closeOv(id){document.getElementById(id).classList.remove('vis');}
 document.querySelectorAll('.overlay').forEach(o=>{
   o.addEventListener('click',e=>{if(e.target!==o) return;
     if(o.id==='admin-tl-ov') return adminCloseTimeline();      // v9.14.2: keeps Back/Forward in step
+    if(o.id==='adday-ov') _adDaySeen(true);                      // v9.15: dismissed counts as seen
     o.classList.remove('vis');});
 });
 
@@ -4072,6 +4118,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (action === 'wlc-next')          return wlcNext();
 
     // -- Overlays --
+    if (action === 'adday-ok')          { _adDaySeen(true); return closeOv('adday-ov'); }
     if (action === 'close-overlay')     return el.dataset.ov==='admin-tl-ov' ? adminCloseTimeline() : closeOv(el.dataset.ov);
 
     // -- Admin auth --
