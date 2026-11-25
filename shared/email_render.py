@@ -16,9 +16,11 @@ from html import escape
 try:
     from shared.deal_parser import apply_bogo_mode
     from shared import email_layout as L
+    from shared import adweek
 except ImportError:                                  # pragma: no cover
     from deal_parser import apply_bogo_mode
     import email_layout as L
+    import adweek
 
 GREEN, GREEN_BG = "#1a6b3c", "#e0efe7"
 AMBER, AMBER_BG = "#8a4106", "#fdf0dc"
@@ -101,15 +103,16 @@ def _week(matches: list):
     return next((v for v in (_valid(m) for m in matches) if v), None)
 
 
-def subject_line(matches: list, today: date | None = None) -> str:
+def subject_line(matches: list, today: date | None = None, ad=None) -> str:
+    """ad: (start, end) of the store's ad (v9.15.1) -> "(Thu 11/26 – Wed 12/2)"."""
     n = len(matches)
     today = today or date.today()
     wk = _week(matches)
-    when = f"{wk[0]} – {wk[1]}" if wk else f"{today:%b} {today.day}"
+    when = adweek.span(ad) if ad else (f"{wk[0]} – {wk[1]}" if wk else f"{today:%b} {today.day}")
     return f"{n} item{'s' if n != 1 else ''} on your list {'are' if n != 1 else 'is'} on sale ({when})"
 
 
-def _row(m: dict, bogo_mode: str = "two") -> str:
+def _row(m: dict, bogo_mode: str = "two", ad=None) -> str:
     """One deal. v9.11: the name gets the full width and the price sits on its own line under
     it, so nothing gets squeezed into a narrow column on a phone (no media queries needed)."""
     lines = offer_lines(m, bogo_mode)
@@ -136,7 +139,7 @@ def _row(m: dict, bogo_mode: str = "two") -> str:
             f'text-transform:uppercase;padding:2px 7px;border-radius:4px;background:{bg};color:{fg};">{label}</span>')
     if lines["save"]:
         meta += f' <span style="{gap}{nw}font-size:13px;font-weight:700;color:{RED};">{escape(lines["save"])}</span>'
-    if _valid(m):
+    if _valid(m) and not adweek.same_as(m, ad, ad[0] if ad else None):   # v9.15.1: only when it differs
         meta += (f' <span style="{gap}{nw}font-size:12px;color:#8a8a8a;">'
                  f'Valid {escape(_valid(m)[0])} – {escape(_valid(m)[1])}</span>')
     if m.get("coupon_id") and (m.get("has_coupon") or tag_key in ("coupon", "stacked")):
@@ -156,8 +159,9 @@ def _row(m: dict, bogo_mode: str = "two") -> str:
 
 
 def build_html(matches, store_id, store_name, frontend_url="", unsub_url="", account_email="",
-               bogo_mode: str = "two") -> str:
-    """v9.11: on the shared brand layout (logo header, cream page, serif heading)."""
+               bogo_mode: str = "two", ad=None) -> str:
+    """v9.11: on the shared brand layout (logo header, cream page, serif heading).
+    ad: (start, end) of the store's weekly ad (v9.15.1); shown under the heading."""
     counts: dict = {}
     for m in matches:
         k = deal_tag(m)
@@ -171,10 +175,13 @@ def build_html(matches, store_id, store_name, frontend_url="", unsub_url="", acc
     wk = _week(matches)
     name = store_name or f"Store #{store_id}"
     store = escape(name if name.lower().startswith("publix") else f"Publix · {name}")
-    valid = (f' <span style="white-space:nowrap">· Valid {escape(wk[0])} – {escape(wk[1])}</span>' if wk else "")
+    if ad:
+        valid = f' <span style="white-space:nowrap">· Weekly ad {escape(adweek.span(ad))}</span>'
+    else:
+        valid = (f' <span style="white-space:nowrap">· Valid {escape(wk[0])} – {escape(wk[1])}</span>' if wk else "")
     n = len(matches)
     heading = f"{n} item{'s' if n != 1 else ''} on your list {'are' if n != 1 else 'is'} on sale"
-    rows = "".join(_row(m, bogo_mode) for m in matches[:MAX_ROWS])
+    rows = "".join(_row(m, bogo_mode, ad) for m in matches[:MAX_ROWS])
     if n > MAX_ROWS:
         rows += (f'<tr><td colspan="2" style="padding:12px 24px;font-size:13px;color:{MUTED};border-bottom:1px solid {LINE};">'
                  f'…and {n - MAX_ROWS} more on Cartwise.</td></tr>')
@@ -195,13 +202,18 @@ def build_html(matches, store_id, store_name, frontend_url="", unsub_url="", acc
                    wide=True, unsub_url=unsub_url, reason=reason, site=frontend_url)
 
 
-def build_text(matches, store_name="", unsub_url="", bogo_mode: str = "two", frontend_url: str = "") -> str:
+def build_text(matches, store_name="", unsub_url="", bogo_mode: str = "two", frontend_url: str = "",
+               ad=None) -> str:
     """Plain-text part (improves deliverability; some clients show only this)."""
     head = f"Cartwise: {len(matches)} item(s) on your list are on sale at {store_name or 'your Publix'}."
+    if ad:
+        head += f"\nWeekly ad: {adweek.span(ad)}."
     rows = []
     for m in matches:
         lines = offer_lines(m, bogo_mode)
         bits = [lines["headline"], lines["context"], lines["save"], lines["extra"]]
+        if _valid(m) and ad and not adweek.same_as(m, ad, ad[0]):
+            bits.append(f"valid {_valid(m)[0]} – {_valid(m)[1]}")
         rows.append(f"- {m.get('deal_name') or m.get('title', '')}: " + " · ".join(b for b in bits if b))
     site = L.site_url(frontend_url)
     return L.text(head, "\n".join(rows), f"See all your matches and edit your list:\n{site}",

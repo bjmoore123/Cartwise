@@ -86,9 +86,29 @@ class TestWorker:
         assert int(run["stores"]) == 2 and int(run["emails_sent"]) == 2
 
 
-def test_schedule_runs_wednesday_and_thursday():
+def test_schedule_runs_every_morning():
+    # v9.15.1: daily, so a holiday-shifted ad (e.g. Thanksgiving week) is still caught the day it starts
     src = open(os.path.join(_ROOT, "deploy.sh"), encoding="utf-8").read()
-    assert 'cron(0 12 ? * WED,THU *)' in src and 'cron(0 12 ? * WED *)' not in src
+    assert 'cron(0 12 * * ? *)' in src and 'cron(0 12 ? * WED' not in src
+
+
+class TestHolidayWeek:
+    """Thanksgiving 2026 as Publix actually ran it: Wednesday stores' ad 11/18 ran an extra day."""
+    def test_wednesday_nothing_new(self, s):
+        assert s._should_send_ad("w", deals("11/18"), WED)[0] is False      # Wednesday store, old ad
+        assert s._should_send_ad("t", deals("11/19"), WED)[0] is False      # Thursday store, old ad
+
+    def test_new_ad_any_weekday(self, s):
+        fri = datetime(2026, 11, 27, 12, tzinfo=timezone.utc)
+        assert s._should_send_ad("w", deals("11/27"), fri)[0] is True       # ad pushed to Friday
+        sat = datetime(2026, 11, 28, 12, tzinfo=timezone.utc)
+        assert s._should_send_ad("w", deals("11/27"), sat)[0] is False      # already sent
+        assert s._should_send_ad("w", deals("11/27"), datetime(2026, 11, 30, 12, tzinfo=timezone.utc))[0] is False
+
+    def test_run_rows_group_by_ad_week(self, s):
+        for d in ("20261125", "20261126", "20261127", "20261130", "20261201"):
+            assert s._run_day(d + "-120000") == "2026-11-25"
+        assert s._run_day("20261202-120000") == "2026-12-02"
 
 
 def test_notice_popup_once_and_only_for_existing_alert_users():
@@ -100,3 +120,53 @@ def test_notice_popup_once_and_only_for_existing_alert_users():
     assert "prefs.email_enabled === false" in js                # not for people with alerts off
     assert "if(o.id==='adday-ov') _adDaySeen(true);" in js      # clicking outside also dismisses for good
     assert "action === 'adday-ok'" in js and "APP_VERSION = '9.15'" in js
+
+
+class TestAdDatesInEmail:
+    """v9.15.1: the alert shows the store's ad dates (from all its deals), not the first match's."""
+    def _deals(self):
+        return ([{"id": f"a{i}", "title": "Milk", "saving_type": "WeeklyAd", "valid_from": "11/26", "valid_thru": "12/2"} for i in range(6)]
+                + [{"id": "short", "title": "Pie", "saving_type": "WeeklyAd", "valid_from": "11/26", "valid_thru": "11/27"},
+                   {"id": "cpn", "title": "Coffee", "saving_type": "DigitalCoupon", "valid_from": "11/1", "valid_thru": "12/31"}])
+
+    def test_window(self):
+        sys.path.insert(0, _ROOT)
+        from datetime import date
+        from shared import adweek
+        win = adweek.window(self._deals(), date(2026, 11, 26))
+        assert win == (date(2026, 11, 26), date(2026, 12, 2))
+        assert adweek.span(win) == "Thu 11/26 – Wed 12/2"
+        assert adweek.window([{"saving_type": "Tpr", "valid_from": "1/1", "valid_thru": "1/1"}], date(2026, 11, 26)) is None
+        assert adweek.parse("1/2", date(2026, 12, 30)) == date(2027, 1, 2)          # Dec→Jan
+
+    def test_subject_header_and_rows(self):
+        sys.path.insert(0, _ROOT)
+        from datetime import date
+        from shared import adweek, email_render
+        d = self._deals()
+        win = adweek.window(d, date(2026, 11, 26))
+        m = [dict(x, my_item="pie" if x["id"] == "short" else "milk", deal_name=x["title"], savings="$1") for x in (d[0], d[6])]
+        # the first match is NOT what decides the dates any more
+        assert email_render.subject_line(list(reversed(m)), ad=win).endswith("(Thu 11/26 – Wed 12/2)")
+        html = email_render.build_html(m, "1", "Publix", ad=win)
+        assert "Weekly ad Thu 11/26 – Wed 12/2" in html
+        assert html.count("Valid 11/26 – 11/27") == 1 and "Valid 11/26 – 12/2" not in html   # only the exception repeats
+        txt = email_render.build_text(m, "Publix", ad=win)
+        assert "Weekly ad: Thu 11/26 – Wed 12/2." in txt and "valid 11/26 – 11/27" in txt
+        # without ad dates (old callers) it falls back to the first match, as before
+        assert "Valid 11/26 – 12/2" in email_render.build_html(m, "1", "Publix")
+
+    def test_worker_passes_ad_dates(self, s, monkeypatch):
+        monkeypatch.setattr(s, "fetch_deals_safely", lambda sid: (self._deals(), ""))
+        monkeypatch.setattr(s, "match_deals_for_user", lambda d, i, m: [dict(d[0], my_item="milk")])
+        got = []
+        monkeypatch.setattr(s, "send_alert", lambda *a, **k: got.append(k.get("ad")))
+        s._store_worker({"store_id": "9", "send_emails": True,
+                         "users": [{"email": "a@x.com", "prefs": {"store_id": "9", "items": ["milk"]}}]})
+        assert got and got[0] is not None and adweek_span(got[0]) == "Thu 11/26 – Wed 12/2"
+
+
+def adweek_span(win):
+    sys.path.insert(0, _ROOT)
+    from shared import adweek
+    return adweek.span(win)

@@ -26,6 +26,7 @@ from shared import email_render
 from shared import unsub as _unsub
 from shared import email_layout as L
 from shared import mailmeta
+from shared import adweek
 from shared.deal_parser import effective_bogo_mode
 from shared.matcher import match_deals_for_user
 from shared.usage import eastern
@@ -165,49 +166,14 @@ def cache_deals(store_id: str, deals: list[dict]):
 
 
 def _parse_valid_date(vf: str, today: date):
-    """Publix valid dates: "10/7" (no year) or older "Oct 7, 2026" / "2026-10-07" / "10/7/2026".
-    For "M/D" the year is the one that puts the date nearest to today (handles Dec→Jan)."""
-    vf = (vf or "").strip()
-    if not vf or vf in ("1/1", "01/01"):           # TPR / coupon placeholder
-        return None
-    for fmt in ("%b %d, %Y", "%Y-%m-%d", "%m/%d/%Y"):
-        try:
-            return datetime.strptime(vf, fmt).date()
-        except ValueError:
-            pass
-    try:
-        m, d = (int(x) for x in vf.split("/")[:2])
-        best = None
-        for y in (today.year - 1, today.year, today.year + 1):
-            try:
-                cand = date(y, m, d)
-            except ValueError:
-                continue
-            if best is None or abs((cand - today).days) < abs((best - today).days):
-                best = cand
-        return best
-    except (ValueError, TypeError):
-        return None
+    """Publix valid date -> date (shared/adweek.py since v9.15.1)."""
+    return adweek.parse(vf, today)
 
 
 def _ad_start(deals: list[dict], today: date | None = None):
-    """The day this store's weekly ad started (most common real valid_from), or None.
-    Publix runs two cycles: Wednesday–Tuesday and Thursday–Wednesday (v9.15)."""
-    from collections import Counter
-    today = today or date.today()
-    votes = Counter()
-    for d in deals:
-        if (d.get("saving_type") or "WeeklyAd") not in ("WeeklyAd", "Stacked", "StackedDeals", "ExtraSavings"):
-            continue
-        dt = _parse_valid_date(d.get("valid_from", ""), today)
-        if dt:
-            votes[dt] += 1
-    if not votes:                               # nothing usable: any deal with a real date
-        for d in deals:
-            dt = _parse_valid_date(d.get("valid_from", ""), today)
-            if dt:
-                votes[dt] += 1
-    return votes.most_common(1)[0][0] if votes else None
+    """The day this store's weekly ad started, or None. Publix runs two cycles:
+    Wednesday–Tuesday and Thursday–Wednesday, moved around holidays (v9.15)."""
+    return adweek.start(deals, today)
 
 
 def _week_start(deals: list[dict], today: date | None = None) -> str:
@@ -327,26 +293,27 @@ def _unsub_url(account_email: str) -> str:
     """Full unsubscribe URL for an account (shared/unsub.py); "" if not configured."""
     return _unsub.url(API_URL, UNSUB_SECRET, account_email)
 
-def build_html(matches, store_id, store_name, frontend_url="", account_email="", bogo_mode="two"):
+def build_html(matches, store_id, store_name, frontend_url="", account_email="", bogo_mode="two", ad=None):
     """v9.3: rendered by shared/email_render.py from the normalized offer."""
     unsub_url = _unsub_url(account_email) if account_email else ""
     return email_render.build_html(matches, store_id, store_name, frontend_url,
                                    unsub_url=unsub_url, account_email=account_email,
-                                   bogo_mode=bogo_mode)
+                                   bogo_mode=bogo_mode, ad=ad)
 
 
 def send_alert(notify_email: str, matches: list[dict], store_id: str, store_name: str,
-               account_email: str = "", bogo_mode: str = "two"):
-    subject   = email_render.subject_line(matches)
+               account_email: str = "", bogo_mode: str = "two", ad=None):
+    """ad: (start, end) of the store's current ad (shared/adweek.window), shown in subject and header."""
+    subject   = email_render.subject_line(matches, ad=ad)
     unsub_url = _unsub_url(account_email) if account_email else ""
     msg = {
         "from":    RESEND_FROM,
         "to":      [notify_email],
         "subject": subject,
         "html":    build_html(matches, store_id, store_name, FRONTEND_URL, account_email=account_email,
-                              bogo_mode=bogo_mode),
+                              bogo_mode=bogo_mode, ad=ad),
         "text":    email_render.build_text(matches, store_name, unsub_url, bogo_mode=bogo_mode,
-                                           frontend_url=FRONTEND_URL),
+                                           frontend_url=FRONTEND_URL, ad=ad),
     }
     if unsub_url:
         # v9.3: one-click unsubscribe (RFC 8058); POST /user/unsubscribe accepts the same query
@@ -754,6 +721,7 @@ def _store_worker(event):
             print("  Worker done: cache refreshed, no emails this run")
             return
 
+    ad = adweek.window(deals, eastern(datetime.now(timezone.utc)).date())   # v9.15.1: the ad's own dates
     emails_sent = 0
     run = {"users_with_list": 0, "users_matched": 0, "matches_total": 0, "emails_sent": 0,
            "skipped_unverified": 0, "skipped_opted_out": 0, "send_failed": 0}
@@ -791,7 +759,7 @@ def _store_worker(event):
         else:
             try:
                 send_alert(notify_email, matches, store_id, store_name, account_email=account_email,
-                           bogo_mode=effective_bogo_mode(prefs))   # v9.8: store's BOGO rule
+                           bogo_mode=effective_bogo_mode(prefs), ad=ad)   # v9.8: store's BOGO rule
                 emails_sent += 1
             except Exception as e:
                 run["send_failed"] += 1
